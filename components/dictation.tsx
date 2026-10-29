@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2Icon, MicIcon } from "lucide-react";
 import { useSettingsDialog } from "@/components/settings/settings-dialog";
 import { Hint } from "@/components/ui/hint";
+import { noteStudyInput } from "@/components/study-tracker";
 
 /**
  * Voice dictation — the cloud engine (STT wave 1, 2026-09-17).
@@ -391,7 +392,10 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 					// Only finals stream (interim_results=false). DEFERRED (owner
 					// round 2): they buffer here and reach the input once, at
 					// teardown — the meter is the only live feedback.
-					if (msg.is_final && text) bufferRef.current.push(text);
+					if (msg.is_final && text) {
+						bufferRef.current.push(text);
+						if (text.trim()) noteStudyInput();
+					}
 				}
 			});
 			ws.addEventListener("close", (ev) => {

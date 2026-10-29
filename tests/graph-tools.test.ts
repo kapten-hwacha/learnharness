@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createProberTools } from "../src/agent/tools.ts";
-import { auditorGraphTools } from "../src/agent/tools/graph.ts";
+import { auditorGraphTools, proberGraphTools } from "../src/agent/tools/graph.ts";
 import type { ChatStore, GraphStore, JobStore } from "../src/core/ports.ts";
 import type { ChatSummary } from "../src/core/contracts/chat.ts";
 import type { GraphChain, GraphNode } from "../src/core/contracts/graph.ts";
@@ -147,7 +147,14 @@ describe("list_sessions", () => {
 });
 
 describe("list_propositions", () => {
-	it("names only — what the session covered (2026-09-27: no levels, no dating)", async () => {
+	it("surfaces transcript-derived stage and due status", async () => {
+		const { chatStore, graphStore } = fakeStores([node("n1", "Water cycle", [pt("c1")])]);
+		const tools = proberGraphTools({ chatStore, graphStore, now: () => Date.parse("2026-10-28T00:00:00.000Z"), history: () => ({ records: [], teachChatIds: new Set(["c1"]) }) });
+		const out = (await tools.list_propositions!.execute!("tc", { session: "c1" })).details as string;
+		assert.match(out, /- Water cycle · practiced · never practised · due/);
+	});
+
+	it("names plus transcript-derived review stage and due state", async () => {
 		const { chatStore, graphStore } = fakeStores([
 			node("n1", "Water cycle", [pt("c1")]),
 			node("n2", "Evaporation", [pt("c1")]),
@@ -155,20 +162,16 @@ describe("list_propositions", () => {
 		const tools = createProberTools({ ...baseCtx, chatStore, graphStore });
 		const out = (await tools.list_propositions!.execute!("tc", { session: "c1" })).details as string;
 		assert.match(out, /2 proposition\(s\) covered in this session:/);
-		assert.match(out, /- Water cycle/);
-		assert.match(out, /- Evaporation/);
-		// The owner ruling: no levels, no dating, never the statement text.
-		assert.ok(!out.includes("as of"));
-		assert.ok(!out.includes("solid"));
+		assert.match(out, /- Water cycle · practiced · never practised/);
+		assert.match(out, /- Evaporation · practiced · never practised/);
 		assert.ok(!out.includes("statement of"));
 	});
 
-	it("no evaluation machinery at all — the covered list is the whole output", async () => {
+	it("unknown history remains honestly at practiced", async () => {
 		const { chatStore, graphStore } = fakeStores([node("n1", "Water cycle", [pt("c1")])]);
 		const tools = createProberTools({ ...baseCtx, chatStore, graphStore });
 		const out = (await tools.list_propositions!.execute!("tc", { session: "c1" })).details as string;
-		assert.match(out, /- Water cycle/);
-		assert.ok(!out.includes("never evaluated"));
+		assert.match(out, /- Water cycle · practiced · never practised/);
 	});
 
 	it("an unknown session id — honest redirect, not a throw", async () => {

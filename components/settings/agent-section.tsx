@@ -74,12 +74,23 @@ import { SettingsGroup, SettingsRow, Toggle, CommitInput } from "./controls.tsx"
 import { ModelMenuList, ThinkingMenuList } from "./model-menu";
 import { ChatGPTBackgroundAccess } from "./chatgpt-connection";
 import { NativeSubscriptionBackgroundAccess } from "./subscription-connections";
+import {
+	MetacognitiveProfilerCard,
+	composeProfilerInterval,
+	composeProfilerAutoApply,
+} from "./profiler-card.tsx";
+
+export {
+	MetacognitiveProfilerCard,
+	composeProfilerInterval,
+	composeProfilerAutoApply,
+} from "./profiler-card.tsx";
 
 /** One slot's display identity — the tier's roster as the row hint rides
  *  with the resolved default (owner: the hint ALWAYS names the default). */
 const SLOT_META: Record<ModelSlotName, { label: string; roster: string }> = {
 	strong: { label: "Strong", roster: "The main model for your sessions" },
-	cheap: { label: "Cheap", roster: "The assistants that research, build demos, and grade your work" },
+	cheap: { label: "Cheap", roster: "The assistants that research, build demos, grade your work, and answer questions about a question" },
 	vision: { label: "Vision", roster: "The assistants that draw and read PDFs" },
 };
 
@@ -309,6 +320,7 @@ export function AgentSection({
 	const [slots, setSlots] = useState<ModelsBody["slots"] | null>(null);
 	/** The live search state (/api/search) — the row's reason line. */
 	const [search, setSearch] = useState<{ available: boolean; engine: string | null; reason: string } | null>(null);
+	const [desiredRetention, setDesiredRetention] = useState(agent?.desiredRetention ?? 0.9);
 	/** Which search engines have a key (/api/keys) — the no-keys-anywhere
 	 *  state grays the row; per-engine marks ride the menu rows. */
 	const [engineKeys, setEngineKeys] = useState<Partial<Record<(typeof SEARCH_ENGINES)[number], boolean>>>({});
@@ -724,6 +736,10 @@ export function AgentSection({
 			</SettingsGroup>
 
 			<SettingsGroup label="Tools" testid="group-tools">
+				<SettingsRow label="Desired retention" hint={`Review scheduling target: ${Math.round(desiredRetention * 100)}%`} testid="desired-retention-row">
+					<input aria-label="Desired retention" type="range" min="0.7" max="0.99" step="0.01" value={desiredRetention}
+						onChange={(event) => { const value = Number(event.currentTarget.value); setDesiredRetention(value); onSectionChange({ ...agent, desiredRetention: value }); }} />
+				</SettingsRow>
 				{/* The prober's graph tools (wave 7, owner ruling 2026-09-23):
 				    FIRST row of the group — its subject is the map, its
 				    mechanism is agent capability, so it lives in Tools but
@@ -881,6 +897,8 @@ export function AgentSection({
 					/>
 				</SettingsRow>
 			</SettingsGroup>
+
+			<MetacognitiveProfilerCard agent={agent} onSectionChange={onSectionChange} />
 
 			<SettingsGroup label="System prompts" testid="group-prompts">
 				{prompts === null ? (

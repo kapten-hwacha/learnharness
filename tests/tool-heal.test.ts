@@ -31,7 +31,7 @@ import {
 	quizInputObject,
 	quizInputProblems,
 } from "../src/core/question-core.ts";
-import { parseQuizInput } from "../src/core/tool-parts.ts";
+import { parseQuizInput, parseExplainInput } from "../src/core/tool-parts.ts";
 import { resolveTargetId } from "../src/core/chains.ts";
 import { bareQuestionTools } from "../src/agent/teacher-agent.ts";
 import { probeQuizTool } from "../src/agent/tools.ts";
@@ -186,5 +186,11 @@ describe("the display mirror — raw records heal on read", () => {
 		assert.equal(normalizeQuizType(parsed?.type), "predict");
 		// The graded answer resolves to the option despite the recorded colon.
 		assert.deepEqual(parsed ? coerceCorrectAnswer(parsed.correctAnswer, parsed.options.map((o) => o.value ?? o.label)) : [], ["parmenides"]);
+	});
+
+	it("parseExplainInput heals a quote-wrapped role the same way", () => {
+		const parsed = parseExplainInput({ question: "Explain.", correctAnswer: "A complete answer.", type: QUOTED("strategy") });
+		assert.ok(parsed);
+		assert.equal(normalizeQuizType(parsed?.type), "strategy");
 	});
 });

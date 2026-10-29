@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownIcon, ChevronRightIcon, PlayIcon } from "lucide-react";
+import { ArrowDownIcon, ChevronRightIcon, MessageCircleQuestionIcon, PlayIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
 import { useEnterSubmits } from "@/components/enter-submits";
@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import {
 	buildAnswer,
 	normalizeQuizType,
+	questionTypeLabel,
 	CONFIDENCE_STOPS,
 	DEFAULT_CONFIDENCE_INDEX,
 	emptyDockSelection,
@@ -33,8 +34,10 @@ import {
 	type QuizToolInput,
 	type SelectMode,
 	type Phase3,
+	formatQuestionForQuaderno,
 } from "@/src/core";
 import { CONFIDENCE_COLORS, confidenceRailStyle } from "@/components/confidence-rail";
+import { QuadernoRoundTripBar } from "@/components/quaderno-controls";
 
 /**
  * The question dock — a pending quiz/ask REPLACES the chat composer: the
@@ -90,6 +93,12 @@ export interface QuestionDockProps {
 	 *  and say so in the hint row. The server registry is the real gate;
 	 *  this is the affordance. */
 	compactionRunning?: boolean;
+	/** The side chat's toggle in the question header ("Ask about this").
+	 *  Absent = no side chat for this dock. */
+	clarify?: { count: number; open: boolean; onToggle: () => void };
+	/** The side chat rendered INSIDE the question area (narrow screens; on
+	 *  wide ones the DockOverlay opens it beside the question instead). */
+	clarifyInline?: React.ReactNode;
 }
 
 export function QuestionDock({
@@ -104,6 +113,8 @@ export function QuestionDock({
 	phase = "probe",
 	dictationClaim = true,
 	compactionRunning = false,
+	clarify,
+	clarifyInline,
 }: QuestionDockProps) {
 	// The probe-phase names (owner, 2026-10-09) canonicalize onto their
 	// teach twins for every dock concern — parse dispatch, labels, kinds:
@@ -141,8 +152,8 @@ export function QuestionDock({
 					toolLabel={toolLabel}
 					label={
 						(canonical === "quiz" || canonical === "explain") &&
-						normalizeQuizType((parsed as { type?: unknown }).type) === "predict"
-							? "Prediction"
+						["predict", "strategy", "transfer"].includes(normalizeQuizType((parsed as { type?: unknown }).type) ?? "")
+							? questionTypeLabel((parsed as { type?: unknown }).type)
 							: undefined
 					}
 				/>
@@ -158,6 +169,8 @@ export function QuestionDock({
 					onEscape={onEscape}
 					dictationClaim={dictationClaim}
 					compactionRunning={compactionRunning}
+					clarify={clarify}
+					clarifyInline={clarifyInline}
 				/>
 			</div>
 		</>
@@ -253,6 +266,8 @@ function QuestionDockForm({
 	onEscape,
 	dictationClaim = true,
 	compactionRunning = false,
+	clarify,
+	clarifyInline,
 }: Omit<QuestionDockProps, "expanded" | "onExpand" | "reveal">) {
 	const kind = toolQuestionKind(toolName);
 
@@ -266,7 +281,9 @@ function QuestionDockForm({
 		const explainInput = kind === "explain" ? (input as ExplainToolInput) : null;
 		const multi = input instanceof Object && "multiSelect" in input ? input.multiSelect === true : false;
 		const mode: QuestionMode =
-			kind === "quiz"
+			kind === "quiz" && (!quizInput?.options || quizInput.options.length === 0)
+				? "text"
+				: kind === "quiz"
 				? multi
 					? "multi-select"
 					: "single-select"
@@ -284,7 +301,7 @@ function QuestionDockForm({
 			kind,
 			// The role (owner 2026-10-03): predict questions gate by it in the
 			// view (never collapsed) and the answered card tucks the explanation.
-			questionType: kind === "quiz" ? normalizeQuizType((input as { type?: unknown }).type) : undefined,
+			questionType: kind === "quiz" || kind === "explain" ? normalizeQuizType((input as { type?: unknown }).type) : undefined,
 			question: input.question,
 			context: input.details,
 			mode,
@@ -292,9 +309,13 @@ function QuestionDockForm({
 			createdAt: new Date().toISOString(),
 		};
 		if (quizInput) {
-			const resolved = resolveCorrect(quizInput.correctAnswer, ordered);
-			if (resolved.error) console.error("[quiz] correctAnswer did not resolve:", resolved.error);
-			q.correctIndices = resolved.indices;
+			if (ordered.length > 0) {
+				const resolved = resolveCorrect(quizInput.correctAnswer, ordered);
+				if (resolved.error) console.error("[quiz] correctAnswer did not resolve:", resolved.error);
+				q.correctIndices = resolved.indices;
+			} else {
+				q.committedAnswer = typeof quizInput.correctAnswer === "string" ? quizInput.correctAnswer : undefined;
+			}
 			q.explanation = quizInput.explanation;
 		}
 		if (explainInput) {
@@ -316,6 +337,25 @@ function QuestionDockForm({
 	const [thinking, setThinking] = useState("");
 	const [other, setOther] = useState("");
 	const [text, setText] = useState("");
+	const [attachments, setAttachments] = useState<
+		Array<{
+			name: string;
+			mimeType: "application/pdf" | "image/png" | "image/jpeg" | "image/webp";
+			data: string;
+		}>
+	>([]);
+
+	const quadernoPayload = useMemo(() => {
+		return formatQuestionForQuaderno(
+			{
+				type: qd.questionType,
+				question: qd.question,
+				context: qd.context,
+				options: qd.options,
+			},
+			{ toolCallId },
+		);
+	}, [qd.questionType, qd.question, qd.context, qd.options, toolCallId]);
 	/* Refs MIRROR the two dictation-target fields ("nothing gets lost"
 	 * round, owner 2026-10-01): the run's flush lands via setState, which
 	 * a closure waiting through `await finishDictation()` cannot observe
@@ -361,7 +401,7 @@ function QuestionDockForm({
 
 	const canSubmit =
 		qd.mode === "text"
-			? text.trim().length > 0
+			? text.trim().length > 0 || attachments.length > 0
 			: sel.dontKnow || (sel.otherSelected && other.trim().length > 0) || sel.selected.size > 0;
 
 	const submit = () => {
@@ -380,15 +420,20 @@ function QuestionDockForm({
 	};
 	const doSubmit = () => {
 		if (!canSubmit) return;
+		const textValue =
+			qd.mode === "text"
+				? answerTextRef.current.trim() || (attachments.length > 0 ? "[See attached Quaderno PDF]" : "")
+				: undefined;
 		const req: AnswerRequest = {
 			dontKnow: sel.dontKnow,
 			values: [...sel.selected].map((i) => qd.options[i]!.value),
 			other: sel.otherSelected ? other : undefined,
-			text: qd.mode === "text" ? answerTextRef.current : undefined,
+			text: textValue,
 			thinking: qd.mode !== "text" ? thinkingTextRef.current.trim() || undefined : undefined,
 			// Always sent on quiz answers (owner: 50 must mean 50, never
 			// "untouched"); buildAnswer drops it on "I don't know".
-			confidence: kind === "quiz" ? CONFIDENCE_STOPS[confIdx] : undefined,
+			confidence: kind === "quiz" || qd.questionType === "strategy" ? CONFIDENCE_STOPS[confIdx] : undefined,
+			attachments: attachments.length > 0 ? attachments : undefined,
 		};
 		onSubmit(buildAnswer(qd, req, toolName));
 	};
@@ -461,6 +506,9 @@ function QuestionDockForm({
 		if (!active || rowCount === 0) return;
 		const onKeyDown = (e: KeyboardEvent) => {
 			const t = e.target as HTMLElement | null;
+			// The side chat's keys are its own (Tab included): it may float
+			// outside this form, and both listeners sit on the document.
+			if (t?.closest?.("[data-clarifier-panel]")) return;
 			// A TYPING field is where keys mean text (owner round 4): the
 			// thinking/answer fields, search boxes, renames — never a range
 			// input, whose focus after a click or drag must not kill the
@@ -544,20 +592,47 @@ function QuestionDockForm({
 			{/* Question area — scrolls internally if very tall; the bottom row stays put.
 			    Capped by the measured column (--dock-max-h; the old fixed 55dvh cut
 			    long questions short — owner round, 2026-10-05). */}
-			<div data-session-find-root="" className="max-h-[var(--dock-max-h,55dvh)] overflow-y-auto px-4 pt-3">
-				<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+			{/* With the side chat inline, the area also reserves room for the
+			    answer box below it (15rem), so the whole dock stays inside the
+			    column and the question's top can always be scrolled back to. */}
+			<div
+				data-session-find-root=""
+				className={cn(
+					"overflow-y-auto px-4 pt-3",
+					clarifyInline ? "max-h-[max(8rem,calc(var(--dock-max-h,55dvh)_-_15rem))]" : "max-h-[var(--dock-max-h,55dvh)]",
+				)}
+			>
+				<div className="mb-1 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+					<span className="min-w-0">
 					{toolName === "probe"
 						? "Probe"
 						: toolName === "recall"
 							? "Recall"
 							: kind === "quiz"
-								? qd.questionType === "predict"
-									? "Prediction"
-									: "Check"
+								? questionTypeLabel(qd.questionType)
 									: kind === "explain"
-										? "Explain"
+									? qd.questionType === "strategy" || qd.questionType === "transfer" || qd.questionType === "predict"
+										? questionTypeLabel(qd.questionType)
+										: "Explain"
 											: "Question"}
 					{qd.mode === "multi-select" && " · select all that apply"}
+					</span>
+					{clarify && (
+						<button
+							type="button"
+							data-testid="clarify-toggle"
+							aria-pressed={clarify.open}
+							onClick={clarify.onToggle}
+							className={cn(
+								"ml-auto flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 normal-case tracking-normal transition-colors hover:bg-accent hover:text-foreground",
+								clarify.open && "text-foreground",
+							)}
+						>
+							<MessageCircleQuestionIcon className="size-3.5" />
+							Ask about this
+							{clarify.count > 0 && <span className="tabular-nums text-muted-foreground">({clarify.count})</span>}
+						</button>
+					)}
 				</div>
 				<div className="mb-3 font-medium">
 					<MessageResponse>{qd.question}</MessageResponse>
@@ -718,6 +793,7 @@ function QuestionDockForm({
 						)}
 					</div>
 				)}
+				{clarifyInline}
 			</div>
 
 			{/* Confidence (owner, 2026-10-01; UI rounds same day): a snapped
@@ -733,7 +809,7 @@ function QuestionDockForm({
 				app-wide). Clicking and dragging are native. "I don't know"
 				GRAYS it out — the layout holds, no value is sent, the IDK
 				signal stands alone. */}
-			{kind === "quiz" && (
+			{(kind === "quiz" || qd.questionType === "strategy") && (
 				<div className="border-t border-border/60 px-4 py-2.5">
 					<div className="flex items-center gap-3">
 						<span
@@ -816,6 +892,17 @@ function QuestionDockForm({
 			    send. Select modes get "Your thinking" (Enter makes a newline — it
 			    is for dumping, soon dictated; the button submits); text mode
 			    keeps "Your answer" with Enter-to-submit. */}
+			<div className="border-t border-border/60 px-4 py-2">
+				<QuadernoRoundTripBar
+					title={quadernoPayload.title}
+					markdown={quadernoPayload.markdown}
+					docTitle={quadernoPayload.docTitle}
+					toolCallId={toolCallId}
+					attachedFiles={attachments}
+					onAttach={(att) => setAttachments((prev) => [...prev.filter((a) => a.name !== att.name), att])}
+					onRemoveAttachment={(name) => setAttachments((prev) => prev.filter((a) => a.name !== name))}
+				/>
+			</div>
 			<form
 				className="border-t border-border/60 p-1.5"
 				onSubmit={(e) => {
@@ -900,6 +987,7 @@ function QuestionDockForm({
 						</span>
 						<Button
 							type="submit"
+							onClick={() => submit()}
 							disabled={!canSubmit || compactionRunning}
 							className="ml-auto h-9 rounded-[6px] px-3.5 text-sm font-medium"
 						>

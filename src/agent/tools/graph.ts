@@ -3,6 +3,9 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import { getGraph, graphSessionIndex, graphSessionPropositions } from "../../core/graph.ts";
 import type { ChatStore, GraphStore } from "../../core/ports.ts";
+import type { SettingsStore } from "../../core/ports.ts";
+import { practiceRecordsFromChat, reviewState, teachSessionSeedRating } from "../../core/review.ts";
+import type { PracticeHistory, PracticeRecord } from "../../core/contracts.ts";
 
 /**
  * THE PROBER'S GRAPH TOOLS (wave 7, owner-locked 2026-09-23): context
@@ -27,6 +30,9 @@ import type { ChatStore, GraphStore } from "../../core/ports.ts";
 export interface GraphToolContext {
 	chatStore: ChatStore;
 	graphStore: GraphStore;
+	settingsStore?: SettingsStore;
+	history?: () => PracticeHistory;
+	now?: () => number;
 }
 
 const listSessionsInput = Type.Object({});
@@ -40,6 +46,18 @@ const listPropositionsInput = Type.Object({
 
 export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentTool<any>> {
 	const deps = { chatStore: ctx.chatStore, graphStore: ctx.graphStore };
+	const history = (): PracticeHistory => {
+		const records: PracticeRecord[] = [];
+		const teachChatIds = new Set<string>();
+		const teachRatings = new Map<string, ReturnType<typeof teachSessionSeedRating>>();
+		for (const summary of ctx.chatStore.listChats()) {
+			const chat = ctx.chatStore.getChat(summary.id);
+			if (!chat) continue;
+			if (summary.kind === "practice") records.push(...practiceRecordsFromChat(summary.id, chat.messages));
+			else { teachChatIds.add(summary.id); teachRatings.set(summary.id, teachSessionSeedRating(chat.messages)); }
+		}
+		return { records, teachChatIds, teachRatings };
+	};
 	return {
 		list_sessions: {
 			name: "list_sessions",
@@ -71,7 +89,15 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 				if (propositions.length === 0) {
 					return `No propositions born in session "${session}". Call list_sessions for the current ids.`;
 				}
-				const lines = propositions.map((p) => `- ${p.name}`);
+					const now = ctx.now?.() ?? Date.now();
+					const nodes = getGraph(deps.graphStore).nodes;
+					const state = reviewState(ctx.history?.() ?? history(), nodes, now, ctx.settingsStore?.readSettings()?.agent?.desiredRetention ?? 0.9);
+					const lines = propositions.map((p) => {
+						const review = state.get(p.nodeId);
+						if (!review?.lastReview) return `- ${p.name} · ${review?.stage ?? "practiced"} · never practised${review && review.dueAt <= now ? " · due" : ""}`;
+						const days = Math.max(0, Math.floor((now - review.lastReview) / 86_400_000));
+						return `- ${p.name} · ${review.stage} · last practised ${days}d ago${review.dueAt <= now ? " · due" : ""}`;
+					});
 				return `${propositions.length} proposition(s) covered in this session:\n${lines.join("\n")}`;
 			}),
 		},

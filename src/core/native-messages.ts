@@ -118,6 +118,34 @@ export function newUserMessage(text: string): LhMessage & UserMessage {
 	};
 }
 
+export interface UserAttachmentRecord { name: string; mimeType: string; data: string }
+export type AttachmentUserMessage = LhMessage & UserMessage & {
+	attachments: UserAttachmentRecord[];
+	attachmentContext?: string;
+};
+
+export function newAttachmentUserMessage(
+	text: string,
+	attachments: UserAttachmentRecord[],
+	attachmentContext = "",
+	renderedImages: Array<{ mimeType: string; data: string }> = [],
+): AttachmentUserMessage {
+	const content: Exclude<UserMessage["content"], string> = [];
+	if (text.trim()) content.push({ type: "text", text });
+	for (const attachment of attachments) {
+		if (attachment.mimeType.startsWith("image/")) {
+			content.push({ type: "image", data: attachment.data, mimeType: attachment.mimeType });
+		}
+	}
+	for (const img of renderedImages) {
+		content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+	}
+	return {
+		id: newMessageId(), role: "user", content, timestamp: Date.now(),
+		attachments, ...(attachmentContext ? { attachmentContext } : {}),
+	};
+}
+
 /** A steered user message (mid-turn composer steering, owner 2026-10-03):
  *  a plain user message with the CLIENT-minted steer id — the same object
  *  rides agent.steer(), the live stream's message events, and the settled
@@ -197,6 +225,7 @@ export interface GraphContextPick {
 	id: string;
 	name: string;
 	statement: string;
+	tag?: string;
 }
 
 /** The session's map context (owner, 2026-10-04): a SEPARATE custom
@@ -221,7 +250,7 @@ export function newGraphContextMessage(picks: readonly GraphContextPick[], chain
 		"[Session context] — picked from the learner's knowledge map when starting this session:",
 		"",
 		"Propositions (id — name: statement; the problem tool's target field uses these ids):",
-		...picks.map((p) => `- [${p.id}] ${p.name}: ${p.statement}`),
+		...picks.map((p) => `- [${p.id}] ${p.name}${p.tag ? ` (${p.tag})` : ""}: ${p.statement}`),
 	];
 	if (chains.length > 0) {
 		lines.push("", "Reasoning chains among them (premises → conclusion):", ...chains.map((c) => `- ${c}`));
@@ -568,8 +597,12 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 			continue;
 		}
 		// Strip the record id: the wire carries the native shape only.
-		const { id: _id, ...native } = m as LhMessage;
-		out.push(native as Message);
+		const { id: _id, attachmentContext, attachments: _attachments, ...native } = m as LhMessage & { attachmentContext?: string; attachments?: UserAttachmentRecord[] };
+		if (role === "user" && attachmentContext) {
+			const user = native as UserMessage;
+			const content = typeof user.content === "string" ? [{ type: "text" as const, text: user.content }] : user.content;
+			out.push({ ...user, content: [...content, { type: "text", text: attachmentContext }] });
+		} else out.push(native as Message);
 		// Dangling-call synthesis: an assistant message whose toolCalls have
 		// no results in the remaining tail (abort mid-question) — the
 		// provider rejects unanswered calls outright.

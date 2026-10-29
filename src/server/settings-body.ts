@@ -22,8 +22,18 @@ import type {
 	GraphSettings,
 	ModelsSettings,
 	RoleModelOverride,
+	StudyTimeSettings,
 } from "../core/settings.ts";
-import { BACKGROUND_MODEL_ROLES, COMPACTION_THRESHOLD_FLOOR, EXTRACTION_CHUNK_TOKENS_FLOOR, MODEL_SLOTS } from "../core/settings.ts";
+import {
+	BACKGROUND_MODEL_ROLES,
+	COMPACTION_THRESHOLD_FLOOR,
+	EXTRACTION_CHUNK_TOKENS_FLOOR,
+	MODEL_SLOTS,
+	STUDY_IDLE_MINUTES_MAX,
+	STUDY_IDLE_MINUTES_MIN,
+	STUDY_SOFT_CAP_MINUTES_MAX,
+	STUDY_SOFT_CAP_MINUTES_MIN,
+} from "../core/settings.ts";
 import { WRITABLE_TOOL_KEYS } from "../core/pending.ts";
 
 /** Parsed-or-rejected — `ok: false` carries the 400's error message. */
@@ -138,6 +148,20 @@ export function parseAgentSettingsBody(body: unknown): SettingsBodyResult<AgentS
 	const raw = asRecord(body);
 	if (!raw) return { ok: false, error: "Invalid JSON body" };
 	const settings: AgentSettings = {};
+	if (raw.desiredRetention !== undefined) {
+		if (typeof raw.desiredRetention !== "number" || raw.desiredRetention < 0.7 || raw.desiredRetention > 0.99) return { ok: false, error: "desiredRetention must be between 0.7 and 0.99" };
+		settings.desiredRetention = raw.desiredRetention;
+	}
+	if (raw.profilerIntervalSessions !== undefined) {
+		if (typeof raw.profilerIntervalSessions !== "number" || !Number.isInteger(raw.profilerIntervalSessions) || raw.profilerIntervalSessions < 0 || raw.profilerIntervalSessions > 50) {
+			return { ok: false, error: "profilerIntervalSessions must be an integer between 0 and 50" };
+		}
+		settings.profilerIntervalSessions = raw.profilerIntervalSessions;
+	}
+	if (raw.profilerAutoApply !== undefined) {
+		if (typeof raw.profilerAutoApply !== "boolean") return { ok: false, error: "profilerAutoApply must be a boolean" };
+		settings.profilerAutoApply = raw.profilerAutoApply;
+	}
 	if (raw.models !== undefined) {
 		const models = asRecord(raw.models);
 		if (!models) return { ok: false, error: "models must be an object" };
@@ -375,6 +399,42 @@ export function parseCompactionSettingsBody(body: unknown): SettingsBodyResult<C
 	return { ok: true, settings };
 }
 
+/** studyTime: { idleMinutes?: integer 1–60, weekStart?: "monday" | "sunday", teachSoftCapMinutes?: integer 0–180 } */
+export function parseStudyTimeSettingsBody(body: unknown): SettingsBodyResult<StudyTimeSettings> {
+	const raw = asRecord(body);
+	if (!raw) return { ok: false, error: "Invalid JSON body" };
+	const settings: StudyTimeSettings = {};
+	if (raw.idleMinutes !== undefined) {
+		if (
+			typeof raw.idleMinutes !== "number" ||
+			!Number.isInteger(raw.idleMinutes) ||
+			raw.idleMinutes < STUDY_IDLE_MINUTES_MIN ||
+			raw.idleMinutes > STUDY_IDLE_MINUTES_MAX
+		) {
+			return { ok: false, error: `idleMinutes must be a whole number from ${STUDY_IDLE_MINUTES_MIN} to ${STUDY_IDLE_MINUTES_MAX}` };
+		}
+		settings.idleMinutes = raw.idleMinutes;
+	}
+	if (raw.weekStart !== undefined) {
+		if (raw.weekStart !== "monday" && raw.weekStart !== "sunday") {
+			return { ok: false, error: 'weekStart must be "monday" or "sunday"' };
+		}
+		settings.weekStart = raw.weekStart;
+	}
+	if (raw.teachSoftCapMinutes !== undefined) {
+		if (
+			typeof raw.teachSoftCapMinutes !== "number" ||
+			!Number.isInteger(raw.teachSoftCapMinutes) ||
+			raw.teachSoftCapMinutes < STUDY_SOFT_CAP_MINUTES_MIN ||
+			raw.teachSoftCapMinutes > STUDY_SOFT_CAP_MINUTES_MAX
+		) {
+			return { ok: false, error: `teachSoftCapMinutes must be a whole number from ${STUDY_SOFT_CAP_MINUTES_MIN} to ${STUDY_SOFT_CAP_MINUTES_MAX}` };
+		}
+		settings.teachSoftCapMinutes = raw.teachSoftCapMinutes;
+	}
+	return { ok: true, settings };
+}
+
 /** The section→parser map for PUT /api/settings/[section] (the route also
  *  carries the special prompts sub-resource). */
 export const SETTINGS_SECTIONS = {
@@ -385,6 +445,7 @@ export const SETTINGS_SECTIONS = {
 	graph: parseGraphSettingsBody,
 	compaction: parseCompactionSettingsBody,
 	models: parseModelsSettingsBody,
+	studyTime: parseStudyTimeSettingsBody,
 } as const;
 
 export type SettingsSectionName = keyof typeof SETTINGS_SECTIONS;

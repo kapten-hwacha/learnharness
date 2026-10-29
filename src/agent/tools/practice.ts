@@ -58,13 +58,15 @@ export interface PracticeToolContext {
  *  this closure — the intra-turn truth the record cannot hold yet. */
 export interface PracticeGate {
 	problemActive: boolean;
+	targets: string[];
 }
 
 /** Seed the turn's gate from the record (result-aware activeProblemOf —
  *  only a cleanly-posed problem counts). */
 export function createPracticeGate(ctx: PracticeToolContext): PracticeGate {
 	const record = ctx.chatStore.getChat(ctx.chatId);
-	return { problemActive: record ? activeProblemOf(record.messages) !== null : false };
+	const active = record ? activeProblemOf(record.messages) : null;
+	return { problemActive: active !== null, targets: active && Array.isArray((active.input as { target?: unknown }).target) ? ((active.input as { target: string[] }).target) : [] };
 }
 
 // ─── problem: the pose ───────────────────────────────────────────────────────
@@ -155,6 +157,7 @@ export function problemTool(
 				}
 			}
 			gate.problemActive = true;
+			gate.targets = Array.isArray(input.target) ? [...input.target] : [];
 			return problemResult();
 		},
 	};
@@ -192,6 +195,8 @@ export const concludeInputObject = Type.Object({
 		{ description: "REQUIRED — the miss classification: cue, discrimination, execution, careless, or structural — or null = no miss (bare, no quotes)." },
 	),
 	retest: Type.Boolean({ description: "REQUIRED — true marks the problem for a fresh-surface retest before the session ends." }),
+	missed: Type.Optional(Type.Array(Type.String(), { description: "Target ids that failed in this problem. Omit to count a failed multi-target problem as a lapse on every target." })),
+	rating: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2), Type.Literal(3), Type.Literal(4)], { description: "Optional 1-4 FSRS rating (1=Again, 2=Hard, 3=Good, 4=Easy). Pass 4 when solved effortlessly on the first attempt with zero hints." })),
 });
 
 export type ConcludeInput = Static<typeof concludeInputObject>;
@@ -209,11 +214,13 @@ export function concludeTool(gate: PracticeGate): AgentTool<typeof concludeInput
 		parameters: concludeInputObject,
 		prepareArguments: (args: unknown) => healEncodedArguments(args, concludeInputObject) as never,
 		executionMode: "sequential",
-		execute: async (_toolCallId, _input) => {
+		execute: async (_toolCallId, input) => {
 			if (!gate.problemActive) {
 				return invalidInputResult("conclude", ["no active problem to conclude — pose one first"]);
 			}
+			if (input.missed?.some((id) => !gate.targets.includes(id))) return invalidInputResult("conclude", ["missed must contain only the active problem's target ids"]);
 			gate.problemActive = false;
+			gate.targets = [];
 			return concludeResult();
 		},
 	};

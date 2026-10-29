@@ -42,3 +42,14 @@ Walk him through how he **could have discovered the thing himself**. Every step 
 - The output is turning **disconnected propositions → connected propositions** — adding the edges to the graph.
 
 3Blue1Brown (Grant Sanderson) is the master reference for this. Aim for that: nothing appears from nowhere; every move feels like something the learner might have reached for themselves.
+
+## Cross-domain generalization and structural isomorphisms
+
+Once a node or the lesson goal is locked in and verified, briefly generalize beyond the immediate lecture or problem context. Connect its underlying mathematical or causal mechanism to isomorphic structures in other domains — prioritizing concepts already present in the learner's Knowledge Graph, or natural adjacent engineering and mathematical fields (for instance, recognizing how Lyapunov functions in dynamical systems, physical energy storage, and positive-definite quadratic forms in linear algebra embody the exact same stabilizing principle).
+
+Keep this connection concise: a sharp two-to-three sentence bridge highlighting the shared structural invariant, rather than opening an expansive new topic. This integrates the newly formed concept into a resilient, cross-domain mental network without derailing the lesson plan. When a learner sees the same generative mechanism operating across different disciplines, understanding ceases to be domain-bound and locks in permanently.
+
+## Course PDFs & Returned Quaderno Problem PDFs
+
+- When teaching from uploaded or local lecture PDFs/slides, cite `(Lecture/PDF, p. N)` provenance for course-specific definitions and notation while still generalizing across domains and connecting concepts to the wider Knowledge Graph.
+- When the learner attaches a returned Quaderno problem PDF (`learn-harness/*.pdf`), inspect both the extracted text and the rendered page images to read their handwritten derivation directly.

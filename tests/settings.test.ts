@@ -204,13 +204,35 @@ describe("sanitizeUserSettings", () => {
 		assert.deepEqual(out.agent?.tools, { quiz: false, demo: true });
 	});
 
-	it("BACKGROUND_MODEL_ROLES matches the five background roles (practice trio deleted 2026-10-04)", () => {
+	it("BACKGROUND_MODEL_ROLES matches the background roles", () => {
 		assert.deepEqual([...BACKGROUND_MODEL_ROLES], [
 			"researcher",
 			"demoBuilder",
 			"visualMaker",
 			"extractor",
 			"auditor",
+			"clarifier",
 		]);
+	});
+});
+
+describe("studyTime settings", () => {
+	it("factory defaults", () => {
+		assert.deepEqual(FACTORY_SETTINGS.studyTime, { idleMinutes: 5, weekStart: "monday", teachSoftCapMinutes: 20 });
+	});
+
+	it("sanitize: clamps and rounds idleMinutes and teachSoftCapMinutes, drops junk, keeps valid weekStart", () => {
+		const run = (studyTime: unknown) => sanitizeUserSettings({ version: 1, studyTime })?.studyTime;
+		assert.deepEqual(run({ idleMinutes: 0 }), { idleMinutes: 1 });
+		assert.deepEqual(run({ idleMinutes: 500 }), { idleMinutes: 60 });
+		assert.deepEqual(run({ idleMinutes: 7.6 }), { idleMinutes: 8 });
+		assert.deepEqual(run({ idleMinutes: "9", weekStart: "friday" }), {});
+		assert.deepEqual(run({ idleMinutes: Number.NaN }), {});
+		assert.deepEqual(run({ weekStart: "sunday" }), { weekStart: "sunday" });
+		assert.deepEqual(run({ teachSoftCapMinutes: -5 }), { teachSoftCapMinutes: 0 });
+		assert.deepEqual(run({ teachSoftCapMinutes: 300 }), { teachSoftCapMinutes: 180 });
+		assert.deepEqual(run({ teachSoftCapMinutes: 25.4 }), { teachSoftCapMinutes: 25 });
+		assert.deepEqual(run({ teachSoftCapMinutes: "30" }), {});
+		assert.equal(run(undefined), undefined);
 	});
 });

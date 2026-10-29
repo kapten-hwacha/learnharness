@@ -46,6 +46,7 @@ export const BACKGROUND_MODEL_ROLES = [
 	"visualMaker",
 	"extractor",
 	"auditor",
+	"clarifier",
 ] as const;
 
 export type BackgroundModelRole = (typeof BACKGROUND_MODEL_ROLES)[number];
@@ -226,6 +227,7 @@ export const ROLE_SLOT: Readonly<Record<ModelRole, ModelSlotName>> = {
 	auditor: "cheap",
 	visualMaker: "vision",
 	pdfReader: "vision",
+	clarifier: "cheap",
 };
 
 /** General settings — app-level behavior. Version DISPLAY and plans login
@@ -237,6 +239,12 @@ export interface GeneralSettings {
 
 /** Agent settings — everything about the non-conversation machinery. */
 export interface AgentSettings {
+	/** Desired FSRS retention when scheduling review intervals (0.7–0.99; default 0.9). */
+	desiredRetention?: number;
+	/** Metacognitive profiler auto-trigger interval in sessions (0–50; default 5; 0 = off). */
+	profilerIntervalSessions?: number;
+	/** Whether to auto-apply profiler updates to shared/90-learner-profile.md (default false). */
+	profilerAutoApply?: boolean;
 	/** Background-role model/thinking overrides (absent role = config pin). */
 	models?: Partial<Record<BackgroundModelRole, RoleModelOverride>>;
 	/** Tool toggles keyed by tool id (absent key = enabled). User-level
@@ -356,6 +364,20 @@ export interface CompactionSettings {
 	thresholdTokens?: number;
 }
 
+/** Bounds of the study idle limit, in whole minutes. */
+export const STUDY_IDLE_MINUTES_MIN = 1;
+export const STUDY_IDLE_MINUTES_MAX = 60;
+export const STUDY_SOFT_CAP_MINUTES_MIN = 0;
+export const STUDY_SOFT_CAP_MINUTES_MAX = 180;
+export const DEFAULT_STUDY_SOFT_CAP_MINUTES = 20;
+
+/** Study-time settings: the idle limit (whole minutes, 1–60), week start, and teach soft cap (0–180 minutes). */
+export interface StudyTimeSettings {
+	idleMinutes?: number;
+	weekStart?: "monday" | "sunday";
+	teachSoftCapMinutes?: number;
+}
+
 /** THE record. Every section optional (delta); unknown top-level keys are
  *  preserved verbatim by the sanitizer (forward-compat with newer records). */
 export interface UserSettings {
@@ -367,6 +389,7 @@ export interface UserSettings {
 	appearance?: AppearanceSettings;
 	graph?: GraphSettings;
 	compaction?: CompactionSettings;
+	studyTime?: StudyTimeSettings;
 	[key: string]: unknown;
 }
 
@@ -392,6 +415,7 @@ export interface FactorySettings {
 	};
 	graph: Required<GraphSettings>;
 	compaction: Required<CompactionSettings>;
+	studyTime: Required<StudyTimeSettings>;
 }
 
 export const FACTORY_SETTINGS: FactorySettings = {
@@ -407,6 +431,7 @@ export const FACTORY_SETTINGS: FactorySettings = {
 	},
 	graph: { enabled: true, rendering: true, extractionChunkTokens: 4096 },
 	compaction: { thresholdTokens: 150_000 },
+	studyTime: { idleMinutes: 5, weekStart: "monday", teachSoftCapMinutes: 20 },
 };
 
 /** The chunk budget's validated floor (GraphSettings.extractionChunkTokens
@@ -499,6 +524,11 @@ function sanitizeBooleanMap(raw: unknown): Record<string, boolean> | undefined {
 
 function sanitizeAgent(raw: Record<string, unknown>): AgentSettings {
 	const out: AgentSettings = {};
+	if (typeof raw.desiredRetention === "number" && raw.desiredRetention >= 0.7 && raw.desiredRetention <= 0.99) out.desiredRetention = raw.desiredRetention;
+	if (typeof raw.profilerIntervalSessions === "number" && Number.isFinite(raw.profilerIntervalSessions)) {
+		out.profilerIntervalSessions = clamp(Math.round(raw.profilerIntervalSessions), 0, 50);
+	}
+	if (typeof raw.profilerAutoApply === "boolean") out.profilerAutoApply = raw.profilerAutoApply;
 	if (raw.models !== null && typeof raw.models === "object" && !Array.isArray(raw.models)) {
 		const models: Partial<Record<BackgroundModelRole, RoleModelOverride>> = {};
 		for (const [role, override] of Object.entries(raw.models as Record<string, unknown>)) {
@@ -600,6 +630,23 @@ function sanitizeCompaction(raw: Record<string, unknown>): CompactionSettings {
 	return out;
 }
 
+/** clamp-never-reject: a finite idleMinutes rounds and clamps to 1–60; any
+ *  other idleMinutes, or a weekStart other than the two values, drops.
+ *  teachSoftCapMinutes rounds and clamps to 0–180. */
+function sanitizeStudyTime(raw: Record<string, unknown>): StudyTimeSettings {
+	const out: StudyTimeSettings = {};
+	const minutes = raw.idleMinutes;
+	if (typeof minutes === "number" && Number.isFinite(minutes)) {
+		out.idleMinutes = Math.min(STUDY_IDLE_MINUTES_MAX, Math.max(STUDY_IDLE_MINUTES_MIN, Math.round(minutes)));
+	}
+	if (raw.weekStart === "monday" || raw.weekStart === "sunday") out.weekStart = raw.weekStart;
+	const cap = raw.teachSoftCapMinutes;
+	if (typeof cap === "number" && Number.isFinite(cap)) {
+		out.teachSoftCapMinutes = Math.min(STUDY_SOFT_CAP_MINUTES_MAX, Math.max(STUDY_SOFT_CAP_MINUTES_MIN, Math.round(cap)));
+	}
+	return out;
+}
+
 /**
  * Coerce arbitrary JSON (disk file, network body) into a valid delta record:
  * known fields validated strictly (invalid ones drop/clamp per module doc),
@@ -627,9 +674,12 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 	}
 	if (r.graph !== null && typeof r.graph === "object" && !Array.isArray(r.graph)) {
 		out.graph = sanitizeGraph(r.graph as Record<string, unknown>);
-		if (r.compaction !== undefined && r.compaction !== null && typeof r.compaction === "object") {
-			out.compaction = sanitizeCompaction(r.compaction as Record<string, unknown>);
-		}
+	}
+	if (r.compaction !== null && typeof r.compaction === "object" && !Array.isArray(r.compaction)) {
+		out.compaction = sanitizeCompaction(r.compaction as Record<string, unknown>);
+	}
+	if (r.studyTime !== null && typeof r.studyTime === "object" && !Array.isArray(r.studyTime)) {
+		out.studyTime = sanitizeStudyTime(r.studyTime as Record<string, unknown>);
 	}
 	// Unknown top-level keys ride along untouched (forward-compat). One
 	// known-DEAD key is stripped instead of riding: `chat` (the old

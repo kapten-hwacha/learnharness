@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { after, it } from "node:test";
 import { POST } from "../app/api/graph/import/route.ts";
 import { extraction } from "../src/server/index.ts";
@@ -100,4 +101,29 @@ it("route returns 400 without files", async () => {
 	const response = await POST(request([]));
 	assert.equal(response.status, 400);
 	assert.deepEqual(await response.json(), { results: [], error: "no files" });
+});
+
+it("extracts uploaded PDFs before sending them through the notes importer", async () => {
+	let importedText = "";
+	extraction.importNotes = async ({ filePath, text }) => {
+		assert.equal(filePath, "lesson.pdf");
+		importedText = text;
+		return { nodes: 1, chains: 1 };
+	};
+	const pdf = await readFile(new URL("./fixtures/sample-3page.pdf", import.meta.url));
+	const form = new FormData();
+	form.append("files", new File([pdf], "lesson.pdf", { type: "application/pdf" }));
+
+	const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
+	assert.equal(response.status, 200);
+	const { results } = await response.json();
+	assert.deepEqual(results, [{
+		requestIndex: 0,
+		filePath: "lesson.pdf",
+		outcome: "completed",
+		ok: true,
+		stats: { nodes: 1, chains: 1 },
+	}]);
+	assert.match(importedText, /--- Page 1 ---/);
+	assert.match(importedText, /--- Page 3 ---/);
 });

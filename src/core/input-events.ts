@@ -16,6 +16,9 @@
  *   continue — run the next turn on the current record (mount
  *             continuations, job-settle re-syncs: the record ends at an
  *             answered question with no teacher reaction yet).
+ *   retry   — retry a failed model response (issue #110), without new
+ *             input. Failed attempts stay in the record; only the retry's
+ *             temporary agent history omits the trailing failures.
  *
  * (The plan verdict input died 2026-09-26 with the verdict itself — the
  * learner's post-plan reply is a natural text message.)
@@ -32,6 +35,7 @@ import {
 	concludedByDismissalPair,
 	danglingQuestionOf,
 	newAnswerResult,
+	newAttachmentUserMessage,
 	newNextMessage,
 	newProblemDismissedMarker,
 	newThinkingMessage,
@@ -39,17 +43,33 @@ import {
 	pendingProblemDismissalOf,
 } from "./native-messages.ts";
 import { QUESTION_TOOLS, toolQuestionKind } from "./pending.ts";
+import { attachClarifications } from "./clarify.ts";
+import type { ClarifyExchange } from "./contracts/chat.ts";
+
+/** The record fields the input seams read. */
+type InputRecord = { messages: LhMessage[]; kind?: string; clarifications?: Record<string, ClarifyExchange[]> };
+
+export type ChatAttachment = {
+	name: string;
+	mimeType: "application/pdf" | "image/png" | "image/jpeg" | "image/webp";
+	data: string;
+};
+export const MAX_ATTACHMENTS = 4;
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+export const MAX_TOTAL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 /** One client-originated input event (the POST body's `input`). */
 export type ChatInput =
-	| { type: "text"; text: string }
+	| { type: "text"; text: string; attachments?: ChatAttachment[] }
 	| { type: "answer"; toolCallId: string; answer: QuestionAnswerData }
 	| { type: "continue" }
+	/** The failed-turn retry (issue #110): the banner's Retry button. */
+	| { type: "retry" }
 	/** The practice dock's two buttons (owner, 2026-10-04): the learner's
 	 *  thinking on the ACTIVE problem — one lane (owner 2026-10-05):
 	 *  whether it claims an answer is read from the text. One
 	 *  problem may carry many submissions; each is its own turn. */
-	| { type: "thinking"; problemCallId: string; text: string }
+	| { type: "thinking"; problemCallId: string; text: string; attachments?: ChatAttachment[] }
 	/** The practice move-on signal (owner round 16): the learner's
 	 *  explicit go-ahead during the between-problems pause — the Next
 	 *  chip or Enter on an empty composer. Practice sessions only, and
@@ -129,7 +149,7 @@ export function parseUserSteerInput(input: unknown): UserSteerInput {
 /** The native appends a dismissal makes (pure — same orphan discipline
  *  as answers: the call must be a DANGLING question call, or — the
  *  practice variant — the ACTIVE problem). */
-export function dismissAppends(record: { messages: LhMessage[] }, input: DismissInput): LhMessage[] {
+export function dismissAppends(record: InputRecord, input: DismissInput): LhMessage[] {
 	if (input.type === "dismiss-problem") {
 		const active = activeProblemOf(record.messages);
 		if (!active || active.toolCallId !== input.problemCallId) {
@@ -144,7 +164,13 @@ export function dismissAppends(record: { messages: LhMessage[] }, input: Dismiss
 	if (input.answer.kind !== toolQuestionKind(pending.tool)) {
 		throw new ChatInputError("dismiss input's answer kind does not match the question");
 	}
-	return [newAnswerResult(input.toolCallId, pending.tool, input.answer)];
+	return [newAnswerResult(input.toolCallId, pending.tool, answerWithSideChat(record, input.toolCallId, input.answer))];
+}
+
+/** The answer carrying the question's saved side chat: the record is the
+ *  source, so a client can neither drop nor invent exchanges. */
+function answerWithSideChat(record: InputRecord, toolCallId: string, answer: QuestionAnswerData): QuestionAnswerData {
+	return attachClarifications(answer, record.clarifications?.[toolCallId]);
 }
 
 /** A malformed input event (the honest 400 — the orphan-trap discipline). */
@@ -156,33 +182,114 @@ export function parseChatInput(input: unknown): ChatInput {
 	const i = input as Record<string, unknown>;
 	switch (i.type) {
 		case "text":
-			if (typeof i.text !== "string" || (i.text as string).trim().length === 0) {
-				throw new ChatInputError("text input requires non-empty text");
-			}
-			return { type: "text", text: i.text };
-		case "answer":
+			return parseTextInput(i);
+		case "answer": {
 			if (typeof i.toolCallId !== "string" || i.toolCallId.length === 0) {
 				throw new ChatInputError("answer input requires toolCallId");
 			}
 			if (typeof i.answer !== "object" || i.answer === null) {
 				throw new ChatInputError("answer input requires the graded answer object");
 			}
-			return { type: "answer", toolCallId: i.toolCallId, answer: i.answer as QuestionAnswerData };
+			const ans = { ...(i.answer as QuestionAnswerData) };
+			const rawAnsAttachments = (ans as { attachments?: unknown }).attachments;
+			if (rawAnsAttachments !== undefined) {
+				ans.attachments = validateAttachmentsList(rawAnsAttachments);
+			}
+			return { type: "answer", toolCallId: i.toolCallId, answer: ans };
+		}
 		case "continue":
 			return { type: "continue" };
-		case "thinking":
+		case "retry":
+			return { type: "retry" };
+		case "thinking": {
 			if (typeof i.problemCallId !== "string" || i.problemCallId.length === 0) {
 				throw new ChatInputError("thinking input requires problemCallId");
 			}
-			if (typeof i.text !== "string" || i.text.trim().length === 0) {
-				throw new ChatInputError("thinking input requires non-empty text");
+			let text = typeof i.text === "string" ? i.text : "";
+			let attachments: ChatAttachment[] | undefined;
+			if (i.attachments !== undefined) {
+				attachments = validateAttachmentsList(i.attachments);
 			}
-			return { type: "thinking", problemCallId: i.problemCallId, text: i.text };
+			if (text.trim().length === 0) {
+				if (attachments && attachments.length > 0) {
+					text = "[See attached Quaderno PDF]";
+				} else {
+					throw new ChatInputError("thinking input requires non-empty text");
+				}
+			}
+			return {
+				type: "thinking",
+				problemCallId: i.problemCallId,
+				text,
+				...(attachments && attachments.length > 0 ? { attachments } : {}),
+			};
+		}
 		case "next":
 			return { type: "next" };
 		default:
 			throw new ChatInputError(`unknown input type: ${String(i.type)}`);
 	}
+}
+
+function parseTextInput(input: Record<string, unknown>): ChatInput {
+	if (typeof input.text !== "string") throw new ChatInputError("text input requires text");
+	const raw = input.attachments;
+	if (raw !== undefined && !Array.isArray(raw)) throw new ChatInputError("attachments must be an array");
+	const attachments = raw !== undefined ? validateAttachmentsList(raw) : [];
+	if (!input.text.trim() && attachments.length === 0) throw new ChatInputError("text input requires text or attachments");
+	return { type: "text", text: input.text, ...(attachments.length ? { attachments } : {}) };
+}
+
+function validateAttachmentsList(raw: unknown): ChatAttachment[] {
+	if (!Array.isArray(raw)) throw new ChatInputError("attachments must be an array");
+	if (raw.length > MAX_ATTACHMENTS) throw new ChatInputError(`at most ${MAX_ATTACHMENTS} attachments are allowed`);
+	const attachments = raw.map(parseAttachment);
+	let totalBytes = 0;
+	for (const attachment of attachments) {
+		const bytes = decodedBase64Length(attachment.data);
+		if (bytes > MAX_ATTACHMENT_BYTES) throw new ChatInputError(`each attachment must be at most ${MAX_ATTACHMENT_BYTES} bytes`);
+		totalBytes += bytes;
+	}
+	if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) throw new ChatInputError(`attachments must total at most ${MAX_TOTAL_ATTACHMENT_BYTES} bytes`);
+	return attachments;
+}
+
+function parseAttachment(value: unknown): ChatAttachment {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new ChatInputError("attachment must be an object");
+	const item = value as Record<string, unknown>;
+	const allowed = ["application/pdf", "image/png", "image/jpeg", "image/webp"];
+	if (typeof item.name !== "string" || !item.name.trim() || item.name.length > 255 || item.name.includes("/") || item.name.includes("\\") || /[\u0000-\u001f\u007f]/.test(item.name)) throw new ChatInputError("attachment name is invalid");
+	if (typeof item.mimeType !== "string" || !allowed.includes(item.mimeType)) throw new ChatInputError("attachment type is not supported");
+	if (typeof item.data !== "string" || !item.data || item.data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 || item.data.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(item.data)) throw new ChatInputError("attachment data must be canonical base64 within the size limit");
+	let decoded: string;
+	try { decoded = atob(item.data); }
+	catch { throw new ChatInputError("attachment data must be canonical base64"); }
+	if (btoa(decoded) !== item.data) throw new ChatInputError("attachment data must be canonical base64");
+	if (decodedBase64Length(item.data) > MAX_ATTACHMENT_BYTES) throw new ChatInputError(`each attachment must be at most ${MAX_ATTACHMENT_BYTES} bytes`);
+	return { name: item.name, mimeType: item.mimeType as ChatAttachment["mimeType"], data: item.data };
+}
+
+function decodedBase64Length(value: string): number {
+	const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+	return (value.length * 3) / 4 - padding;
+}
+
+export type PreparedChatAttachmentInput = ChatAttachment & {
+	text?: string;
+	renderedImages?: Array<{ mimeType: string; data: string }>;
+};
+
+function buildAttachmentUserMessage(
+	text: string,
+	preparedAttachments: readonly PreparedChatAttachmentInput[],
+): LhMessage {
+	const metadata = preparedAttachments.map(({ name, mimeType, data }) => ({ name, mimeType, data }));
+	const attachmentContext = preparedAttachments
+		.filter((a) => a.text)
+		.map((a) => `Attached PDF: ${a.name}\n${a.text}`)
+		.join("\n\n");
+	const renderedImages = preparedAttachments.flatMap((a) => a.renderedImages ?? []);
+	return newAttachmentUserMessage(text, metadata, attachmentContext, renderedImages);
 }
 
 /**
@@ -195,27 +302,53 @@ export function parseChatInput(input: unknown): ChatInput {
  * double-answering.
  */
 export function inputAppends(
-	record: { messages: LhMessage[]; kind?: string },
+	record: InputRecord,
 	input: ChatInput,
+	preparedAttachments?: readonly PreparedChatAttachmentInput[],
 ): LhMessage[] {
 	switch (input.type) {
-		case "text":
-			return [...dismissalConclusion(record), newUserMessage(input.text)];
+		case "text": {
+			let userMessage: LhMessage;
+			if (preparedAttachments?.length) {
+				userMessage = buildAttachmentUserMessage(input.text, preparedAttachments);
+			} else if (input.attachments?.length) {
+				userMessage = newAttachmentUserMessage(input.text, input.attachments);
+			} else {
+				userMessage = newUserMessage(input.text);
+			}
+			return [...dismissalConclusion(record), userMessage];
+		}
 		case "answer": {
 			const pending = danglingQuestionOf(record.messages);
 			if (!pending || pending.toolCallId !== input.toolCallId) {
 				throw new ChatInputError("answer input targets no pending question call");
 			}
-			return [newAnswerResult(input.toolCallId, pending.tool, input.answer)];
+			const answer = answerWithSideChat(record, input.toolCallId, input.answer);
+			const appends: LhMessage[] = [newAnswerResult(pending.toolCallId, pending.tool, answer)];
+			if (preparedAttachments?.length) {
+				appends.push(buildAttachmentUserMessage("Attached solution PDF for the question above.", preparedAttachments));
+			}
+			return appends;
 		}
 		case "continue":
 			return dismissalConclusion(record);
+		case "retry":
+			// The input already landed write-ahead. retryDrops affects only
+			// the temporary agent history — nothing new appends here.
+			return [];
 		case "thinking": {
 			const active = activeProblemOf(record.messages);
 			if (!active || active.toolCallId !== input.problemCallId) {
 				throw new ChatInputError("thinking input targets no active problem");
 			}
-			return [...dismissalConclusion(record), newThinkingMessage(input.problemCallId, input.text)];
+			const appends: LhMessage[] = [
+				...dismissalConclusion(record),
+				newThinkingMessage(active.toolCallId, input.text),
+			];
+			if (preparedAttachments?.length) {
+				appends.push(buildAttachmentUserMessage("Attached solution PDF for the problem above.", preparedAttachments));
+			}
+			return appends;
 		}
 		case "next": {
 			// Honest 400s, the thinking gate's discipline: the signal is a
@@ -231,6 +364,61 @@ export function inputAppends(
 			return [...dismissalConclusion(record), newNextMessage()];
 		}
 	}
+}
+
+/** The failure owning the ephemeral banner. Plan presentation and
+ * compaction do not resolve an error; substantive later input/output does.
+ * This is deliberately broader than Retry eligibility below. */
+export function failedResponseAtEnd(messages: readonly LhMessage[]): Extract<LhMessage, { role: "assistant" }> | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i]!;
+		if (m.role === "custom" && (m.customType === "plan-block" || m.customType === "compaction")) continue;
+		return m.role === "assistant" && m.stopReason === "error" ? m : undefined;
+	}
+	return undefined;
+}
+
+/** Does the record end in a failure with input that can be retried?
+ * Aborts are deliberate stops; compaction after a failure requires new
+ * learner input rather than a retry using a changed context. */
+export function endsInFailedTurn(messages: readonly LhMessage[]): boolean {
+	const { ids, before } = failedTail(messages);
+	return ids.size > 0 && before !== undefined && before.role !== "assistant";
+}
+
+/** The ids omitted ONLY from the retry's temporary agent history.
+ * Failed attempts (including partial text and their ids) stay on disk.
+ * Pi's provider conversion already skips error/aborted responses, but
+ * continue() rejects an assistant tail BEFORE conversion. Omitting the
+ * trailing failures lets that continuation start from the saved input or
+ * completed tool results without replaying tools or resubmitting input.
+ * Plan blocks may follow the failure and stay; later compaction blocks
+ * Retry without changing compaction itself. */
+export function retryDrops(messages: readonly LhMessage[]): Set<string> {
+	const { ids, before } = failedTail(messages);
+	if (ids.size === 0) {
+		const failure = failedResponseAtEnd(messages);
+		if (failure) {
+			throw new ChatInputError(`${failure.errorMessage ?? "An error occurred."}\n\nThis response cannot be retried after compaction. Send a new message to continue.`);
+		}
+		throw new ChatInputError("retry input requires a failed turn to retry");
+	}
+	if (!before || before.role === "assistant") throw new ChatInputError("retry input leaves no input to continue from");
+	return ids;
+}
+
+/** Walk back over failed assistants and UI-only plan blocks. A compaction
+ * is a boundary, not a marker Retry may cross. A failure AFTER a compaction
+ * can still retry: that compacted context was already its starting state. */
+function failedTail(messages: readonly LhMessage[]): { ids: Set<string>; before: LhMessage | undefined } {
+	const ids = new Set<string>();
+	let i = messages.length - 1;
+	for (; i >= 0; i--) {
+		const m = messages[i]!;
+		if (m.role === "assistant" && m.stopReason === "error") ids.add(m.id);
+		else if (!(m.role === "custom" && m.customType === "plan-block")) break;
+	}
+	return { ids, before: messages[i] };
 }
 
 /** The deferred conclude synthesis (owner ruling, 2026-10-04): a

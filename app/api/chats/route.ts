@@ -1,6 +1,6 @@
 import { chainsForSelection, formatChainLine } from "@/src/core";
 import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
-import { compactionInFlight, createChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
+import { compactionInFlight, createChat, isTurnRunning, listChats, readReview, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
 import type { ChatListItem } from "@/src/core";
 
 /** The session picker's list: record-derived summaries (phase, pending
@@ -59,6 +59,13 @@ export async function POST(req: Request) {
 					)
 					.slice(0, 64)
 			: [];
+	if (kind === "practice" && picks.length > 0) {
+		const review = readReview();
+		for (const pick of picks) {
+			const item = review.state.get(pick.id);
+			pick.tag = item?.lastReview === null || !item ? "new" : `review · ${item.stage} · last practised ${Math.max(0, Math.floor((Date.now() - item.lastReview) / 86_400_000))} days ago`;
+		}
+	}
 	if (picks.length > 0) {
 		const byId = new Map(stores.graphStore.readNodes().map((n) => [n.id, n]));
 		const pickedNodes = picks.map((p) => byId.get(p.id)).filter((n) => n !== undefined);

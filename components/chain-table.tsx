@@ -81,6 +81,15 @@ export interface ChainSort {
 	dir: 1 | -1;
 }
 
+export type ChainReviewStages = Record<
+	string,
+	{
+		stage: "practiced" | "demonstrated" | "retained";
+		retrievability: number | null;
+		dueAt: number;
+	}
+>;
+
 /** A cluster's chains share the conclusion's birth (owner ruling). This
  *  record is assembled per render from the visible chains. */
 interface ClusterGroup {
@@ -116,6 +125,7 @@ export function ChainTableBody({
 	onClose,
 	selectMode,
 	onSelect,
+	reviewStages,
 }: {
 	nodes: GraphNode[];
 	chains: GraphChain[];
@@ -142,6 +152,7 @@ export function ChainTableBody({
 	 *  selection becomes. */
 	selectMode?: boolean;
 	onSelect?: () => void;
+	reviewStages?: ChainReviewStages;
 }) {
 	const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
 	const chains = useMemo(() => chainsForSelection(nodes, storedChains), [nodes, storedChains]);
@@ -455,6 +466,7 @@ export function ChainTableBody({
 												memberIds.map((id) => {
 													const node = byId.get(id);
 													if (!node) return null;
+													const review = reviewStages?.[node.id];
 													return (
 														<div
 															key={id}
@@ -469,6 +481,28 @@ export function ChainTableBody({
 															/>
 															<span className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
 																{node.statement}
+																{review && (() => {
+																	const label =
+																		review.stage === "retained"
+																			? "Retained"
+																			: review.stage === "demonstrated"
+																				? "Demonstrated"
+																				: "Practiced";
+																	const pillStyle =
+																		review.stage === "retained"
+																			? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+																			: review.stage === "demonstrated"
+																				? "border-primary/30 bg-primary/10 text-primary"
+																				: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400";
+																	return (
+																		<span
+																			data-testid={`prop-stage-${node.id}`}
+																			className={`ml-2 inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${pillStyle}`}
+																		>
+																			{label}
+																		</span>
+																	);
+																})()}
 															</span>
 															<span className="w-14 shrink-0" />
 															<span className="w-20 shrink-0" />
@@ -609,6 +643,7 @@ export function ChainTableOverlay({
 	selectMode,
 	controlledSelection,
 	onSelectionChange,
+	reviewStages,
 }: {
 	open: boolean;
 	nodes: GraphNode[];
@@ -619,6 +654,7 @@ export function ChainTableOverlay({
 	selectMode?: boolean;
 	controlledSelection?: ReadonlySet<string>;
 	onSelectionChange?: (next: ReadonlySet<string>) => void;
+	reviewStages?: ChainReviewStages;
 }) {
 	const [query, setQuery] = useState("");
 	const [sort, setSort] = useState<ChainSort>({ col: "name", dir: 1 });
@@ -707,6 +743,7 @@ export function ChainTableOverlay({
 					onClose={onClose}
 					selectMode={selectMode}
 					onSelect={onClose}
+					reviewStages={reviewStages}
 				/>
 			</div>
 			{deleteOpen && (

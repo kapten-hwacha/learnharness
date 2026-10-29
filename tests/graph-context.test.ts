@@ -64,6 +64,11 @@ describe("newGraphContextMessage", () => {
 		assert.deepEqual(m.details, { propositions: PICKS, chains: [] });
 	});
 
+	it("pick review tag is included in model context", () => {
+		const m = newGraphContextMessage([{ ...PICKS[0]!, tag: "review · demonstrated · last practised 2 days ago" }], []);
+		assert.ok(m.content.includes("Modus ponens (review · demonstrated · last practised 2 days ago):"));
+	});
+
 	it("toLlmMessages flattens it to a user message (the model's face)", () => {
 		const m = newGraphContextMessage(PICKS, ["Modus ponens → Soundness"]);
 		const wire = toLlmMessages([m as unknown as LhMessage] as never);
@@ -135,7 +140,7 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 		const m = record.messages[0] as { role: string; customType: string; content: string };
 		assert.equal(m.role, "custom");
 		assert.equal(m.customType, "graph-context");
-		assert.ok(m.content.includes("- [n_a] Modus ponens: If P implies Q and P holds, Q holds."));
+		assert.ok(m.content.includes("- [n_a] Modus ponens (new): If P implies Q and P holds, Q holds."));
 		// the chain AMONG the picks rides the marker (formatChainLine shape — names)
 		assert.ok(m.content.includes("- Modus ponens → Soundness"));
 	});

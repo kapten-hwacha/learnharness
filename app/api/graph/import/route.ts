@@ -13,7 +13,10 @@
  * healthy. The dock's chips + graph refetch track progress live through
  * /api/graph/status, as with session runs.
  */
-import { extraction, NotesImportError } from "@/src/server";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { extraction, NotesImportError, pdfExtract, pdfProbe } from "@/src/server";
 import {
 	ModelsNotConfiguredError,
 	PROVIDER_KEY_MISSING_CODE,
@@ -22,6 +25,30 @@ import {
 } from "@/src/core";
 
 export const dynamic = "force-dynamic";
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+function isPdf(file: File): boolean {
+	return file.type.toLowerCase() === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+}
+
+async function readImportText(file: File): Promise<string> {
+	if (!isPdf(file)) return file.text();
+	if (file.size > MAX_UPLOAD_BYTES) throw new Error("PDF too large (over 25 MB)");
+
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lh-pdf-upload-"));
+	const filePath = path.join(dir, "document.pdf");
+	try {
+		await fs.writeFile(filePath, new Uint8Array(await file.arrayBuffer()));
+		await pdfProbe(filePath);
+		const text = await pdfExtract(filePath, "all");
+		if (!text.replace(/--- Page \d+ ---/g, "").trim()) {
+			throw new Error("PDF contains no extractable text. Scanned PDFs cannot be imported yet.");
+		}
+		return text;
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}
 
 interface ImportResult {
 	requestIndex: number;
@@ -55,7 +82,7 @@ export async function POST(request: Request) {
 			if (!next) return;
 			const { file, requestIndex } = next;
 			try {
-				const text = await file.text();
+				const text = await readImportText(file);
 				const stats = await extraction.importNotes({ filePath: file.name, text });
 				results.push({ filePath: file.name, requestIndex, outcome: "completed", ok: true, stats });
 			} catch (err) {

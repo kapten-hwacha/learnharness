@@ -48,6 +48,7 @@ import { hasProbeDone, danglingQuestionOf } from "../core/native-messages.ts";
 import { composeInstructions } from "../agent/teacher-agent.ts";
 import { ensureCompacted, kickCompaction, effectiveThresholdTokens } from "./compaction.ts";
 import { catalogContextLimits, refreshConnectionCatalog } from "./model-catalog.ts";
+import { getChatStudyStatus } from "./study.ts";
 import { emit } from "../core/events.ts";
 import { settledTurnResponse } from "./turn-runs.ts";
 import { asAgentMessages } from "../core/native-messages.ts";
@@ -59,6 +60,37 @@ import {
 } from "../core/input-events.ts";
 import { steerDelivered } from "../core/contracts.ts";
 import type {CallUsage, SteerMessage} from "../core/contracts.ts";
+import { prepareChatAttachments } from "./chat-attachments.ts";
+import { maybeAutoRunProfiler } from "./profiler.ts";
+
+const MAX_CHAT_REQUEST_BYTES = 15 * 1024 * 1024;
+
+async function readChatRequestJson(req: Request): Promise<unknown> {
+	const length = Number(req.headers.get("content-length"));
+	if (Number.isFinite(length) && length > MAX_CHAT_REQUEST_BYTES) throw new RangeError("Chat request body is too large");
+	if (!req.body) return null;
+	const reader = req.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > MAX_CHAT_REQUEST_BYTES) {
+				await reader.cancel();
+				throw new RangeError("Chat request body is too large");
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const bytes = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+	return JSON.parse(new TextDecoder().decode(bytes));
+}
 
 /**
  * One chat turn over the server-owned native record. Framework-free (plain
@@ -149,8 +181,11 @@ export async function handleChatRequest(
 ): Promise<Response> {
 	let body: { chatId?: unknown; input?: unknown };
 	try {
-		body = await req.json();
-	} catch {
+		const parsed = await readChatRequestJson(req);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new SyntaxError("Request JSON must be an object");
+		body = parsed as typeof body;
+	} catch (err) {
+		if (err instanceof RangeError) return Response.json({ error: "Chat request body is too large" }, { status: 413 });
 		return Response.json({ error: "Invalid JSON body" }, { status: 400 });
 	}
 	const chatId = typeof body.chatId === "string" ? body.chatId : "";
@@ -180,6 +215,34 @@ export async function handleChatInput(
 	let record = stores.chatStore.getChat(chatId);
 	if (!record) {
 		return Response.json({ error: "Unknown chat" }, { status: 404 });
+	}
+
+	const rawAttachments =
+		input.type === "text"
+			? input.attachments
+			: input.type === "thinking"
+				? input.attachments
+				: input.type === "answer"
+					? input.answer.attachments
+					: undefined;
+
+	if (input.type === "text" || (rawAttachments && rawAttachments.length > 0)) {
+		try {
+			input = parseChatInput(input);
+		} catch (err) {
+			if (err instanceof ChatInputError) return Response.json({ error: err.message }, { status: 400 });
+			throw err;
+		}
+	}
+
+	let preparedAttachments: Awaited<ReturnType<typeof prepareChatAttachments>> = [];
+	if (rawAttachments && rawAttachments.length > 0) {
+		try {
+			preparedAttachments = await prepareChatAttachments(rawAttachments, { includePageImages: true });
+		} catch (err) {
+			if (err instanceof ChatInputError) return Response.json({ error: err.message }, { status: 400 });
+			throw err;
+		}
 	}
 
 	// THE UNIVERSAL TURN GATE (BYOK, owner, 2026-09-22): a turn needs the
@@ -238,6 +301,12 @@ export async function handleChatInput(
 	let conversationEngine: PiEngine;
 	try { conversationEngine = piEngineForSpec(conversation, () => callPurpose.background, lifecycle); }
 	catch { return Response.json({ error: conversation.provider === "chatgpt" ? chatGPTStreamError("model catalog") : isSubscriptionProvider(conversation.provider) ? nativeSubscriptionError(conversation.provider, "model catalog") : "The selected model is unavailable." }, { status: 503 }); }
+	if (preparedAttachments.some((attachment) => attachment.mimeType.startsWith("image/")) && !conversationEngine.model.input.includes("image")) {
+		return Response.json({ error: "The selected model does not support image attachments." }, { status: 400 });
+	}
+	if (!conversationEngine.model.input.includes("image")) {
+		preparedAttachments = preparedAttachments.map(({ renderedImages: _ignored, ...rest }) => rest);
+	}
 	const modelIdForCompaction = `${conversationEngine.model.provider}:${conversationEngine.model.id}`;
 	await ensureCompacted(
 		{
@@ -269,7 +338,7 @@ export async function handleChatInput(
 		appends =
 			input.type === "steers"
 				? input.steers.filter((s) => !steerDelivered(record.messages, s.id))
-				: inputAppends(record, input);
+				: inputAppends(record, input, preparedAttachments);
 	} catch (err) {
 		if (err instanceof ChatInputError) {
 			return Response.json({ error: err.message }, { status: 400 });
@@ -291,6 +360,7 @@ export async function handleChatInput(
 		const merged = [...record.messages, ...appends];
 		stores.chatStore.saveMessages(chatId, merged);
 		emit("record-changed", { chatId });
+		void maybeAutoRunProfiler().catch(() => {});
 		return settledTurnResponse(); // the cheap terminal — no beginTurn, no turn
 	}
 
@@ -373,6 +443,15 @@ export async function handleChatInput(
 		commitStaged: () => { stores.chatStore.saveMessages(chatId, merged); persistBaseCount = merged.length; },
 		restoreAutomatic: (automaticIds, retainedIds) => restoreUncommittedAutomatic(chatId, constructed, automaticIds, retainedIds),
 	});
+	let softCapReached = false;
+	if (record.kind !== "practice" && teaching) {
+		try {
+			const studyStatus = getChatStudyStatus(chatId);
+			softCapReached = studyStatus.softCapReached;
+		} catch {
+			// Minimal test environments without study store wired
+		}
+	}
 	const agentOpts: AgentBuildOptions = {
 		engine,
 		callPurpose,
@@ -387,6 +466,12 @@ export async function handleChatInput(
 		// point as the tool delta — the agent layer composes the system
 		// prompt fresh per turn, swapping in any enabled override segments.
 		promptSwitches: effective.agent.prompts,
+		...(softCapReached
+			? {
+					extraInstructions:
+						"The soft study time cap for this session has been reached. Find a natural stopping point or suggest a break soon.",
+				}
+			: {}),
 	};
 	// PRACTICE BRANCH (owner design, 2026-10-04): a kind:"practice"
 	// session builds the practitioner from turn 1 — no prober→teacher
@@ -446,7 +531,7 @@ export async function handleChatInput(
 						// The map reader (wave 7): the prober reads the learner's
 						// knowledge graph through tools when the gate opens —
 						// graph master switch AND the agent.graphTools toggle.
-						...(graphToolsEnabled(effective) ? { graphStore: stores.graphStore } : {}),
+						...(graphToolsEnabled(effective) ? { graphStore: stores.graphStore, settingsStore: stores.settingsStore } : {}),
 					},
 					agentOpts,
 				);
@@ -550,6 +635,7 @@ export async function handleChatInput(
 				// ones stay parked for the chat's next run (the registry is the
 				// stranding safety net — the agent's undrained copy died above).
 				reconcileUserSteers(chatId, stamped);
+				void maybeAutoRunProfiler().catch(() => {});
 				// THE SETTLE KICK (owner round 14): the turn settled — if the
 				// projection is now over threshold, the summary starts in the
 				// background, INSIDE the learner's reading/answering pause

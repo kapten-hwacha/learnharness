@@ -19,6 +19,7 @@ import {
 	needsContinuation,
 	measuredContextTokens,
 	newAnswerResult,
+	newAttachmentUserMessage,
 	newNextMessage,
 	newProblemDismissedMarker,
 	newThinkingMessage,
@@ -562,18 +563,19 @@ export class SessionModel {
 	 * POST + consume. Ready-gated: one turn per client at a time (the
 	 * server's 409 + identity retry covers the wake-race window).
 	 */
-	async send(input: ChatInput): Promise<void> {
+	async send(input: ChatInput, onAccepted?: () => void): Promise<void> {
 		if (!this.readyRef) return;
 		this.consumeAbort?.abort();
 		const controller = new AbortController();
 		this.consumeAbort = controller;
 		this.setError(null);
 		this.setStatus("submitted");
+		let accepted = false;
 		// The optimistic appends — exactly the messages the server's
 		// write-ahead will persist (inputAppends), with LOCAL ids so
 		// adoption can tell them from the record's absorbed copies.
 		const optimistic: LhMessage[] = [];
-		if (input.type === "text") optimistic.push({ ...newUserMessage(input.text), id: localId() });
+		if (input.type === "text") optimistic.push({ ...(input.attachments?.length ? newAttachmentUserMessage(input.text, input.attachments) : newUserMessage(input.text)), id: localId() });
 		else if (input.type === "thinking") {
 			// The practice submissions (2026-10-04): the marker lands
 			// optimistically — the card renders from its details the
@@ -613,8 +615,18 @@ export class SessionModel {
 				// Refusal envelopes (503 BYOK/key gates) and 400s: the RAW body
 				// text rides the error message — the banner shows it, and the
 				// page's refusal flow JSON-parses the envelope out of it.
-				throw new Error((await res.text()) || `The send failed (${res.status}).`);
+				let message = (await res.text()) || `The send failed (${res.status}).`;
+				if ((input.type === "retry" || (input.type === "text" && input.attachments?.length)) && res.status === 400) {
+					try {
+						const refusal = JSON.parse(message) as { error?: unknown } | null;
+						if (typeof refusal?.error === "string" && refusal.error.length > 0) message = refusal.error;
+					} catch {}
+				}
+				throw new Error(message);
 			}
+			accepted = true;
+			// Opening-message handover ends at acceptance, not stream completion.
+			onAccepted?.();
 			// CONNECTION DIET B (owner, 2026-10-10 — parallel-session freeze
 			// postmortem): the POST acknowledges and closes; there is no stream
 			// on this response to consume. Attach through the SAME reattach wire
@@ -629,6 +641,11 @@ export class SessionModel {
 			if (this.consumeAbort !== controller) return;
 			await this.resumeStream(true);
 		} catch (err) {
+			const failedOpening = input.type === "text" && onAccepted !== undefined && !accepted;
+			if (failedOpening) {
+				const ids = new Set(optimistic.map((m) => m.id));
+				this.tail = this.tail.filter((m) => !ids.has(m.id));
+			}
 			if ((err as Error).name === "AbortError") return; // stop() or a newer consume won
 			this.setError((err as Error).message);
 			this.setStatus("error");

@@ -19,6 +19,7 @@
 
 import { Type, type Static } from "typebox";
 import { stripModelValueDebris } from "./value-debris.ts";
+import type { ClarifyExchange } from "./contracts/chat.ts";
 
 // ─── shared types ───────────────────────────────────────────────────────────
 
@@ -110,10 +111,27 @@ export function askOptionProblems(options: Array<{ label: string; value?: string
 /** The full quiz authoring contract: option sanity + correctAnswer must be
  *  gradeable. Empty result = a quiz the dock can arm and grade faithfully. */
 export function quizInputProblems(input: {
-	options: Array<{ label: string; value?: string }>;
+	options?: Array<{ label: string; value?: string }>;
+	explanation?: string;
+	type?: unknown;
 	correctAnswer: string | string[];
 	multiSelect?: boolean;
 }): string[] {
+	if (normalizeQuizType(input.type) === "strategy") {
+		if (input.options !== undefined && (!Array.isArray(input.options) || input.options.length > 0)) {
+			return ["strategy questions are free-recall — omit options and commit the full multi-step strategy in correctAnswer."];
+		}
+		if (typeof input.correctAnswer !== "string" || input.correctAnswer.trim().length === 0) {
+			return ["correctAnswer is required — commit to the full multi-step strategy BEFORE posing the question."];
+		}
+		return [];
+	}
+	if (!Array.isArray(input.options) || input.options.length < 2) {
+		return ["options is required (2–6 choices) for multiple-choice quiz questions."];
+	}
+	if (typeof input.explanation !== "string") {
+		return ["explanation is required."];
+	}
 	const { problems, keys } = optionProblems(input.options);
 
 	// Preserve exact option keys before trying copy-syntax cleanup — the
@@ -206,7 +224,7 @@ export const quizInputBase = Type.Object({
 // path accepts) runs at the CALL BOUNDARY in the tool's execute:
 // quizInputProblems here, the per-session plan-nodeId validation in
 // tools.ts (it reads the live chat record, which this core never touches).
-export const QUIZ_QUESTION_TYPES = ["predict", "check"] as const;
+export const QUIZ_QUESTION_TYPES = ["predict", "strategy", "check", "transfer"] as const;
 export type QuizQuestionType = (typeof QUIZ_QUESTION_TYPES)[number];
 
 /** Normalize a persisted quiz `type` (display seam): old records carry
@@ -217,7 +235,12 @@ export type QuizQuestionType = (typeof QUIZ_QUESTION_TYPES)[number];
 export function normalizeQuizType(raw: unknown): QuizQuestionType | undefined {
 	if (typeof raw !== "string") return undefined;
 	const v = stripModelValueDebris(raw);
-	return v === "predict" ? "predict" : v === "check" ? "check" : undefined;
+	return v === "predict" || v === "strategy" || v === "check" || v === "transfer" ? v : undefined;
+}
+
+export function questionTypeLabel(type: unknown): string {
+	const normalized = normalizeQuizType(type);
+	return normalized === "predict" ? "Prediction" : normalized === "strategy" ? "Strategy" : normalized === "transfer" ? "New case" : "Check";
 }
 
 /** The reveal law as a pure predicate (owner 2026-10-03; explain joined
@@ -231,7 +254,8 @@ export function normalizeQuizType(raw: unknown): QuizQuestionType | undefined {
  *  as checks, the standing default. */
 export function questionNeedsReveal(tool: string, rawInput: unknown, phase: string): boolean {
 	if ((tool !== "quiz" && tool !== "explain") || phase !== "teach") return false;
-	return normalizeQuizType((rawInput as { type?: unknown } | null)?.type) !== "predict";
+	const t = normalizeQuizType((rawInput as { type?: unknown } | null)?.type);
+	return t !== "predict" && t !== "strategy";
 }
 
 /** The teaching-cycle role field, shared VERBATIM by both teach quizzing
@@ -239,13 +263,20 @@ export function questionNeedsReveal(tool: string, rawInput: unknown, phase: stri
  *  free-recall check collapses behind the reveal exactly like a quiz
  *  check; a prediction never does). Bare words, never quoted (the
  *  quote-copy wobble — see the whitehead pins, tests/tool-heal.test.ts). */
-const predictCheckType = Type.Union([Type.Literal("predict"), Type.Literal("check")], {
-	description:
-		"REQUIRED — the question's role in the teaching cycle, as a bare word (no quotes): predict = posed BEFORE " +
-		"you teach the step (its own turn; the learner answers, then your teaching resolves it — arrives open, never " +
-		"collapsed); check = posed AFTER the step's teaching is complete (arrives collapsed behind the Check your " +
-		"understanding reveal). ONE question per turn either way.",
-});
+const predictCheckType = Type.Union(
+	[Type.Literal("predict"), Type.Literal("strategy"), Type.Literal("check"), Type.Literal("transfer")],
+	{
+		description:
+			"REQUIRED — the question's role in the teaching cycle, as a bare word (no quotes): predict = posed BEFORE " +
+			"you teach the step (its own turn; the learner answers, then your teaching resolves it — arrives open, never " +
+			"collapsed); strategy = a free-recall macro-navigation prompt posed BEFORE synthesizing a composite/goal node " +
+			"whose prerequisites are verified (omit options, commit the full multi-step roadmap in correctAnswer — arrives " +
+			"open, never collapsed); check = posed AFTER the step's teaching is complete (arrives collapsed behind the " +
+			"Check your understanding reveal); transfer = a check on a NEW case posed after a goal node's direct check " +
+			"passes (apply the idea to a situation not used in the lesson — arrives collapsed like a check). ONE question " +
+			"per turn.",
+	},
+);
 
 
 /** The TEACH-side quiz object. The required pair leads the property
@@ -264,7 +295,12 @@ export const quizInputObject = Type.Object({
 			"one node for as many turns as the understanding needs — one reasoning step at a time, never rush forward. " +
 			"For off-map checks use ask_user_question.",
 	}),
-	...quizInputBase.properties,
+	question: quizInputBase.properties.question,
+	options: Type.Optional(quizInputBase.properties.options),
+	multiSelect: quizInputBase.properties.multiSelect,
+	explanation: Type.Optional(quizInputBase.properties.explanation),
+	correctAnswer: quizInputBase.properties.correctAnswer,
+	details: quizInputBase.properties.details,
 });
 
 /** The PROBE-side quiz declaration: the shared authoring contract, no
@@ -284,7 +320,12 @@ export const probeQuizInputSchema = quizInputBase;
  *  key). The PROBE quiz parses against the bare base — probe calls carry
  *  no type. */
 export const quizDisplayInputSchema = Type.Object({
-	...quizInputBase.properties,
+	question: quizInputBase.properties.question,
+	options: Type.Optional(quizInputBase.properties.options),
+	multiSelect: quizInputBase.properties.multiSelect,
+	explanation: Type.Optional(quizInputBase.properties.explanation),
+	correctAnswer: quizInputBase.properties.correctAnswer,
+	details: quizInputBase.properties.details,
 	type: Type.Optional(Type.String()),
 });
 
@@ -335,6 +376,11 @@ export const explainInputObject = Type.Object({
 			"For off-map checks use ask_user_question.",
 	}),
 	...explainInputBase.properties,
+	priorRating: Type.Optional(
+		Type.Union([Type.Literal(1), Type.Literal(2), Type.Literal(3), Type.Literal(4)], {
+			description: "Optional 1-4 FSRS grade (1=Again, 2=Hard, 3=Good, 4=Easy) for the learner's preceding free-recall answer.",
+		}),
+	),
 });
 
 /** The DISPLAY parse for persisted explain calls (tool-parts.ts): the
@@ -345,6 +391,7 @@ export const explainInputObject = Type.Object({
 export const explainDisplayInputSchema = Type.Object({
 	...explainInputBase.properties,
 	type: Type.Optional(Type.String()),
+	priorRating: Type.Optional(Type.Number()),
 });
 
 /** The explain authoring contract: the commitment must exist. Empty
@@ -391,7 +438,13 @@ export const askInputSchema = Type.Object({
 // graded, but duplicate values break the dock's value keying) runs at the
 // call boundary in execute (askOptionProblems, above).
 
-export type QuizToolInput = Static<typeof quizInputObject>;
+// Persisted strategy calls may omit both fields at runtime. Keep the legacy
+// consumer-facing type required for existing quiz readers; the parser is the
+// runtime authority and the dock guards these fields before use.
+export type QuizToolInput = Static<typeof quizInputObject> & {
+	options: Array<{ label: string; value?: string }>;
+	explanation: string;
+};
 export type AskToolInput = Static<typeof askInputSchema>;
 export type ExplainToolInput = Static<typeof explainInputObject>;
 export type ProbeExplainToolInput = Static<typeof explainInputBase>;
@@ -468,6 +521,17 @@ export interface QuestionAnswerData {
 	committed?: string; // explain only (rendering): the model's committed answer
 	explanation?: string; // quiz only (rendering)
 	dismissed?: boolean;
+	/** The side chat the learner had about this question before answering
+	 *  (or skipping) it. The server copies it from the chat record when the
+	 *  answer lands; whatever the client sent is replaced. */
+	clarifications?: ClarifyExchange[];
+	/** Optional PDF/image attachments submitted alongside the answer (e.g.
+	 *  an annotated Quaderno problem PDF from `learn-harness/`). */
+	attachments?: Array<{
+		name: string;
+		mimeType: "application/pdf" | "image/png" | "image/jpeg" | "image/webp";
+		data: string;
+	}>;
 	answeredAt: string;
 }
 
@@ -490,6 +554,11 @@ export interface AnswerRequest {
 	thinking?: string; // the reasoning-on-the-question channel (was `note`)
 	readingThinking?: string; // the thinking-while-reading channel (check answers)
 	confidence?: number; // quiz only: 0-100 raw probability — 50 is a real coin flip, always sent (owner, 2026-10-01)
+	attachments?: Array<{
+		name: string;
+		mimeType: "application/pdf" | "image/png" | "image/jpeg" | "image/webp";
+		data: string;
+	}>;
 }
 
 /** The confidence slider's snap stops (owner, 2026-10-01): raw probability
@@ -694,7 +763,7 @@ export function buildAnswer(qd: QuestionData, req: AnswerRequest, tool?: string)
 	const base: QuestionAnswerData = {
 		kind: qd.kind,
 		...(tool ? { tool } : {}),
-		questionType: qd.questionType,
+		...(qd.questionType !== undefined ? { questionType: qd.questionType } : {}),
 		questionText: qd.question,
 		options: qd.options.map((o, i) => ({ index: i + 1, label: o.label })),
 		dontKnow: req.dontKnow === true,
@@ -715,11 +784,17 @@ export function buildAnswer(qd: QuestionData, req: AnswerRequest, tool?: string)
 	}
 	if (req.other?.trim()) base.other = req.other.trim();
 	if (req.text?.trim()) base.text = req.text.trim();
+	if (req.attachments && req.attachments.length > 0) base.attachments = req.attachments;
 
 	if (qd.kind === "quiz") {
-		base.correctIndices = qd.correctIndices ?? [];
-		base.explanation = qd.explanation;
-		base.correct = base.dontKnow ? false : isCorrect(base.answers.map((a) => a.index), qd.correctIndices ?? []);
+		if (qd.mode === "text") {
+			base.committed = qd.committedAnswer;
+			if (qd.explanation) base.explanation = qd.explanation;
+		} else {
+			base.correctIndices = qd.correctIndices ?? [];
+			base.explanation = qd.explanation;
+			base.correct = base.dontKnow ? false : isCorrect(base.answers.map((a) => a.index), qd.correctIndices ?? []);
+		}
 		// The confidence slider rides on real quiz answers only — never on
 		// "I don't know" (no answer, no probability). Clamped defensively;
 		// the dock snaps to the grid, the record accepts any integer.
@@ -731,6 +806,9 @@ export function buildAnswer(qd: QuestionData, req: AnswerRequest, tool?: string)
 		// No client grading — the model grades in its reply, against the
 		// commitment. The commitment snapshots for the reveal + rendering.
 		base.committed = qd.committedAnswer;
+		if (!base.dontKnow && req.confidence !== undefined) {
+			base.confidence = Math.max(0, Math.min(100, Math.round(req.confidence)));
+		}
 	}
 	return base;
 }
@@ -762,7 +840,7 @@ export function dismissedAnswer(kind: QuestionKind, questionText: string): Quest
 }
 
 export function compactAnswerForModel(ad: QuestionAnswerData): Record<string, unknown> {
-	if (ad.dismissed) return { kind: ad.kind, dismissed: true };
+	if (ad.dismissed) return withClarifications({ kind: ad.kind, dismissed: true }, ad);
 	const out: Record<string, unknown> = { kind: ad.kind };
 	if (ad.dontKnow) out.dontKnow = true;
 	// Array.isArray: the seam is called with `unknown` answers (test
@@ -783,5 +861,16 @@ export function compactAnswerForModel(ad: QuestionAnswerData): Record<string, un
 	const thinking = ad.thinking ?? ad.note;
 	if (thinking) out.thinking = thinking;
 	if (ad.readingThinking) out.thinkingWhileReading = ad.readingThinking;
+	if (Array.isArray(ad.attachments) && ad.attachments.length > 0) {
+		out.attachedFiles = ad.attachments.map((a) => a.name);
+	}
+	return withClarifications(out, ad);
+}
+
+/** The side chat, model-facing: the learner's questions and the helper's
+ *  replies, without timestamps. Absent when there was no side chat. */
+function withClarifications(out: Record<string, unknown>, ad: QuestionAnswerData): Record<string, unknown> {
+	if (Array.isArray(ad.clarifications) && ad.clarifications.length > 0)
+		out.clarifications = ad.clarifications.map((c) => ({ asked: c.asked, reply: c.reply }));
 	return out;
 }

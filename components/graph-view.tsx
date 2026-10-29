@@ -66,7 +66,7 @@
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotesImportErrors, useNotesImport } from "@/components/notes-import.tsx";
 import Link from "next/link";
-import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
+import { ClockIcon, FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
 import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
@@ -76,6 +76,7 @@ import { useServerEvent, useServerResync } from "@/components/server-events";
 import { MenuShell } from "@/components/menu-shell.tsx";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog.tsx";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
+import { StudyTimeOverlay } from "@/components/study-time-overlay";
 import { Hint } from "@/components/ui/hint";
 import {
 	ARROW_LENGTH_LADDER,
@@ -123,6 +124,14 @@ const CAMERA_STORAGE_KEY = "lh.graph.camera.v1";
 // src/core/render-settings.ts (shared with the server store + tests).
 
 type RenderSettings = GraphRenderSettings;
+
+export type NodeReviewSummary = {
+	stage: "practiced" | "demonstrated" | "retained";
+	retrievability: number | null;
+	dueAt: number;
+	lastReview: number | null;
+	seedRating: 1 | 2 | 3 | 4;
+};
 
 /**
  * Pure filter predicate for the search panel: a node is visible when the
@@ -849,6 +858,7 @@ export function GraphChromeRow({
 	settings,
 	changeSettings,
 	onOpenChains,
+	onOpenStudy,
 }: {
 	isEmpty: boolean;
 	query: string;
@@ -865,6 +875,8 @@ export function GraphChromeRow({
 	/** Opens the chain table overlay (the chains-overlay plan,
 	 *  2026-09-29). */
 	onOpenChains: () => void;
+	/** Opens the Study time overlay (always rendered, even when empty). */
+	onOpenStudy: () => void;
 }) {
 	return (
 		<>
@@ -911,6 +923,21 @@ export function GraphChromeRow({
 					</Hint>
 				</div>
 			)}
+			{/* Study time — own container like Chains, but ALWAYS rendered
+			    (study history does not depend on the graph). */}
+			<div className="shrink-0 rounded-xl border bg-card/85 px-1 py-[3px] shadow-lg backdrop-blur">
+				<Hint label="Your study time" side="bottom">
+					<button
+						type="button"
+						onClick={onOpenStudy}
+						data-testid="open-study-time"
+						className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
+					>
+						<ClockIcon className="size-3" />
+						Study time
+					</button>
+				</Hint>
+			</div>
 			{/* Import notes — its own container (36px, header band); ALWAYS
 			    rendered (the empty-graph ruling above — the entry point). */}
 			<div className="shrink-0 rounded-xl border bg-card/85 px-1 py-[3px] shadow-lg backdrop-blur">
@@ -918,7 +945,7 @@ export function GraphChromeRow({
 					ref={fileInputRef}
 					type="file"
 					multiple
-					accept=".md,.markdown,.txt"
+					accept=".md,.markdown,.txt,.pdf"
 					className="hidden"
 					onChange={(e) => {
 						onImportFiles(e.target.files);
@@ -1074,9 +1101,11 @@ export function GraphView({
 	// Fetch the derived graph. Re-runs when a background pipeline run
 	// finishes (refreshTick) — its merges just landed in the ledger.
 	const [refreshTick, setRefreshTick] = useState(0);
+	const [reviewStages, setReviewStages] = useState<Record<string, NodeReviewSummary>>({});
 	// The chain table overlay (chains-overlay plan, 2026-09-29) —
 	// component-local: a browsing surface, not graph state.
 	const [chainsOpen, setChainsOpen] = useState(false);
+	const [studyOpen, setStudyOpen] = useState(false);
 	// PRACTICE SELECT (2026-10-04): the parent's chip drives the select
 	// mode; closing (either the picker's confirm or its X) reports back so
 	// the chip's open state and the table's never disagree.
@@ -1091,6 +1120,16 @@ export function GraphView({
 				if (!cancelled) setSnapshot(data);
 			})
 			.catch((err) => console.error("[graph] fetch failed:", err));
+
+		fetch("/api/review")
+			.then((res) => (res.ok ? (res.json() as Promise<{ stages?: Record<string, NodeReviewSummary> }>) : null))
+			.then((data) => {
+				if (!cancelled && data?.stages) setReviewStages(data.stages);
+			})
+			.catch(() => {
+				// /api/review failure must never break the graph view
+			});
+
 		return () => {
 			cancelled = true;
 		};
@@ -1416,12 +1455,22 @@ export function GraphView({
 		const positions = posRef.current;
 		if (!renderer || !snapshot || snapshot.nodes.length === 0 || !positions) return;
 		renderer.setData({
-			nodes: snapshot.nodes.map((n) => ({
-				id: n.id,
-				x: positions.get(n.id)?.x ?? 0,
-				y: positions.get(n.id)?.y ?? 0,
-				label: n.name,
-			})),
+			nodes: snapshot.nodes.map((n) => {
+				const summary = reviewStages[n.id];
+				const color =
+					summary?.stage === "retained"
+						? "#10b981"
+						: summary?.stage === "practiced"
+							? "#f59e0b"
+							: undefined;
+				return {
+					id: n.id,
+					x: positions.get(n.id)?.x ?? 0,
+					y: positions.get(n.id)?.y ?? 0,
+					label: n.name,
+					color,
+				};
+			}),
 			edges: snapshot.edges.map((e) => ({ from: e.from, to: e.to })),
 			logicalEdges: snapshot.logicalEdges.map((e) => ({ from: e.from, to: e.to })),
 			impLinks: snapshot.impLinks,
@@ -1435,7 +1484,7 @@ export function GraphView({
 			// Match the app typography (Geist via the body's stack).
 			fontFamily: getComputedStyle(document.body).fontFamily,
 		});
-	}, [snapshot, isEmpty]);
+	}, [snapshot, isEmpty, reviewStages]);
 
 	// Feed #2 — settings: just marks the frame dirty. No rebuild, no
 	// re-layout, no camera touch (the whole point of the new renderer).
@@ -1613,6 +1662,7 @@ export function GraphView({
 					settings={settings}
 					changeSettings={changeSettings}
 					onOpenChains={() => setChainsOpen(true)}
+					onOpenStudy={() => setStudyOpen(true)}
 				/>
 			</div>
 
@@ -1650,6 +1700,38 @@ export function GraphView({
 				>
 					<div className="text-sm font-medium leading-snug">{selected.node.name}</div>
 					<div className="mt-1 text-xs leading-relaxed text-muted-foreground">{selected.node.statement}</div>
+					{reviewStages[selected.node.id] && (() => {
+						const rev = reviewStages[selected.node.id]!;
+						const isDue = rev.dueAt <= Date.now();
+						const stageLabel =
+							rev.stage === "retained"
+								? "Retained"
+								: rev.stage === "demonstrated"
+									? "Demonstrated"
+									: "Practiced";
+						const pillStyle =
+							rev.stage === "retained"
+								? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+								: rev.stage === "demonstrated"
+									? "border-primary/30 bg-primary/10 text-primary"
+									: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400";
+						return (
+							<div className="mt-2.5 flex items-center gap-2">
+								<span
+									data-testid="node-epistemic-stage"
+									className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${pillStyle}`}
+								>
+									{stageLabel}
+								</span>
+								{rev.retrievability !== null && (
+									<span className="text-xs text-muted-foreground">
+										Recall {Math.round(rev.retrievability * 100)}%
+										{isDue ? " · Due" : ""}
+									</span>
+								)}
+							</div>
+						);
+					})()}
 					{selected.sourceIds.length > 0 ? (
 						<div className="mt-3 flex flex-col gap-1">
 							<div className="text-xs text-muted-foreground">Sessions</div>
@@ -1704,6 +1786,7 @@ export function GraphView({
 				chains={snapshot?.chains ?? []}
 				sessions={snapshot?.sessions ?? {}}
 				fileSources={snapshot?.fileSources ?? {}}
+				reviewStages={reviewStages}
 				onClose={() => {
 					setChainsOpen(false);
 					onChainSelectClose?.();
@@ -1721,6 +1804,8 @@ export function GraphView({
 					}
 					onPracticeSelectionChange?.(picked);
 				}}
-			/>		</div>
+			/>
+			<StudyTimeOverlay open={studyOpen} onClose={() => setStudyOpen(false)} />
+		</div>
 	);
 }

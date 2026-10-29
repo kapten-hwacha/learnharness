@@ -26,6 +26,7 @@ import {
 	probeQuizInputSchema,
 	quizDisplayInputSchema,
 	normalizeQuizType,
+	questionTypeLabel,
 	questionNeedsReveal,
 	resolveCorrect,
 	toggleOption,
@@ -667,7 +668,7 @@ describe("explainInputBase / explainInputProblems (the commitment contract)", ()
 		// least, and the order doubles as the authoring order (role, target,
 		// then the question). Mirrors the quiz reorder (see above).
 		const keys = Object.keys(explainInputObject.properties);
-		assert.deepEqual(keys, ["type", "nodeId", ...Object.keys(explainInputBase.properties)]);
+		assert.deepEqual(keys, ["type", "nodeId", ...Object.keys(explainInputBase.properties), "priorRating"]);
 	});
 
 	it("an empty commitment is the one authoring problem", () => {
@@ -751,16 +752,30 @@ describe("the quiz role field (predict | check)", () => {
 		);
 	});
 
-	it("normalizeQuizType: exact literals only — old records and wobble degrade to check-style", () => {
-		assert.equal(normalizeQuizType("predict"), "predict");
-		assert.equal(normalizeQuizType("check"), "check");
+	it("normalizes and labels all teaching-cycle roles", () => {
+		for (const role of ["predict", "strategy", "check", "transfer"] as const) assert.equal(normalizeQuizType(role), role);
+		assert.deepEqual(["predict", "strategy", "check", "transfer"].map(questionTypeLabel), ["Prediction", "Strategy", "Check", "New case"]);
+		assert.equal(questionTypeLabel(undefined), "Check");
 		assert.equal(normalizeQuizType(undefined), undefined);
 		assert.equal(normalizeQuizType("prediction"), undefined);
 		assert.equal(normalizeQuizType(42), undefined);
 	});
 
-	it("questionNeedsReveal: checks collapse, predictions never do — both teach tools", () => {
-		assert.equal(questionNeedsReveal("quiz", { type: "check" }, "teach"), true);
+	it("validates free-recall strategy calls and requires full quiz fields for other roles", () => {
+		const strategy = { type: "strategy", question: "Map the proof.", correctAnswer: "First establish A, then derive B, finally conclude C." };
+		assert.deepEqual(quizInputProblems(strategy), []);
+		assert.deepEqual(quizInputProblems({ ...strategy, options: [{ label: "A" }, { label: "B" }] }), ["strategy questions are free-recall — omit options and commit the full multi-step strategy in correctAnswer."]);
+		for (const type of ["predict", "check", "transfer"]) {
+			assert.deepEqual(quizInputProblems({ type, correctAnswer: "A", explanation: "Reason" }), ["options is required (2–6 choices) for multiple-choice quiz questions."]);
+			assert.deepEqual(quizInputProblems({ type, options: [{ label: "A" }, { label: "B" }], correctAnswer: "A" }), ["explanation is required."]);
+		}
+	});
+
+	it("questionNeedsReveal: checks and transfers collapse, predictions and strategies stay open", () => {
+		for (const tool of ["quiz", "explain"]) {
+			for (const type of ["check", "transfer"]) assert.equal(questionNeedsReveal(tool, { type }, "teach"), true);
+			for (const type of ["predict", "strategy"]) assert.equal(questionNeedsReveal(tool, { type }, "teach"), false);
+		}
 		assert.equal(questionNeedsReveal("quiz", { type: "predict" }, "teach"), false, "predictions arrive OPEN");
 		assert.equal(
 			questionNeedsReveal("quiz", undefined, "teach"),

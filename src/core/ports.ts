@@ -25,8 +25,10 @@ import type {
 	SessionCheckpoint,
 	TurnUsage,
 	NotesSource,
+	ClarifyExchange,
 } from "./contracts.ts";
 import type { UserSettings } from "./settings.ts";
+import type { OpenStudyTimers, StudyInterval } from "./contracts/study.ts";
 
 // ─── ChatStore — the session record's home (data/chats) ─────────────────────
 
@@ -51,6 +53,10 @@ export interface ChatStore {
 	appendTurnUsage(id: string, entry: TurnUsage): void;
 	/** Append one extraction-run usage entry — idempotent per startedAt. */
 	appendExtractionUsage(id: string, entry: ExtractionRunUsage): void;
+	/** Append one side-chat exchange to an open question's thread (keyed by
+	 *  the question's toolCallId); returns the thread after the append. Not
+	 *  conversation activity: updatedAt stays put. */
+	appendClarification(id: string, toolCallId: string, exchange: ClarifyExchange): ClarifyExchange[];
 	/** Persist the per-chat model/thinking settings (the model control).
 	 *  Replace-whole: the picker sends the complete settings object. */
 	saveSettings(id: string, settings: ChatSettings): void;
@@ -126,6 +132,16 @@ export interface GraphStore {
 		coverage?: CoverageEntry[];
 		checkpoints?: SessionCheckpoint[];
 	}): void;
+}
+
+// ─── StudyStore — study-time history + open timers (data/study) ─────────────
+
+export interface StudyStore {
+	/** Valid lines in file order, raw (de-dup is core's job). */
+	readIntervals(): StudyInterval[];
+	appendIntervals(list: StudyInterval[]): void;
+	readOpen(): OpenStudyTimers;
+	writeOpen(open: OpenStudyTimers): void;
 }
 
 // ─── JobStore — background sub-agent jobs (data/jobs) ─────────────────────────

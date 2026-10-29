@@ -7,7 +7,8 @@ import { ThinkingBlock } from "@/components/thinking-block";
 import { cn } from "@/lib/utils";
 import { MessageResponse } from "@/components/ai-elements/message";
 import type { QuestionAnswerData } from "@/src/core";
-import { parseAskInput, parseQuizInput } from "@/src/core";
+import { parseAskInput, parseExplainInput, parseQuizInput } from "@/src/core";
+import { questionTypeLabel } from "@/src/core";
 
 /**
  * Static rendering of an answered question (tool part in `output-available`).
@@ -23,8 +24,9 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 	const [whyOpen, setWhyOpen] = useState(false); // the tucked explanation (predictions, owner 2026-10-03)
 	if (answer.dismissed) {
 		return (
-			<div className="rounded-xl border bg-card p-4 text-sm text-muted-foreground">
+			<div className="rounded-xl border bg-card p-4 text-sm text-muted-foreground [&>*:last-child]:mb-0">
 				<span className="font-medium">{answer.questionText}</span> — skipped
+				<SideChatRecord answer={answer} />
 			</div>
 		);
 	}
@@ -40,7 +42,13 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 	// snapshot (what the model sees, compactAnswerForModel) is untouched;
 	// any parse failure or absent input renders exactly the older card.
 	const askInput = answer.kind === "ask" ? parseAskInput(input) : undefined;
-	const parsedDetails = askInput?.details ?? (answer.kind === "quiz" ? parseQuizInput(input)?.details : undefined);
+	const parsedDetails =
+		askInput?.details ??
+		(answer.kind === "quiz"
+			? parseQuizInput(input)?.details
+			: answer.kind === "explain"
+				? parseExplainInput(input)?.details
+				: undefined);
 	const descByIndex = new Map((askInput?.options ?? []).map((o, i) => [i + 1, o.description]));
 
 	return (
@@ -70,13 +78,13 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 					: answer.tool === "recall"
 						? "Recall"
 						: isQuiz
-								? answer.questionType === "predict"
-									? "Prediction"
-									: "Check"
+								? questionTypeLabel(answer.questionType)
 									: isExplain
-										? "Explain"
+									? answer.questionType === "strategy" || answer.questionType === "transfer" || answer.questionType === "predict"
+										? questionTypeLabel(answer.questionType)
+										: "Explain"
 											: "Question"}
-				{isQuiz &&
+				{isQuiz && (answer.dontKnow || answer.correct !== undefined) &&
 					(answer.dontKnow ? (
 						<span className="rounded bg-muted px-1.5 py-0.5">didn't know</span>
 					) : answer.correct ? (
@@ -167,7 +175,7 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 			    "I don't know" sent none (its slider was grayed out), explain and
 			    ask never had one, and records from before the feature carry no
 			    field — nothing to show, nothing rendered. */}
-			{isQuiz && answer.confidence != null && (
+			{(isQuiz || answer.questionType === "strategy") && answer.confidence != null && (
 				<div className="mt-3 flex items-center gap-3" data-testid="answered-confidence">
 					<ConfidenceRail value={answer.confidence} className="min-w-0 flex-1" />
 					<span className="w-9 shrink-0 text-right font-mono text-sm tabular-nums text-muted-foreground">
@@ -191,6 +199,8 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 					inCard
 				/>
 			)}
+
+			<SideChatRecord answer={answer} />
 
 			{/* px-3→removed: card p-4 + box px-3 double-inset sat the "Why" label deeper
 			    than the option box edges (owner, round 3). Sides flush with everything
@@ -222,7 +232,7 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 			{/* The explain reveal (owner ruling 2026-09-27): the committed answer
 			    — one field, reasoning included — shown on submit; no verdict,
 			    the model's next reply IS the grading. */}
-			{isExplain && answer.committed && (
+			{(isExplain || answer.committed != null) && answer.committed && (
 				<div className="mt-3 rounded-lg bg-muted py-2 text-sm text-muted-foreground">
 					<span className="font-medium text-foreground">The answer: </span>
 					<MessageResponse className="inline [&_p]:inline [&_p]:m-0">{answer.committed}</MessageResponse>
@@ -230,5 +240,35 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 			)}
 		</div>
 		</>
+	);
+}
+
+/** The side chat the learner had before answering, tucked behind a toggle
+ *  like the explanation: "Asked 2 questions first". */
+function SideChatRecord({ answer }: { answer: QuestionAnswerData }) {
+	const [open, setOpen] = useState(false);
+	const exchanges = Array.isArray(answer.clarifications) ? answer.clarifications : [];
+	if (exchanges.length === 0) return null;
+	return (
+		<div className="mt-2" data-testid="answered-clarifications">
+			<button
+				type="button"
+				onClick={() => setOpen((v) => !v)}
+				aria-expanded={open}
+				className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+			>
+				{open ? "Hide side chat" : `Asked ${exchanges.length} question${exchanges.length === 1 ? "" : "s"} first`}
+			</button>
+			{open && (
+				<div className="mt-1.5 flex flex-col gap-2.5 rounded-lg bg-muted px-3 py-2 text-sm">
+					{exchanges.map((ex, i) => (
+						<div key={`${i}:${ex.at}`} className="flex flex-col gap-1">
+							<div className="whitespace-pre-wrap text-foreground">“{ex.asked}”</div>
+							<MessageResponse className="lh-prose text-muted-foreground">{ex.reply}</MessageResponse>
+						</div>
+					))}
+				</div>
+			)}
+		</div>
 	);
 }

@@ -1,13 +1,14 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
 import { joinDictation, useDictationTarget } from "@/components/dictation";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { cn } from "@/lib/utils";
-import { repairMathForDisplay } from "@/src/core";
+import { repairMathForDisplay, formatPracticeProblemForQuaderno } from "@/src/core";
+import { QuadernoRoundTripBar } from "@/components/quaderno-controls";
 
 /**
  * The practice dock (practice sessions, owner design 2026-10-04): an
@@ -39,7 +40,14 @@ export interface PracticeDockProps {
 	expanded: boolean;
 	onExpand: () => void;
 	/** text — POST {type:"thinking"} (one lane; the register is read from the text). */
-	onSubmit: (text: string) => void;
+	onSubmit: (
+		text: string,
+		attachments?: Array<{
+			name: string;
+			mimeType: "application/pdf" | "image/png" | "image/jpeg" | "image/webp";
+			data: string;
+		}>,
+	) => void;
 	/** Escape in the thinking field stops dictation (threaded from the page). */
 	onEscape?: () => void;
 	/** Compaction is running for this chat (owner round 14): the thinking
@@ -51,10 +59,21 @@ export interface PracticeDockProps {
 
 export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmit, onEscape, compactionRunning = false }: PracticeDockProps) {
 	const [thinking, setThinking] = useState("");
+	const [attachments, setAttachments] = useState<
+		Array<{
+			name: string;
+			mimeType: "application/pdf" | "image/png" | "image/jpeg" | "image/webp";
+			data: string;
+		}>
+	>([]);
 	// Ref MIRRORS the field ("nothing gets lost", the question-dock
 	// discipline): a submit resuming after `await finishDictation()` reads
 	// the tail, never a stale closure.
 	const thinkingRef = useRef("");
+
+	const quadernoPayload = useMemo(() => {
+		return formatPracticeProblemForQuaderno({ statement: input.statement }, { toolCallId: problemCallId });
+	}, [input.statement, problemCallId]);
 
 	useDictationTarget(
 		useCallback(
@@ -68,13 +87,17 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 		true,
 	);
 
+	const canSubmit = thinking.trim().length > 0 || attachments.length > 0;
+
 	const submit = () => {
-		if (compactionRunning) return;
-		const text = thinkingRef.current.trim();
-		if (text.length === 0) return;
+		if (compactionRunning || !canSubmit) return;
+		const rawText = thinkingRef.current.trim();
+		const text = rawText || (attachments.length > 0 ? "[See attached Quaderno PDF]" : "");
 		thinkingRef.current = "";
 		setThinking("");
-		onSubmit(text);
+		const atts = attachments.length > 0 ? attachments : undefined;
+		setAttachments([]);
+		onSubmit(text, atts);
 	};
 
 	/* ENTER SUBMITS FROM ANYWHERE (owner round 6, 2026-10-05): dictation
@@ -111,6 +134,18 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 				<div className="lh-prose text-[15px]">
 					<MessageResponse>{typeof input.statement === "string" ? repairMathForDisplay(input.statement) : input.statement}</MessageResponse>
 				</div>
+			</div>
+
+			<div className="border-t border-border/60 px-4 py-2">
+				<QuadernoRoundTripBar
+					title={quadernoPayload.title}
+					markdown={quadernoPayload.markdown}
+					docTitle={quadernoPayload.docTitle}
+					toolCallId={problemCallId}
+					attachedFiles={attachments}
+					onAttach={(att) => setAttachments((prev) => [...prev.filter((a) => a.name !== att.name), att])}
+					onRemoveAttachment={(name) => setAttachments((prev) => prev.filter((a) => a.name !== name))}
+				/>
 			</div>
 
 			{/* The learner's half: Enter SENDS (owner round 2, 2026-10-05);
@@ -161,7 +196,7 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 					<Button
 						type="button"
 						data-testid="practice-send"
-						disabled={thinking.trim().length === 0 || compactionRunning}
+						disabled={!canSubmit || compactionRunning}
 						onClick={() => submit()}
 						className="ml-auto h-9 rounded-[6px] px-3.5 text-sm font-medium"
 					>

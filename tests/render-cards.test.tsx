@@ -611,6 +611,32 @@ describe("probe-phase naming: Probe/Recall labels", () => {
 // explanation (the teaching that follows IS the explanation) while a check's
 // stays inline.
 describe("predict vs check rendering", () => {
+	it("renders a strategy quiz as free recall with confidence and commitment", () => {
+		const strategyInput = { type: "strategy", question: "Outline the proof route.", correctAnswer: "Establish the lemma, apply induction, then close the base case." };
+		const dock = renderDock({ toolName: "quiz", toolCallId: "strategy-1", input: strategyInput as never });
+		assert.match(dock, /Strategy/);
+		assert.match(dock, /confidence-slider/);
+		assert.ok(!dock.includes("I don't know"));
+		const qd: QuestionData = {
+			id: "strategy-1", kind: "quiz", question: strategyInput.question, questionType: "strategy", mode: "text",
+			options: [], committedAnswer: strategyInput.correctAnswer, createdAt: new Date().toISOString(),
+		};
+		const answer = buildAnswer(qd, { text: "Lemma, induction, base case.", confidence: 70 });
+		const card = renderToStaticMarkup(<AnsweredCard answer={answer} />);
+		assert.match(card, /Strategy/);
+		assert.match(card, /answered-confidence/);
+		assert.match(card, /The answer:/);
+		assert.match(card, /Establish the lemma/);
+		assert.ok(!card.includes("incorrect"), "free recall is graded by the model next turn");
+	});
+
+	it("labels a transfer question as New case", () => {
+		const transferInput = { ...quizInput, type: "transfer", nodeId: "planet-order" };
+		assert.match(renderDock({ toolName: "quiz", toolCallId: "transfer-1", input: transferInput as never }), /New case/);
+		const qd = { ...quizQD(), questionType: "transfer" as const };
+		assert.match(renderToStaticMarkup(<AnsweredCard answer={buildAnswer(qd, { values: ["Mercury"] })} />), /New case/);
+	});
+
 	it("a predict quiz renders the 'Prediction' eyebrow in the dock", () => {
 		const html = renderToStaticMarkup(
 			<QuestionDock

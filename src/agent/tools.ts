@@ -19,6 +19,7 @@ import { jobTools, type DemoInput, type PdfInput, type ResearchInput, type Visua
 import { planTools, type PlanToolContext } from "./tools/plan.ts";
 import { probeDoneTool, type ProbeDoneContext } from "./tools/probe.ts";
 import { proberGraphTools } from "./tools/graph.ts";
+import type { SettingsStore } from "../core/ports.ts";
 import { readTool } from "./tools/read.ts";
 import { lsTool } from "./tools/ls.ts";
 import { findTool } from "./tools/find.ts";
@@ -152,7 +153,7 @@ function quizDescription(delta: { name: "quiz" | "probe"; nodeId: boolean; types
 		"field lets the learner attach his reasoning to ANY answer; it reaches you only when non-empty. " +
 		"No free-text answers — for non-graded questions use ask_user_question instead. " +
 		(delta.types
-			? "Every call declares `type` — the question's role in the teaching cycle; the field's own description says when each kind fires. "
+			? "Every call declares `type` — predict is posed before teaching, strategy is free-recall (omit `options`, commit the multi-step strategy in `correctAnswer`), check follows teaching, and transfer applies the idea to a new case. "
 			: "") +
 		(delta.nodeId
 			? "Set `nodeId` (required) to the plan node this question is about — validated at call time against the session's plan map. For off-map checks use ask_user_question. "
@@ -188,7 +189,7 @@ function explainDescription(name: "explain" | "recall", nodeId: boolean): string
 		"sees the question. When his answer returns, grade it strictly against the commitment — never revise it " +
 		"after seeing his words. He sees the committed answer on submit. " +
 		(nodeId
-			? "Set `nodeId` (required) to the plan node this question is about — validated at call time against the session's plan map. "
+			? "Every call declares `type`: predict before teaching, strategy as free-recall (omit `options` and commit the multi-step strategy in `correctAnswer`), check after teaching, or transfer on a new case. Set `nodeId` (required) to the plan node this question is about — validated at call time against the session's plan map. "
 			: "") +
 		"ONE question per turn: call a single " + name + ", then end your turn — his answer determines the next."
 	);
@@ -276,6 +277,7 @@ export interface ProberToolContext extends ProbeDoneContext {
 	 *  master switch AND the agent.graphTools toggle (settings-resolution).
 	 *  Absent = the gate is closed, no map tools (tests drive this seam). */
 	graphStore?: GraphStore;
+	settingsStore?: SettingsStore;
 }
 
 /** The prober's tool set: probe quiz (no nodeId) + ask + the learner-fs
@@ -337,7 +339,7 @@ export function createProberTools(
 				// The map reader (wave 7): present only when the settings gate
 				// opened.
 				...(ctx.graphStore
-					? proberGraphTools({ chatStore: ctx.chatStore, graphStore: ctx.graphStore })
+					? proberGraphTools({ chatStore: ctx.chatStore, graphStore: ctx.graphStore, settingsStore: ctx.settingsStore })
 					: {}),
 				...done,
 			},

@@ -1,7 +1,9 @@
 "use client";
 
 import { createContext, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useChatSession } from "@/components/session";
+import { useStudyTracker } from "@/components/use-study-tracker";
 import { visibleQueuedSteers } from "@/components/session-core";
 import { SetupDialog } from "@/components/setup-dialog";
 import { Hint } from "@/components/ui/hint";
@@ -23,6 +25,7 @@ import { AnsweredCard } from "@/components/answered-card";
 import { artifactRenderers } from "@/components/artifacts";
 import { SubagentSteerCard } from "@/components/artifacts/steer-card";
 import { Composer } from "@/components/composer";
+import { AttachmentPicker, AttachmentPreview, AttachmentTray, useAttachmentDraft } from "@/components/chat-attachments";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { blurAfterPointerClick } from "@/components/focus-hygiene";
 import { dockStateKey } from "@/components/dock-state-key";
@@ -34,11 +37,13 @@ import { StatsBar } from "@/components/stats-bar";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import {
 	isProviderKeyRefusal,
+	chatHasStarted,
 	firstSourceTextParts,
 	messageAnchorId,
 	textPartMessageId,
 	kbdEventForAction as kbdEventForChat,
 	needsContinuation,
+	type ChatAttachment,
 	type ChatInput,
 	type ChatSettings,
 	type LhMessage,
@@ -51,6 +56,8 @@ import { AbortTurnDialog, type AbortMode } from "@/components/abort-turn-dialog"
 import { ArrowRightIcon, DumbbellIcon, WaypointsIcon } from "lucide-react";
 import type { PlanBlockData } from "@/src/core";
 import { QuestionDock } from "@/components/question-dock";
+import { ClarifierPanel, useClarifier } from "@/components/question-clarifier";
+import { cn } from "@/lib/utils";
 import { SessionFind } from "@/components/session-find";
 import { SessionMessageNavigation } from "@/components/session-navigation";
 import { PracticeDock } from "@/components/practice-dock";
@@ -101,6 +108,12 @@ const DOCK = "mx-auto w-full max-w-[46rem] px-4";
 const DOCK_W = 46 * 16;
 const MARGIN_GAP = 16;
 const MARGIN_MIN_W = 220;
+// The question side chat opens SIDE BY SIDE with the question (the two
+// split the band's full width) when the band is at least this wide;
+// narrower, each half would drop under ~500px, so it opens inside the
+// question card instead. SPLIT_MS is the slide's duration (duration-300).
+const CLARIFY_SPLIT_MIN_W = 1100;
+const SPLIT_MS = 300;
 // The dock overlay's gradient band (h-24) — part of the reserved tail.
 const GRADIENT_H = 96;
 // Fold thresholds (owner, scroll round 1, tuned round 3): pixel distance
@@ -238,6 +251,74 @@ export function Chat({
 	// turn stream is the VERBATIM AgentEvent passthrough the server emits.
 	const { messages, nativeMessages, contextTokens, send, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, setMessages, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
 		useChatSession({ chatId, initialMessages, initiallyInFlight });
+	const router = useRouter();
+	useStudyTracker(chatId, chatHasStarted(nativeMessages));
+
+	const [softCapData, setSoftCapData] = useState<{
+		chatMs?: number;
+		teachSoftCapMinutes?: number;
+		softCapReached?: boolean;
+	} | null>(null);
+
+	const hasMessages = messages.length > 0;
+	const fetchSoftCap = useCallback(async () => {
+		if (kind === "practice" || !hasMessages) return;
+		try {
+			const res = await fetch(`/api/study?chatId=${encodeURIComponent(chatId)}`);
+			if (!res.ok) return;
+			const data = (await res.json()) as {
+				chatMs?: number;
+				teachSoftCapMinutes?: number;
+				softCapReached?: boolean;
+			};
+			setSoftCapData({
+				chatMs: data.chatMs,
+				teachSoftCapMinutes: data.teachSoftCapMinutes,
+				softCapReached: data.softCapReached,
+			});
+		} catch {
+			// silent
+		}
+	}, [chatId, kind, hasMessages]);
+
+	useEffect(() => {
+		void fetchSoftCap();
+		const interval = setInterval(() => {
+			void fetchSoftCap();
+		}, 30_000);
+		return () => clearInterval(interval);
+	}, [fetchSoftCap]);
+
+	useServerEvent("turn-settled", (p) => {
+		if (p.chatId !== chatId) return;
+		void fetchSoftCap();
+	});
+
+	const teachSoftCapMinutes = softCapData?.teachSoftCapMinutes;
+	const softCapChatMs = softCapData?.chatMs;
+	const softCapReached = softCapData?.softCapReached;
+	const showSoftCapPill = shouldShowTeachSoftCapPill(
+		kind,
+		messages.length > 0,
+		teachSoftCapMinutes,
+		softCapChatMs,
+		softCapReached,
+	);
+
+	const onSwitchToPractice = useCallback(async () => {
+		try {
+			const res = await fetch("/api/chats", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ title: "Practice session", kind: "practice" }),
+			});
+			if (!res.ok) return;
+			const { id } = (await res.json()) as { id: string };
+			router.push(`/chat/${id}?prompt=${encodeURIComponent("Practice session")}`);
+		} catch {
+			// silent
+		}
+	}, [router]);
 
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
 	const scrollContextRef = useRef<StickToBottomContext | null>(null);
@@ -488,10 +569,15 @@ export function Chat({
 	// the dock stays mounted (the problem is still active until the agent
 	// concludes).
 	const submitThinking = useCallback(
-		(text: string) => {
+		(thinkingText: string, thinkingAttachments?: ChatAttachment[]) => {
 			const problem = activeProblemRef.current;
 			if (!problem) return;
-			void send({ type: "thinking", problemCallId: problem.toolCallId, text });
+			void send({
+				type: "thinking",
+				problemCallId: problem.toolCallId,
+				text: thinkingText,
+				...(thinkingAttachments?.length ? { attachments: thinkingAttachments } : {}),
+			});
 		},
 		[send],
 	);
@@ -543,6 +629,9 @@ export function Chat({
 	const phases = useMemo(() => phaseTimeline(messages), [messages]);
 
 	const [text, setText] = useState("");
+	const attachments = useAttachmentDraft();
+	const attachmentSending = useRef(false);
+	const [sendingAttachments, setSendingAttachments] = useState(false);
 	/* The composer's value MIRROR ("nothing gets lost" round, owner
 	 * 2026-10-01): a dictation flush lands via setState, which a closure
 	 * waiting through `await finish()` cannot observe in time. Kept
@@ -680,7 +769,7 @@ export function Chat({
 	// affordance).
 	const [compacting, setCompacting] = useState(initiallyCompacting);
 	const canSend =
-		(text.trim().length > 0 || dictation.active) && !pending && !activeProblem && !compacting;
+		(text.trim().length > 0 || dictation.active || attachments.files.length > 0) && !pending && !activeProblem && !compacting && !attachments.reading;
 
 	/* THE PRACTICE PAUSE (owner round 16): between problems — practice
 	 * kind, nothing active, nothing in flight, and at least one problem
@@ -1140,9 +1229,28 @@ export function Chat({
 		void dictation.finish().then(doSteerOrSend);
 	};
 	const doSend = () => {
-		if (busy || pending || compacting) return;
+		if (busy || pending || compacting || attachments.reading || attachmentSending.current) return;
 		const t = textRef.current.trim();
-		if (!t) return;
+		if (!t && !attachments.files.length) return;
+		if (zeroKeys) {
+			setSetupOpen(true);
+			return;
+		}
+		if (attachments.files.length) {
+			const files = attachments.files;
+			draftRef.current = null; // Attachment drafts stay visible through refusal.
+			attachmentSending.current = true;
+			setSendingAttachments(true);
+			try {
+				send({ type: "text", text: t, attachments: files });
+				attachments.accepted(files);
+				if (textRef.current.trim() === t) applyText("");
+			} finally {
+				attachmentSending.current = false;
+				setSendingAttachments(false);
+			}
+			return;
+		}
 		draftRef.current = t; // the refusal flow's preserve-and-replay seam
 		applyText("");
 		void send({ type: "text", text: t });
@@ -1159,6 +1267,10 @@ export function Chat({
 	 * plain send; a raced settle 409s and falls back to exactly that. */
 	const doSteerOrSend = () => {
 		if (pending || compacting) return;
+		if (attachments.files.length || attachments.reading) {
+			if (!busy) doSend();
+			return;
+		}
 		const t = textRef.current.trim();
 		if (!t) return;
 		if (busy) {
@@ -1311,6 +1423,38 @@ export function Chat({
 					) : (
 						<PhaseChip phase={phases.at(-1) ?? "probe"} />
 					)}
+					{/* Teach-mode soft-cap pill */}
+					{showSoftCapPill && teachSoftCapMinutes && (
+						<TeachSoftCapPill
+							chatMs={softCapChatMs}
+							teachSoftCapMinutes={teachSoftCapMinutes}
+							onClick={onSwitchToPractice}
+						/>
+					)}
+					<button
+						type="button"
+						data-testid="quaderno-export-sheet-button"
+						onClick={async (e) => {
+							blurAfterPointerClick(e);
+							try {
+								await fetch("/api/quaderno", {
+									method: "POST",
+									headers: { "Content-Type": "application/json" },
+									body: JSON.stringify({
+										action: "exportSheet",
+										chatId,
+										title: titleText || "Study Session",
+										markdown: "# Study Session — Cold Compression Sheet\n\nReconstruct the core claims and derivations from this session on your Quaderno.",
+									}),
+								});
+							} catch (err) {
+								console.error("quaderno export failed:", err);
+							}
+						}}
+						className="lh-no-drag flex shrink-0 cursor-pointer items-center gap-1 rounded-full border border-border/80 px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:border-border hover:text-foreground"
+					>
+						Quaderno
+					</button>
 				</TopBar>
 
 				<SessionFind scopeRef={sessionFindScopeRef} scrollContextRef={scrollContextRef} />
@@ -1436,6 +1580,7 @@ export function Chat({
 												<div className="lh-prose whitespace-pre-wrap text-foreground">
 													{m.parts.filter((p) => p.type === "text").map((p) => p.text).join("\n")}
 												</div>
+												<div className="flex flex-wrap gap-2">{m.parts.filter((part) => part.type === "attachment").map((part, index) => <AttachmentPreview key={index} file={part.data as ChatAttachment} />)}</div>
 											</div>
 									) : (
 									<Message from="assistant" className="max-w-full">
@@ -1610,6 +1755,7 @@ export function Chat({
 					contextTokens={contextTokens}
 					pricing={pricing}
 					onReserve={setDockReserve}
+					onClarified={syncTurns}
 					dictationSlot={<DictationBar dictation={dictation} />}
 					dictationCancel={dictation.cancel}
 					queuedSteers={visibleQueuedSteers(steerQueue, nativeMessages)}
@@ -1632,6 +1778,8 @@ export function Chat({
 						)
 					}
 					composer={
+						<div>
+						<AttachmentTray files={attachments.files} error={attachments.error} reading={attachments.reading} waiting={busy && attachments.files.length > 0} disabled={sendingAttachments || attachments.reading} onRemove={attachments.remove} />
 						<Composer
 							// Stop aborts ANY in-flight turn (stream-reattach wave): the
 							// square renders while a reattached/wake turn runs too — the
@@ -1644,6 +1792,8 @@ export function Chat({
 							onSend={onSend}
 							onStop={abortInFlightTurn}
 							canSend={canSend}
+							attachmentControl={<AttachmentPicker disabled={busy || !!pending || !!activeProblem || compacting || attachments.reading || sendingAttachments} onFiles={(files) => void attachments.add(files)} />}
+							sendBlocked={sendingAttachments || attachments.reading || (busy && attachments.files.length > 0)}
 							onEscape={dictation.active ? dictation.cancel : undefined}
 							// The pause affordance (owner round 16): the placeholder
 							// IS the hint — empty state, exactly where Enter-on-empty
@@ -1652,6 +1802,7 @@ export function Chat({
 							onNext={sendNext}
 							placeholder={nextReady ? "Ask anything, or press Enter for the next one." : undefined}
 						/>
+						</div>
 					}
 					onSubmitAnswer={(output) => {
 						if (!pending) return;
@@ -1761,7 +1912,7 @@ export type EscAbortTarget = "mermaid" | "plan" | "setup" | "question" | "proble
  */
 export function initialPromptOwed(messages: readonly { role: string }[], prompt: string | undefined): boolean {
 	if (!prompt) return false;
-	return !messages.some((m) => m.role === "user" || m.role === "assistant");
+	return !chatHasStarted(messages);
 }
 
 export function escAbortTarget(s: {
@@ -1815,6 +1966,53 @@ export function probeArrivalExpanded(isAtBottom: boolean): boolean {
  * left the box stuck collapsed (resize round, verified live). Pure for
  * tests.
  */
+export function shouldShowTeachSoftCapPill(
+	kind: string,
+	hasMessages: boolean,
+	teachSoftCapMinutes: number | undefined,
+	chatMs: number | undefined,
+	softCapReached: boolean | undefined,
+): boolean {
+	return (
+		kind !== "practice" &&
+		hasMessages &&
+		typeof teachSoftCapMinutes === "number" &&
+		teachSoftCapMinutes > 0 &&
+		(softCapReached === true || (chatMs ?? 0) >= teachSoftCapMinutes * 60_000)
+	);
+}
+
+export function TeachSoftCapPill({
+	chatMs,
+	teachSoftCapMinutes,
+	onClick,
+}: {
+	chatMs?: number;
+	teachSoftCapMinutes: number;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			data-testid="teach-soft-cap-pill"
+			onClick={onClick}
+			className="lh-no-drag flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
+		>
+			{Math.floor((chatMs ?? teachSoftCapMinutes * 60_000) / 60_000)}m · Switch to Practice
+		</button>
+	);
+}
+
+/** Where the open question's side chat goes (pure for tests): "split" =
+ *  beside the question, sharing the band's width (wide bands only, and only
+ *  once a teach check is revealed, like the check itself); "inline" =
+ *  inside the question card (narrow bands); null = closed. */
+export function clarifierPlacement(open: boolean, revealPending: boolean, bandWidth: number): "split" | "inline" | null {
+	if (!open) return null;
+	if (bandWidth < CLARIFY_SPLIT_MIN_W) return "inline";
+	return revealPending ? null : "split";
+}
+
 export function shouldStampGeometryMute(nextH: number, prevH: number, pending: boolean): boolean {
 	return pending && nextH > prevH + 1;
 }
@@ -1841,6 +2039,7 @@ function DockOverlay({
 	dictationCancel,
 	setupCta,
 	queuedSteers,
+	onClarified,
 }: {
 	pending: ReturnType<typeof findPendingToolCall>;
 	/** Compaction running for this chat (round 14) — the docks' submit
@@ -1851,7 +2050,7 @@ function DockOverlay({
 	 *  question (the composer is replaced); null in teaching sessions. */
 	practice: { toolCallId: string; input: unknown } | null;
 	/** (commit, text) — the practice dock's two submit lanes. */
-	onSubmitThinking: (text: string) => void;
+	onSubmitThinking: (text: string, attachments?: ChatAttachment[]) => void;
 	/** Teach-phase pending question: arrives collapsed behind the reveal button (W5). */
 	requiresReveal: boolean;
 	/** The reading-thinking draft (owner 2026-10-03) — owned by ChatView so
@@ -1888,6 +2087,8 @@ function DockOverlay({
 	/** The persistent setup CTA (BYOK, owner 2026-09-22): the same pill
 	 *  home and /chat/new carry, above the composer while slots are unset. */
 	setupCta?: React.ReactNode;
+	/** A side-chat reply landed (its usage is in the record now). */
+	onClarified?: () => void;
 }) {
 	const { isAtBottom, scrollToBottom, scrollRef } = useStickToBottomContext();
 	// Render-fresh bottom state (flicker round): the arrival block below reads
@@ -1907,6 +2108,8 @@ function DockOverlay({
 
 	const pendingId = pending?.toolCallId ?? null;
 	const initialPendingRef = useRef(pendingId);
+	// The open question's side chat (question-clarifier.tsx).
+	const clarifier = useClarifier(chatId, pendingId, onClarified);
 
 	// Teach-question ARRIVAL state, applied during render — BEFORE the
 	// first paint (owner, scroll-honesty round 2026-09-25). Until now the
@@ -2200,6 +2403,27 @@ function DockOverlay({
 		if (b) offer(b.getBoundingClientRect().height);
 	};
 
+	// The side chat's placement. The band width comes from the flank measure
+	// above (flankW = width / 2 - DOCK_W / 2 - 2 * MARGIN_GAP).
+	const placement = pending
+		? clarifierPlacement(clarifier.open, revealPending, flankW * 2 + DOCK_W + 4 * MARGIN_GAP)
+		: null;
+	const split = placement === "split";
+	// The split panel renders while split, and lingers through the slide
+	// back after closing. Once a slide settles, the band is re-measured:
+	// the question reflows to its new width inside the CSS transition,
+	// after this render's measure, and may have grown taller.
+	const [splitLingers, setSplitLingers] = useState(split);
+	useEffect(() => {
+		if (split) setSplitLingers(true);
+		const settle = setTimeout(() => {
+			if (!split) setSplitLingers(false);
+			measureBlock();
+		}, SPLIT_MS + 20);
+		return () => clearTimeout(settle);
+		// fire on the split flipping only
+	}, [split]);
+
 	const mode = pending
 		? `question:${pending.toolCallId}`
 		: practice
@@ -2265,7 +2489,20 @@ function DockOverlay({
 		<div className="pointer-events-none absolute inset-x-0 bottom-0" style={{ right: sbInset }}>
 			<div className="h-24 bg-gradient-to-t from-background via-background/85 to-transparent" />
 			<div ref={blockRef} className="relative bg-background pb-5" style={{ "--dock-max-h": dockMaxH ? `${dockMaxH}px` : undefined } as React.CSSProperties}>
-				<div className={DOCK}>
+				{/* The dock column. While the side chat is open on a wide band it
+				    widens to the band's full width (2rem padding each side) and
+				    the question slides left to make room: max-width, padding and
+				    the chat column's grow/margin/opacity all transition together,
+				    both ways. */}
+				<div
+					className={cn(
+						DOCK,
+						"transition-[max-width,padding] duration-300 ease-out",
+						split && "max-w-full px-8",
+					)}
+				>
+					<div className="flex items-stretch">
+					<div className="flex min-w-0 flex-1 flex-col justify-end">
 					{setupCta}
 					{/* The queued-steer indicator (owner spec 2026-10-03): quiet
 					    one-liners above the shell - right-aligned to where its corner
@@ -2308,10 +2545,24 @@ function DockOverlay({
 									reveal={revealPending}
 									phase={phase}
 									onExpand={expandAndReveal}
-									onSubmit={onSubmitAnswer}
+									// The answer carries the side chat for the optimistic card;
+									// the server swaps in the record's copy (the source of truth).
+									onSubmit={(output) =>
+										onSubmitAnswer(
+											clarifier.thread.length > 0 ? { ...output, clarifications: clarifier.thread } : output,
+										)
+									}
 									onEscape={dictationCancel}
 									dictationClaim={!revealPending}
 									compactionRunning={compactionRunning}
+									clarify={{
+										count: clarifier.thread.length,
+										open: clarifier.open,
+										onToggle: () => clarifier.setOpen(!clarifier.open),
+									}}
+									clarifyInline={
+										placement === "inline" ? <ClarifierPanel state={clarifier} variant="inline" /> : undefined
+									}
 								/>
 							) : practice ? (
 								<PracticeDock
@@ -2330,6 +2581,38 @@ function DockOverlay({
 								composer
 							)}
 						</div>
+					</div>
+					</div>
+					{/* The side chat's column: zero-width until the split opens, then
+					    it grows to half the row (the question column keeps the
+					    other half). The panel is pinned to the column's bottom and
+					    may rise ABOVE it (at least half the column tall, never
+					    taller than the column), over the lesson's right half only:
+					    the band itself stays the question's height, so the lesson
+					    above the question stays readable. It stays open while the
+					    question folds, so the lesson can be re-read mid-conversation. */}
+					{pending && (
+						<div
+							aria-hidden={!split}
+							data-testid="clarifier-column"
+							className={cn(
+								"relative min-w-0 basis-0 transition-[flex-grow,margin,opacity] duration-300 ease-out",
+								split ? "ml-4 grow opacity-100" : "ml-0 grow-0 opacity-0",
+							)}
+						>
+							{(split || splitLingers) && (
+								<ClarifierPanel
+									state={clarifier}
+									variant="side"
+									className="pointer-events-auto absolute inset-x-0 bottom-0 overflow-hidden"
+									style={{
+										minHeight: dockMaxH ? `max(100%, ${Math.round(dockMaxH / 2)}px)` : "100%",
+										maxHeight: dockMaxH ? dockMaxH - 40 : undefined,
+									}}
+								/>
+							)}
+						</div>
+					)}
 					</div>
 					{/* The stats row: beneath the composer/question shell, not
 					    flush to the screen bottom — static height, outside the
@@ -2372,7 +2655,7 @@ function DockOverlay({
 						onClick={onOpenPlan}
 						style={{ left: `calc(50% + ${DOCK_W / 2 + MARGIN_GAP}px)` }}
 						className={`absolute bottom-5 right-4 top-0 cursor-pointer transition-[filter,opacity] duration-300 ease-out ${
-							expanded && flankW >= MARGIN_MIN_W
+							expanded && flankW >= MARGIN_MIN_W && !split
 								? "pointer-events-auto opacity-100 blur-0"
 								: "pointer-events-none opacity-0 blur-md"
 						}`}

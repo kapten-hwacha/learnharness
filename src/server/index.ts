@@ -5,10 +5,17 @@
  */
 
 export * from "./chat-handler.ts";
+export * from "./review.ts";
+export { recordStudy, studyHistory, getChatStudyStatus } from "./study.ts";
+export * from "./clarify.ts";
+export * from "./quaderno.ts";
+export * from "./profiler.ts";
+export * from "./chat-attachments.ts";
 export * from "./events-stream.ts";
 export * from "./chats.ts";
 export * from "./graph.ts";
 export { NotesImportError } from "../agent/subagents/extraction.ts";
+export { pdfExtract, pdfProbe } from "../agent/subagents/pdf-ops.ts";
 export * from "./commit-positions.ts";
 export * from "./jobs.ts";
 export * from "./stores.ts";
