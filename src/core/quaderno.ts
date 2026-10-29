@@ -164,9 +164,10 @@ export function formatPracticeProblemForQuaderno(
 	problem: { statement: string },
 	opts?: { chatId?: string; toolCallId?: string },
 ): { docTitle: string; title: string; markdown: string } {
-	const title = `Practice Problem: ${problem.statement.slice(0, 60).trim()}`;
+	const statement = String(problem.statement ?? "");
+	const title = `Practice Problem: ${statement.slice(0, 60).trim()}`;
 	const docTitle = buildQuadernoDocTitle({
-		title: problem.statement.slice(0, 48),
+		title: statement.slice(0, 48),
 		chatId: opts?.chatId,
 		toolCallId: opts?.toolCallId,
 	});
@@ -174,7 +175,7 @@ export function formatPracticeProblemForQuaderno(
 	const markdown = [
 		"# Practice Problem",
 		"",
-		problem.statement.trim(),
+		statement.trim(),
 		"",
 		"---",
 		"",

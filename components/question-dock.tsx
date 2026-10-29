@@ -5,10 +5,12 @@ import { ArrowDownIcon, ChevronRightIcon, MessageCircleQuestionIcon, PlayIcon } 
 import { Button } from "@/components/ui/button";
 import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
 import { useEnterSubmits } from "@/components/enter-submits";
-import { MessageResponse } from "@/components/ai-elements/message";
+import { PathInput } from "@/components/path-input";
+import { ToolContentResponse } from "@/components/ai-elements/message";
 import { cn } from "@/lib/utils";
 import {
 	buildAnswer,
+	repairMathForDisplay,
 	normalizeQuizType,
 	questionTypeLabel,
 	CONFIDENCE_STOPS,
@@ -29,6 +31,7 @@ import {
 	type DockSelection,
 	type ExplainToolInput,
 	type QuestionAnswerData,
+	type QuestionFormDraft,
 	type QuestionData,
 	type QuestionMode,
 	type QuizToolInput,
@@ -74,6 +77,9 @@ export interface QuestionDockProps {
 	reveal?: boolean;
 	onExpand: () => void;
 	onSubmit: (output: QuestionAnswerData) => void;
+	/** Restore only this call's unconfirmed submission after recovery. */
+	initialDraft?: QuestionFormDraft;
+	onSaveDraft?: (draft: QuestionFormDraft) => void;
 	/** Escape in a question field stops dictation (STT wave) — threaded
 	 *  from the page that owns the dictation hook. */
 	onEscape?: () => void;
@@ -109,6 +115,8 @@ export function QuestionDock({
 	reveal = false,
 	onExpand,
 	onSubmit,
+	initialDraft,
+	onSaveDraft,
 	onEscape,
 	phase = "probe",
 	dictationClaim = true,
@@ -166,6 +174,8 @@ export function QuestionDock({
 					phase={phase}
 					active={expanded}
 					onSubmit={onSubmit}
+					initialDraft={initialDraft}
+					onSaveDraft={onSaveDraft}
 					onEscape={onEscape}
 					dictationClaim={dictationClaim}
 					compactionRunning={compactionRunning}
@@ -179,7 +189,7 @@ export function QuestionDock({
 
 /** A plain-text teaser of a question for the collapsed bar: unwrap math, flatten common LaTeX. */
 function teaserText(q: string): string {
-	return q
+	return repairMathForDisplay(q)
 		.replace(/\\\(([\s\S]*?)\\\)/g, "$1") // \(...\) inline math
 		.replace(/\\\[([\s\S]*?)\\\]/g, "$1") // \[...\] display math
 		.replace(/\$\$?([^$]*)\$\$?/g, "$1") // standard $...$/$$...$$ math
@@ -263,6 +273,8 @@ function QuestionDockForm({
 	phase = "probe",
 	active,
 	onSubmit,
+	initialDraft,
+	onSaveDraft,
 	onEscape,
 	dictationClaim = true,
 	compactionRunning = false,
@@ -332,11 +344,11 @@ function QuestionDockForm({
 	// single-select displaces, multi-select coexists — picking the ask
 	// "Other…" row in a multi-select must never clear already-picked
 	// options, and picking an option must never clear a typed custom answer.
-	const [sel, setSel] = useState<DockSelection>(emptyDockSelection());
+	const [sel, setSel] = useState<DockSelection>(() => initialDraft?.selection ?? emptyDockSelection());
 	// The learner's transfer channel — thinking, never "a note".
-	const [thinking, setThinking] = useState("");
-	const [other, setOther] = useState("");
-	const [text, setText] = useState("");
+	const [thinking, setThinking] = useState(initialDraft?.thinking ?? "");
+	const [other, setOther] = useState(initialDraft?.other ?? "");
+	const [text, setText] = useState(initialDraft?.text ?? "");
 	const [attachments, setAttachments] = useState<
 		Array<{
 			name: string;
@@ -360,13 +372,13 @@ function QuestionDockForm({
 	 * round, owner 2026-10-01): the run's flush lands via setState, which
 	 * a closure waiting through `await finishDictation()` cannot observe
 	 * in time — submit reads these, kept current at every write site. */
-	const thinkingTextRef = useRef("");
-	const answerTextRef = useRef("");
+	const thinkingTextRef = useRef(initialDraft?.thinking ?? "");
+	const answerTextRef = useRef(initialDraft?.text ?? "");
 	// Confidence (owner, 2026-10-01): an index into CONFIDENCE_STOPS,
 	// resting at 50 — a real coin flip by definition, untouched or
 	// deliberate (the same number, the same meaning). The dock unmounts
 	// between questions, so each question starts fresh at 50.
-	const [confIdx, setConfIdx] = useState<number>(DEFAULT_CONFIDENCE_INDEX);
+	const [confIdx, setConfIdx] = useState<number>(initialDraft?.confidenceIndex ?? DEFAULT_CONFIDENCE_INDEX);
 	const selectMode: SelectMode = qd.mode === "multi-select" ? "multi-select" : "single-select";
 
 	// The PRIMARY dictation input (owner, STT round 1): while a question
@@ -435,6 +447,15 @@ function QuestionDockForm({
 			confidence: kind === "quiz" || qd.questionType === "strategy" ? CONFIDENCE_STOPS[confIdx] : undefined,
 			attachments: attachments.length > 0 ? attachments : undefined,
 		};
+		// Snapshot before optimistic submission unmounts the form. Ref values
+		// include the dictation finals that just landed, unlike stale closures.
+		onSaveDraft?.({
+			selection: { ...sel, selected: new Set(sel.selected) },
+			thinking: thinkingTextRef.current,
+			other,
+			text: answerTextRef.current,
+			confidenceIndex: confIdx,
+		});
 		onSubmit(buildAnswer(qd, req, toolName));
 	};
 
@@ -464,8 +485,8 @@ function QuestionDockForm({
 	   expanded — collapsed, the bar's native Enter expands it. */
 	const [kbdIdx, setKbdIdx] = useState<number | null>(null);
 	const rootRef = useRef<HTMLDivElement>(null);
-	const otherInputRef = useRef<HTMLInputElement>(null);
-	const thinkingRef = useRef<HTMLTextAreaElement>(null);
+	const otherInputRef = useRef<HTMLDivElement>(null);
+	const thinkingRef = useRef<HTMLDivElement>(null);
 	// One row past the options is the trailing row: quiz → don't-know,
 	// ask → Other (a question never has both). Text mode (ask/explain)
 	// has no rows — the composer IS the answer surface.
@@ -498,7 +519,7 @@ function QuestionDockForm({
 	const focusRow = (idx: number) => {
 		const row = rootRef.current?.querySelector(`[data-kbdrow="${idx}"]`) as HTMLElement | null;
 		if (!row) return;
-		const el = (row.querySelector("input") as HTMLElement | null) ?? row;
+		const el = (row.querySelector("input, [data-file-path-input]") as HTMLElement | null) ?? row;
 		el.focus();
 	};
 
@@ -596,6 +617,7 @@ function QuestionDockForm({
 			    answer box below it (15rem), so the whole dock stays inside the
 			    column and the question's top can always be scrolled back to. */}
 			<div
+				data-dock-scroll-area=""
 				data-session-find-root=""
 				className={cn(
 					"overflow-y-auto px-4 pt-3",
@@ -635,11 +657,11 @@ function QuestionDockForm({
 					)}
 				</div>
 				<div className="mb-3 font-medium">
-					<MessageResponse>{qd.question}</MessageResponse>
+					<ToolContentResponse>{qd.question}</ToolContentResponse>
 				</div>
 				{qd.context && (
 					<div className="mb-3 text-sm text-muted-foreground">
-						<MessageResponse>{qd.context}</MessageResponse>
+						<ToolContentResponse>{qd.context}</ToolContentResponse>
 					</div>
 				)}
 
@@ -675,7 +697,7 @@ function QuestionDockForm({
 										)}
 									</span>
 									<span>
-										<MessageResponse>{opt.label}</MessageResponse>
+										<ToolContentResponse>{opt.label}</ToolContentResponse>
 										{kind !== "quiz" && opt.description && (
 											// Option subtext renders in Source Sans 3 (owner's mockup);
 											// the "I don't know" copy stays JetBrains Mono. QUIZ options render
@@ -684,9 +706,9 @@ function QuestionDockForm({
 											// records must not leak either. Same MessageResponse path as the
 											// label (owner, 2026-10-12): descriptions are full markdown —
 											// LaTeX included — not plain text.
-											<MessageResponse className="lh-prose block text-xs text-muted-foreground">
+											<ToolContentResponse className="lh-prose block text-xs text-muted-foreground">
 												{opt.description}
-											</MessageResponse>
+											</ToolContentResponse>
 										)}
 									</span>
 								</button>
@@ -751,11 +773,12 @@ function QuestionDockForm({
 										</span>
 									)}
 								</span>
-								<input
+								<PathInput
 									ref={otherInputRef}
+									singleLine
 									value={other}
-									onChange={(e) => {
-										setOther(e.target.value);
+									onValueChange={(value) => {
+										setOther(value);
 										// Typing selects the row — displacing in
 										// single-select, alongside the siblings in multi.
 										setSel((prev) => (prev.otherSelected ? prev : toggleOther(selectMode, prev)));
@@ -918,11 +941,11 @@ function QuestionDockForm({
 						{qd.mode === "text" ? "Your answer" : "YOUR THINKING"}
 					</div>
 					{qd.mode === "text" ? (
-						<textarea
+						<PathInput
 							value={text}
-							onChange={(e) => {
-								answerTextRef.current = e.target.value;
-								setText(e.target.value);
+							onValueChange={(value) => {
+								answerTextRef.current = value;
+								setText(value);
 							}}
 							onKeyDown={(e) => {
 								// Esc ends dictation (the dictate decisions: click-again
@@ -942,16 +965,15 @@ function QuestionDockForm({
 								}
 							}}
 							placeholder="Type your answer…"
-							rows={1}
 							className="field-sizing-content lh-input max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-2 outline-none placeholder:text-muted-foreground"
 						/>
 					) : (
-						<textarea
+						<PathInput
 							ref={thinkingRef}
 							value={thinking}
-							onChange={(e) => {
-								thinkingTextRef.current = e.target.value;
-								setThinking(e.target.value);
+							onValueChange={(value) => {
+								thinkingTextRef.current = value;
+								setThinking(value);
 							}}
 							onKeyDown={(e) => {
 								// Esc ends dictation (the dictate decisions: click-again
@@ -972,7 +994,6 @@ function QuestionDockForm({
 								}
 							}}
 							placeholder="Why this answer? Whatever comes to mind."
-							rows={1}
 							className={cn(
 								"field-sizing-content lh-input max-h-48 w-full resize-none bg-transparent px-2.5 py-2 outline-none placeholder:text-muted-foreground/70",
 								// Phase-scaled prominence: teaching invites depth,

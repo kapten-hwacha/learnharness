@@ -1,4 +1,4 @@
-# The four teaching questions — predict, strategy, check, transfer (the teaching cycle)
+# The four teaching questions — predict, strategy, check, transfer (the predict → teach → check cycle)
 
 Every teaching unit is structured around questions declared with an explicit `type`. The four question roles have entirely different jobs in the learning cycle. Declaring the wrong `type` breaks the learner's UI and pacing (pre-teaching questions arrive open; post-teaching questions arrive collapsed behind the "Check your understanding" reveal) — the roles are not interchangeable.
 
