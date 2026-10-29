@@ -26,7 +26,7 @@ import { setupStage } from "../components/setup-dialog.tsx";
 describe("resolveAppearance — delta over factory", () => {
 	it("absent everything = the factory view", () => {
 		const a = resolveAppearance(undefined);
-		assert.equal(a.mode, "dark");
+		assert.equal(a.mode, "system");
 		assert.equal(a.background, null);
 		assert.equal(a.fontFamily, null);
 		assert.equal(a.proseFontSize, 16);
@@ -66,6 +66,17 @@ describe("derivedPalette — the dark curve keeps today's relationships", () => 
 
 	it("3-digit hex expands", () => {
 		assert.equal(derivedPalette("#abc")["--card"], "#b2c3d4"); // aa bb cc each +8
+	});
+
+	it("light mode palette lowers surfaces cleanly", () => {
+		const p = derivedPalette("#fafafa", "light");
+		assert.equal(p["--background"], "#fafafa");
+		assert.equal(p["--card"], "#f2f2f2"); // 250 - 8
+		assert.equal(p["--popover"], "#ffffff");
+		assert.equal(p["--accent"], "#e6e6e6"); // 250 - 20
+		assert.equal(p["--border"], "#dcdcdc"); // 250 - 30
+		assert.equal(p["--input"], "#dcdcdc");
+		assert.equal(p["--primary-foreground"], "#fafafa");
 	});
 });
 

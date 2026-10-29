@@ -24,7 +24,7 @@
  *     would shadow every settings-page key change until restart.
  */
 
-const { app, BrowserWindow, Menu, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, session, shell, nativeTheme } = require("electron");
 const { createChatGPT, fileStore } = require("./chatgpt.cjs");
 const { attachChatGPTChild, trustedSender, chatGPTControl } = require("./chatgpt-ipc.cjs");
 const { createSubscriptions, loadSubscriptionSDK } = require("./subscriptions.cjs");
@@ -308,7 +308,10 @@ function createWindow(url) {
 				// height. Do not force the zoom-invariant native overlay to match
 				// the renderer's 60 CSS px bar: zooming out would cover its border.
 				// The renderer reserves the actual width via env(titlebar-area-*).
-				titleBarOverlay: { color: "#141414", symbolColor: "#e5e5e5" },
+				titleBarOverlay: {
+					color: nativeTheme && !nativeTheme.shouldUseDarkColors ? "#fafafa" : "#141414",
+					symbolColor: nativeTheme && !nativeTheme.shouldUseDarkColors ? "#18181b" : "#e5e5e5",
+				},
 				// Keep the custom bar alone; Alt reveals the native menu.
 				autoHideMenuBar: true,
 			}),
@@ -319,14 +322,9 @@ function createWindow(url) {
 			...(process.env.LH_DEV_URL ? { additionalArguments: ["--lh-web-subscriptions"] } : {}),
 			preload: path.join(__dirname, "preload.cjs"),
 		},
-		// Live-resize + first-paint flash (owner, 2026-09-17): during a resize
-		// the native window surface changes size before Chromium's compositor
-		// has a frame at the new size, and the gap shows the window's NATIVE
-		// background — Electron's default is white, glaring on a dark app.
-		// The app background (#141414) fills the lag instead. `show: false` +
-		// ready-to-show is the same treatment for first paint: the window
-		// appears only once the page has actually rendered.
-		backgroundColor: "#141414",
+		// Live-resize + first-paint flash: match native theme or fallback
+		// to #141414 / #fafafa to avoid glaring white lag on dark app.
+		backgroundColor: nativeTheme ? (nativeTheme.shouldUseDarkColors ? "#141414" : "#fafafa") : "#141414",
 		show: false,
 		// Narrow-window behavior (owner, 2026-09-17): 640px is the floor —
 		// below it even a wrapped chrome row gets cramped and the chat header

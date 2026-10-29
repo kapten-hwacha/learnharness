@@ -27,7 +27,7 @@ describe("FACTORY_SETTINGS (the compiled factory layer)", () => {
 		// with the message anchors (owner, 2026-10-13)
 		assert.deepEqual(FACTORY_SETTINGS.graph, { enabled: true, rendering: true, extractionChunkTokens: 4096 });
 		const a = FACTORY_SETTINGS.appearance;
-		assert.equal(a.mode, "dark");
+		assert.equal(a.mode, "system");
 		assert.equal(a.background, null); // the mode's own default, not a factory hex
 		assert.equal(a.fontFamily, null); // Source Sans 3
 		assert.equal(a.proseFontSize, 16);
@@ -95,6 +95,15 @@ describe("sanitizeUserSettings", () => {
 		assert.equal(out.version, CURRENT_SETTINGS_VERSION);
 		assert.deepEqual((out as Record<string, unknown>).futureSection, { knob: 3 });
 		assert.deepEqual(out.general, { autoUpdate: true });
+	});
+
+	it("mode: accepts system, dark, and light; bad modes drop", () => {
+		for (const mode of ["system", "dark", "light"] as const) {
+			const out = sanitizeUserSettings({ appearance: { mode } });
+			assert.equal(out?.appearance?.mode, mode);
+		}
+		const bad = sanitizeUserSettings({ appearance: { mode: "sepia" } });
+		assert.equal(bad?.appearance?.mode, undefined);
 	});
 
 	it("wrong-typed fields DROP (resolve to factory), never crash", () => {

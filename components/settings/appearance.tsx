@@ -43,18 +43,49 @@ export function resolveAppearance(delta: AppearanceSettings | undefined) {
  *  hand-picked palette (#141414 → card #1c1c1c (+8) → accent #2a2a2a (+22)
  *  → border #434343 (+47)) — the "per-mode derivation in code" the schema
  *  promises, as the thinnest curve that keeps the palette's relationships. */
+function parseChannels(hex: string): [number, number, number] {
+	const h = hex.startsWith("#") ? hex.slice(1) : hex;
+	if (h.length === 3) {
+		return h.split("").map((c) => parseInt(c + c, 16)) as [number, number, number];
+	}
+	return [
+		parseInt(h.slice(0, 2), 16),
+		parseInt(h.slice(2, 4), 16),
+		parseInt(h.slice(4, 6), 16),
+	];
+}
+
 function raise(hex: string, add: number): string {
-	const n = hex.length === 4
-		? hex.slice(1).split("").map((c) => parseInt(c + c, 16))
-		: [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+	const n = parseChannels(hex);
 	return `#${n.map((c) => Math.min(255, c + add).toString(16).padStart(2, "0")).join("")}`;
 }
 
-/** The derived palette a chosen background implies (dark curve): background
- *  itself, the raised surfaces (card/popover/secondary/muted, +8), the
- *  accent (+22), the edges (border/input, +47), and primary-foreground
- *  (the inverted text on primary = the background's own color, as today). */
-export function derivedPalette(background: string): Record<string, string> {
+function lower(hex: string, sub: number): string {
+	const n = parseChannels(hex);
+	return `#${n.map((c) => Math.max(0, c - sub).toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** The derived palette a chosen background implies:
+ *  - dark curve: background itself, raised surfaces (+8), accent (+22), border (+47).
+ *  - light curve: recessed surfaces (-8), popover (#ffffff), accent (-20), border (-30).
+ *  mode defaults to "dark" for backward compatibility. */
+export function derivedPalette(background: string, mode?: "dark" | "light"): Record<string, string> {
+	if (mode === "light") {
+		const card = lower(background, 8);
+		const accent = lower(background, 20);
+		const border = lower(background, 30);
+		return {
+			"--background": background,
+			"--card": card,
+			"--popover": "#ffffff",
+			"--secondary": card,
+			"--muted": card,
+			"--accent": accent,
+			"--border": border,
+			"--input": border,
+			"--primary-foreground": background,
+		};
+	}
 	const card = raise(background, 8);
 	const accent = raise(background, 22);
 	const border = raise(background, 47);
@@ -74,9 +105,12 @@ export function derivedPalette(background: string): Record<string, string> {
 /** THE mapping: resolved appearance → the CSS variables to set on <html>.
  *  Absent entries = leave the factory stylesheet value in place. Pure —
  *  exported for tests. */
-export function appearanceVars(a: ReturnType<typeof resolveAppearance>): Record<string, string> {
+export function appearanceVars(
+	a: ReturnType<typeof resolveAppearance>,
+	effectiveMode: "dark" | "light" = "dark",
+): Record<string, string> {
 	const vars: Record<string, string> = {};
-	if (a.background !== null) Object.assign(vars, derivedPalette(a.background));
+	if (a.background !== null) Object.assign(vars, derivedPalette(a.background, effectiveMode));
 	if (a.fontFamily !== null) {
 		vars["--font-prose"] = `"${a.fontFamily}", var(--font-sans3), ui-sans-serif, system-ui, sans-serif`;
 	}
@@ -107,15 +141,19 @@ export function staleVarNames(
 	return prevNames.filter((n) => !(n in nextVars));
 }
 
-interface AppearanceContextValue {
+export interface AppearanceContextValue {
 	/** Resolved appearance; factory until the record arrives. */
 	appearance: ReturnType<typeof resolveAppearance>;
+	/** Effective mode ("dark" | "light"), accounting for system preference. */
+	effectiveMode: "dark" | "light";
 	/** Called by the settings page after a successful section PUT. */
 	onAppearanceChange: (delta: AppearanceSettings | undefined) => void;
 }
 
+const defaultAppearance = resolveAppearance(undefined);
 const AppearanceContext = createContext<AppearanceContextValue>({
-	appearance: resolveAppearance(undefined),
+	appearance: defaultAppearance,
+	effectiveMode: "dark",
 	onAppearanceChange: () => {},
 });
 
@@ -123,12 +161,44 @@ export function useAppearance() {
 	return useContext(AppearanceContext);
 }
 
+function getSystemTheme(): "dark" | "light" {
+	if (typeof window === "undefined" || !window.matchMedia) return "dark";
+	return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 export function AppearanceProvider({ children }: { children: React.ReactNode }) {
 	const [delta, setDelta] = useState<AppearanceSettings | undefined>(undefined);
+	const [systemTheme, setSystemTheme] = useState<"dark" | "light">(() => getSystemTheme());
 	const appliedRef = useRef<string>("");
 
+	useEffect(() => {
+		if (typeof window === "undefined" || !window.matchMedia) return;
+		const mql = window.matchMedia("(prefers-color-scheme: dark)");
+		const handler = (e: MediaQueryListEvent) => {
+			setSystemTheme(e.matches ? "dark" : "light");
+		};
+		mql.addEventListener("change", handler);
+		return () => mql.removeEventListener("change", handler);
+	}, []);
+
+	const resolved = useMemo(() => resolveAppearance(delta), [delta]);
+	const effectiveMode: "dark" | "light" = resolved.mode === "system" ? systemTheme : resolved.mode;
+
+	useEffect(() => {
+		const root = document.documentElement;
+		if (effectiveMode === "dark") {
+			root.classList.add("dark");
+			root.classList.remove("light");
+			root.style.colorScheme = "dark";
+		} else {
+			root.classList.add("light");
+			root.classList.remove("dark");
+			root.style.colorScheme = "light";
+		}
+	}, [effectiveMode]);
+
 	// The vars apply on every change — stringified as the change signal.
-	const vars = useMemo(() => appearanceVars(resolveAppearance(delta)), [delta]);
+	const vars = useMemo(() => appearanceVars(resolved, effectiveMode), [resolved, effectiveMode]);
 	const key = useMemo(() => JSON.stringify(vars), [vars]);
 	// REMOVAL is half the job (owner repro, fix wave): a later write that
 	// OMITS a var (empty field = factory, serif toggle back on) must clear
@@ -178,8 +248,8 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
 	}, []);
 
 	const value = useMemo(
-		() => ({ appearance: resolveAppearance(delta), onAppearanceChange }),
-		[delta, onAppearanceChange],
+		() => ({ appearance: resolved, effectiveMode, onAppearanceChange }),
+		[resolved, effectiveMode, onAppearanceChange],
 	);
 	return <AppearanceContext.Provider value={value}>{children}</AppearanceContext.Provider>;
 }

@@ -135,7 +135,15 @@ describe("parseAppearanceSettingsBody", () => {
 		for (const body of cases) {
 			assert.equal(parseAppearanceSettingsBody(body).ok, false, JSON.stringify(body));
 		}
-		// boundary values that MUST pass: 12 and 24, 100 and 900, #fff
+		const badMode = parseAppearanceSettingsBody({ mode: "sepia" });
+		assert.equal(badMode.ok, false);
+		if (!badMode.ok) {
+			assert.equal(badMode.error, 'mode must be "system", "dark", or "light"');
+		}
+		// boundary values that MUST pass: system/dark/light, 12 and 24, 100 and 900, #fff
+		assert.ok(parseAppearanceSettingsBody({ mode: "system" }).ok);
+		assert.ok(parseAppearanceSettingsBody({ mode: "dark" }).ok);
+		assert.ok(parseAppearanceSettingsBody({ mode: "light" }).ok);
 		assert.ok(parseAppearanceSettingsBody({ proseFontSize: 12 }));
 		assert.ok(parseAppearanceSettingsBody({ proseFontSize: 24 }));
 		assert.ok(parseAppearanceSettingsBody({ mdRendering: { headingWeight: 100 } }));

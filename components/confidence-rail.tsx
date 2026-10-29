@@ -34,12 +34,13 @@ export const CONFIDENCE_COLORS: readonly string[] = [
 /** The rail's paint for a stop value (0–100). */
 export function confidenceRailStyle(value: number): CSSProperties {
 	const color = CONFIDENCE_COLORS[CONFIDENCE_STOPS.indexOf(value)] ?? CONFIDENCE_COLORS[2]!;
+	const tickColor = "color-mix(in oklab, var(--foreground, #e6e6e6) 35%, transparent)";
 	return {
-		backgroundColor: "#141414",
+		backgroundColor: "var(--background, #141414)",
 		backgroundImage: [
 			`linear-gradient(90deg, ${color} 0%, ${color} ${value}%, transparent ${value}%, transparent 100%)`,
 			...[30, 50, 70, 90].map(
-				() => "linear-gradient(90deg, rgba(230,230,230,0.35), rgba(230,230,230,0.35))",
+				() => `linear-gradient(90deg, ${tickColor}, ${tickColor})`,
 			),
 		].join(", "),
 		backgroundSize: ["100% 100%", "1px 100%", "1px 100%", "1px 100%", "1px 100%"].join(", "),

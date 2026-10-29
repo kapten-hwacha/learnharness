@@ -36,7 +36,7 @@ describe("resolveSettings", () => {
 		assert.equal(eff.models.strong, null);
 		assert.equal(eff.models.cheap, null);
 		assert.equal(eff.models.vision, null);
-		assert.equal(eff.appearance.mode, "dark");
+		assert.equal(eff.appearance.mode, "system");
 		assert.equal(eff.appearance.background, null);
 		assert.equal(eff.appearance.fontFamily, null);
 		assert.equal(eff.appearance.proseFontSize, 16);
@@ -85,6 +85,13 @@ describe("resolveSettings", () => {
 		// The chunk budget rides the same resolution: stored value wins.
 		const budgeted = resolveSettings({ version: 1, graph: { extractionChunkTokens: 2000 } });
 		assert.deepEqual(budgeted.graph, { enabled: true, rendering: true, extractionChunkTokens: 2000 });
+	});
+
+	it("appearance mode resolves system, dark, and light deltas", () => {
+		for (const mode of ["system", "dark", "light"] as const) {
+			const eff = resolveSettings({ version: 1, appearance: { mode } });
+			assert.equal(eff.appearance.mode, mode);
+		}
 	});
 
 	it("graph rendering (2026-10-06): display-only — off resolves off, extraction untouched", () => {
