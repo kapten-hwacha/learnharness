@@ -328,18 +328,20 @@ describe("formatStudyDuration", () => {
 });
 
 describe("chatStudyMs", () => {
-	it("sums closed intervals for a specific chat and deduplicates them", () => {
+	it("sums contiguous closed intervals for the target chat within the idle window", () => {
 		const intervals: StudyInterval[] = [
 			interval("chatA", "2026-10-28T10:00:00.000Z", "2026-10-28T10:15:00.000Z"),
 			interval("chatA", "2026-10-28T10:00:00.000Z", "2026-10-28T10:20:00.000Z"), // dedupe: latest end wins (20m)
-			interval("chatB", "2026-10-28T10:00:00.000Z", "2026-10-28T10:30:00.000Z"), // different chat
-			interval("chatA", "2026-10-28T11:00:00.000Z", "2026-10-28T11:10:00.000Z"), // 10m
+			interval("chatB", "2026-10-28T09:00:00.000Z", "2026-10-28T09:30:00.000Z"), // older different chat
+			interval("chatA", "2026-10-28T10:23:00.000Z", "2026-10-28T10:30:00.000Z"), // 7m (3m gap <= 5m idle)
 		];
-		const ms = chatStudyMs(intervals, EMPTY, "chatA", Date.parse("2026-10-28T12:00:00.000Z"), 5);
-		assert.equal(ms, 30 * MIN);
+		// now is 10:32 (2m after last interval, within 5m idle window)
+		const now = Date.parse("2026-10-28T10:32:00.000Z");
+		const ms = chatStudyMs(intervals, EMPTY, "chatA", now, 5);
+		assert.equal(ms, 27 * MIN); // 20m + 7m
 	});
 
-	it("includes active open timer up to nowMs", () => {
+	it("includes active open timer for the target chat (capped by Math.min(nowMs, lastPing + idleMs))", () => {
 		const intervals: StudyInterval[] = [
 			interval("chatA", "2026-10-28T10:00:00.000Z", "2026-10-28T10:10:00.000Z"),
 		];
@@ -347,32 +349,94 @@ describe("chatStudyMs", () => {
 			v: 1,
 			timers: {
 				chatA: {
-					start: "2026-10-28T11:00:00.000Z",
-					lastPing: "2026-10-28T11:05:00.000Z",
+					start: "2026-10-28T10:12:00.000Z",
+					lastPing: "2026-10-28T10:18:00.000Z",
 					windowId: "w1",
 				},
 			},
 		};
-		// now is 11:06 (1 min after ping, within 5 min idle limit)
-		const now = Date.parse("2026-10-28T11:06:00.000Z");
+		// now is 10:20 (2 min after ping, within 5 min idle limit: effectiveEnd = 10:20)
+		const now = Date.parse("2026-10-28T10:20:00.000Z");
 		const ms = chatStudyMs(intervals, open, "chatA", now, 5);
-		assert.equal(ms, 10 * MIN + 6 * MIN); // 16 minutes
+		assert.equal(ms, 10 * MIN + 8 * MIN); // 18 minutes
+
+		// when now is 10:26 (lastPing 10:18 + 5m idle = capped at 10:23; 10:26 is within 5m idle window of 10:23)
+		const nowCapped = Date.parse("2026-10-28T10:26:00.000Z");
+		const msCapped = chatStudyMs(intervals, open, "chatA", nowCapped, 5);
+		assert.equal(msCapped, 10 * MIN + 11 * MIN); // 21 minutes
 	});
 
-	it("caps open timer at lastPing + idleMinutes when stale", () => {
+	it("resets to 0 when the learner has been idle/away from the chat for more than idleMinutes", () => {
+		const intervals: StudyInterval[] = [
+			interval("chatA", "2026-10-28T10:00:00.000Z", "2026-10-28T10:20:00.000Z"),
+		];
+		// 10:26 is 6 minutes after 10:20 (> 5 min idle)
+		const now = Date.parse("2026-10-28T10:26:00.000Z");
+		assert.equal(chatStudyMs(intervals, EMPTY, "chatA", now, 5), 0);
+
+		// Stale open timer: lastPing 10:05 + 5m = 10:10. At 10:16 (> 5m after 10:10), sitting reset to 0
 		const open: OpenStudyTimers = {
 			v: 1,
 			timers: {
 				chatA: {
-					start: "2026-10-28T11:00:00.000Z",
-					lastPing: "2026-10-28T11:05:00.000Z",
+					start: "2026-10-28T10:00:00.000Z",
+					lastPing: "2026-10-28T10:05:00.000Z",
 					windowId: "w1",
 				},
 			},
 		};
-		// now is 11:30 (stale; cutoff is lastPing 11:05 + 5m = 11:10)
-		const now = Date.parse("2026-10-28T11:30:00.000Z");
-		const ms = chatStudyMs([], open, "chatA", now, 5);
-		assert.equal(ms, 10 * MIN);
+		const staleNow = Date.parse("2026-10-28T10:16:00.000Z");
+		assert.equal(chatStudyMs([], open, "chatA", staleNow, 5), 0);
+	});
+
+	it("excludes older sittings separated by a break > idleMinutes", () => {
+		const intervals: StudyInterval[] = [
+			interval("chatA", "2026-10-27T10:00:00.000Z", "2026-10-27T10:25:00.000Z"), // 25m yesterday
+			interval("chatA", "2026-10-28T10:00:00.000Z", "2026-10-28T10:05:00.000Z"), // 5m right now
+		];
+		const now = Date.parse("2026-10-28T10:06:00.000Z");
+		assert.equal(chatStudyMs(intervals, EMPTY, "chatA", now, 5), 5 * MIN);
+	});
+
+	it("resets the sitting when the learner switches to a different chat", () => {
+		const intervals: StudyInterval[] = [
+			interval("chatA", "2026-10-28T10:00:00.000Z", "2026-10-28T10:15:00.000Z"), // 15m chatA
+			interval("practiceChat", "2026-10-28T10:15:00.000Z", "2026-10-28T10:20:00.000Z"), // 5m practiceChat
+			interval("chatA", "2026-10-28T10:20:00.000Z", "2026-10-28T10:24:00.000Z"), // 4m chatA
+		];
+
+		// While in practiceChat (at 10:20), chatA sitting is 0
+		const atPracticeEnd = Date.parse("2026-10-28T10:20:00.000Z");
+		const intervalsDuringPractice = intervals.slice(0, 2);
+		assert.equal(chatStudyMs(intervalsDuringPractice, EMPTY, "chatA", atPracticeEnd, 5), 0);
+
+		// While practiceChat has an active open timer, chatA sitting is 0
+		const openPractice: OpenStudyTimers = {
+			v: 1,
+			timers: {
+				practiceChat: {
+					start: "2026-10-28T10:15:00.000Z",
+					lastPing: "2026-10-28T10:19:00.000Z",
+					windowId: "w1",
+				},
+			},
+		};
+		assert.equal(
+			chatStudyMs(intervals.slice(0, 1), openPractice, "chatA", Date.parse("2026-10-28T10:19:00.000Z"), 5),
+			0,
+		);
+
+		// Back in chatA at 10:24 (after 4m), chatA current sitting is 4m (not 15m + 4m)
+		const now = Date.parse("2026-10-28T10:24:00.000Z");
+		assert.equal(chatStudyMs(intervals, EMPTY, "chatA", now, 5), 4 * MIN);
+	});
+
+	it("returns 0 for unknown or empty chatId", () => {
+		const intervals: StudyInterval[] = [
+			interval("chatA", "2026-10-28T10:00:00.000Z", "2026-10-28T10:15:00.000Z"),
+		];
+		const now = Date.parse("2026-10-28T10:10:00.000Z");
+		assert.equal(chatStudyMs(intervals, EMPTY, "", now, 5), 0);
+		assert.equal(chatStudyMs(intervals, EMPTY, "nonExistentChat", now, 5), 0);
 	});
 });

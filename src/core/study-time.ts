@@ -18,6 +18,13 @@ import type {
 /** One run of the client ping timer, in milliseconds. */
 export const STUDY_PING_MS = 30_000;
 
+/** Default idle timeout in minutes if none specified. */
+export const DEFAULT_IDLE_MINUTES = 5;
+
+export type OpenTimer =
+	| OpenStudyTimers
+	| { chatId?: string; start: string | number; lastPing: string | number; windowId?: string };
+
 const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const QUARTER_MS = 15 * 60_000;
 const DAY_MS = 86_400_000;
@@ -179,33 +186,103 @@ export function dedupeIntervals(list: StudyInterval[]): StudyInterval[] {
 	return out;
 }
 
-/** Total active study milliseconds for a single chat, including any open timer
- *  capped at idleMinutes after its last ping. */
+/**
+ * Active study duration (ms) for a single chatId in the current continuous sitting.
+ *
+ * Resets to 0 after an idle gap > idleMinutes (relative to nowMs or between
+ * intervals) or when the learner switches to another chat.
+ *
+ * Lifetime/historical totals across all sittings remain computed by summarizeStudy.
+ */
 export function chatStudyMs(
 	intervals: readonly StudyInterval[],
-	open: OpenStudyTimers,
+	open: OpenTimer | null | undefined,
 	chatId: string,
 	nowMs: number,
-	idleMinutes: number,
+	idleMinutes = DEFAULT_IDLE_MINUTES,
 ): number {
-	const deduped = dedupeIntervals(intervals as StudyInterval[]);
-	let total = 0;
-	for (const interval of deduped) {
-		if (interval.chatId === chatId) {
-			const start = Date.parse(interval.start);
-			const end = Date.parse(interval.end);
-			if (end > start) {
-				total += end - start;
+	if (!chatId) return 0;
+
+	const idleMs = Math.max(1, idleMinutes) * 60_000;
+	const clean = dedupeIntervals(intervals as StudyInterval[]);
+
+	interface Segment {
+		chatId: string;
+		start: number;
+		end: number;
+	}
+
+	const allSegments: Segment[] = [];
+
+	for (const iv of clean) {
+		const start = typeof iv.start === "number" ? iv.start : Date.parse(iv.start);
+		const end = typeof iv.end === "number" ? iv.end : Date.parse(iv.end);
+		if (end > start) {
+			allSegments.push({ chatId: iv.chatId, start, end });
+		}
+	}
+
+	if (open) {
+		if ("timers" in open && open.timers && typeof open.timers === "object") {
+			for (const [cId, timer] of Object.entries(open.timers)) {
+				if (!timer) continue;
+				const start = typeof timer.start === "number" ? timer.start : Date.parse(timer.start);
+				const lastPing = typeof timer.lastPing === "number" ? timer.lastPing : Date.parse(timer.lastPing);
+				const effectiveEnd = Math.min(nowMs, lastPing + idleMs);
+				if (effectiveEnd > start) {
+					allSegments.push({ chatId: cId, start, end: effectiveEnd });
+				}
+			}
+		} else if ("start" in open && "lastPing" in open) {
+			const cId = "chatId" in open && typeof open.chatId === "string" ? open.chatId : chatId;
+			const start = typeof open.start === "number" ? open.start : Date.parse(open.start);
+			const lastPing = typeof open.lastPing === "number" ? open.lastPing : Date.parse(open.lastPing);
+			const effectiveEnd = Math.min(nowMs, lastPing + idleMs);
+			if (effectiveEnd > start && cId) {
+				allSegments.push({ chatId: cId, start, end: effectiveEnd });
 			}
 		}
 	}
-	const timer = findTimer(open, chatId);
-	if (timer) {
-		const start = Date.parse(timer.start);
-		const lastPing = Date.parse(timer.lastPing);
-		const effectiveEnd = Math.min(nowMs, lastPing + idleMinutes * 60_000);
-		total += Math.max(0, effectiveEnd - start);
+
+	const targetSegments = allSegments
+		.filter((s) => s.chatId === chatId)
+		.sort((a, b) => a.start - b.start || a.end - b.end);
+
+	if (targetSegments.length === 0) return 0;
+
+	const lastSeg = targetSegments[targetSegments.length - 1]!;
+	if (nowMs - lastSeg.end > idleMs) {
+		return 0;
 	}
+
+	const hasLaterOtherChat = allSegments.some(
+		(seg) => seg.chatId !== chatId && (seg.start >= lastSeg.end || seg.end > lastSeg.end),
+	);
+	if (hasLaterOtherChat) {
+		return 0;
+	}
+
+	let total = lastSeg.end - lastSeg.start;
+	let currStart = lastSeg.start;
+
+	for (let i = targetSegments.length - 2; i >= 0; i--) {
+		const prev = targetSegments[i]!;
+		if (currStart - prev.end > idleMs) {
+			break;
+		}
+
+		const hasInterveningOtherChat = allSegments.some(
+			(other) => other.chatId !== chatId && other.end > prev.end && other.start < currStart,
+		);
+		if (hasInterveningOtherChat) {
+			break;
+		}
+
+		const added = Math.max(0, Math.min(prev.end, currStart) - prev.start);
+		total += added;
+		currStart = Math.min(currStart, prev.start);
+	}
+
 	return total;
 }
 
