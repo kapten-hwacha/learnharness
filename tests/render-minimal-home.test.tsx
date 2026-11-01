@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
 import { describe, it } from "node:test";
+import { ServerEventsProvider } from "../components/server-events.tsx";
 import { KnowledgeSummary } from "../components/minimal-home.tsx";
 
 function render(props: Partial<Parameters<typeof KnowledgeSummary>[0]> = {}) {
@@ -77,7 +78,7 @@ describe("KnowledgeSummary — the quiet home summary (2026-10-06)", () => {
 describe("MinimalHome — the Study time entry", () => {
 	it("renders the Study time button without any graph data", async () => {
 		const { MinimalHome } = await import("../components/minimal-home.tsx");
-		const html = renderToStaticMarkup(React.createElement(MinimalHome));
+		const html = renderToStaticMarkup(React.createElement(ServerEventsProvider, { children: React.createElement(MinimalHome) }));
 		assert.ok(html.includes('data-testid="open-study-time"'));
 		assert.ok(html.includes("Study time"));
 		assert.ok(html.indexOf("open-study-time") < html.indexOf("open-chain-table"), "first in the top-right row");

@@ -193,7 +193,18 @@ describe("chat attachments", () => {
 				{
 					id: "msg_1",
 					role: "assistant" as const,
-					content: [{ type: "toolCall" as const, id: "call_q", name: "quiz", arguments: {} }],
+					content: [{
+						type: "toolCall" as const,
+						id: "call_q",
+						name: "quiz",
+						arguments: {
+							type: "check",
+							question: "Which is even?",
+							options: [{ label: "2", value: "a" }, { label: "3", value: "b" }],
+							correctAnswer: "a",
+							explanation: "2 is divisible by 2.",
+						},
+					}],
 					timestamp: Date.now(),
 				},
 			],
