@@ -40,7 +40,7 @@ describe("CLIProxyAPI integration", () => {
 
 		const ids = res.models.map((m) => m.id);
 		console.log("Discovered models:", ids);
-		assert.ok(ids.includes("gemini-3.8-flash-high"));
+		assert.deepEqual(ids.sort(), ["gemini-3.8-flash", "gemini-4-argon"].sort());
 	});
 
 	it("connects via server API (customProviderMutation) to http://127.0.0.1:8317/v1 with key", async () => {
@@ -73,7 +73,7 @@ describe("CLIProxyAPI integration", () => {
 		assert.equal(postRes.status, 200);
 		assert.equal(body.ok, true);
 		assert.ok(Array.isArray(body.models));
-		assert.ok(body.models.some((m: any) => m.id === "gemini-3.8-flash-high"));
+		assert.ok(body.models.some((m: any) => m.id === "gemini-3.8-flash"));
 
 		// Verify GET returns updated configuration
 		const getAfterReq = new Request("http://localhost:3000/api/custom-provider", {
@@ -88,12 +88,12 @@ describe("CLIProxyAPI integration", () => {
 		// Verify custom provider was automatically registered into piModels
 		const customProvider = piModels().getProvider(CUSTOM_PROVIDER.id);
 		assert.ok(customProvider, "custom provider must be registered in piModels()");
-		const registeredModel = piModels().getModel(CUSTOM_PROVIDER.id, "gemini-3.8-flash-high");
-		assert.ok(registeredModel, "gemini-3.8-flash-high must be available in piModels()");
+		const registeredModel = piModels().getModel(CUSTOM_PROVIDER.id, "gemini-3.8-flash");
+		assert.ok(registeredModel, "gemini-3.8-flash must be available in piModels()");
 	});
 
-	it("streams a completion for gemini-3.8-flash-high via the server-configured custom provider", async () => {
-		// Set pin for reasoning on gemini-3.8-flash-high via PATCH
+	it("streams a completion for gemini-3.8-flash via the server-configured custom provider", async () => {
+		// Set pin for reasoning on gemini-3.8-flash via PATCH
 		const getReq = new Request("http://localhost:3000/api/custom-provider", {
 			headers: { origin: "http://localhost:3000", host: "localhost:3000" },
 		});
@@ -109,7 +109,7 @@ describe("CLIProxyAPI integration", () => {
 			},
 			body: JSON.stringify({
 				overrides: {
-					"gemini-3.8-flash-high": { reasoning: true },
+					"gemini-3.8-flash": { reasoning: true },
 				},
 			}),
 		});
@@ -119,7 +119,7 @@ describe("CLIProxyAPI integration", () => {
 		// Now stream through piEngineForSpec using the live custom provider
 		const engine = piEngineForSpec({
 			provider: CUSTOM_PROVIDER.id,
-			id: "gemini-3.8-flash-high",
+			id: "gemini-3.8-flash",
 			thinkingLevel: "high",
 		});
 
