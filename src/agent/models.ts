@@ -22,6 +22,10 @@ import { createClaudeCodeProvider } from "./claude-code/provider.ts";
 import { streamClaudeCode } from "./claude-code/stream.ts";
 import { nativeSubscriptionId, nativeSubscriptionModel } from "./subscription-bridge.ts";
 import { nativeSubscriptionStream } from "./subscription-stream.ts";
+import { CLIPROXY_PROVIDER } from "../core/contracts/cliproxy.ts";
+// eslint-disable-next-line import/no-restricted-paths
+import { cliproxyEnabled } from "../server/cliproxy-config.ts";
+import { createCliProxyProvider } from "./cliproxy/provider.ts";
 
 /** App identity is immutable and shared by Models and every native Agent.
  * Agent's default Pi attribution otherwise overrides the Models identity. */
@@ -92,6 +96,11 @@ export function piModels() {
 				: provider);
 		}
 		collection.setProvider(createClaudeCodeProvider(streamClaudeCode));
+	}
+	if (cliproxyEnabled()) {
+		collection.setProvider(createCliProxyProvider());
+	} else {
+		collection.deleteProvider(CLIPROXY_PROVIDER);
 	}
 	providerSource?.sync(collection);
 	return collection;

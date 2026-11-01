@@ -20,3 +20,4 @@ export * from "./contracts/review.ts";
 export * from "./contracts/study.ts";
 export * from "./contracts/quaderno.ts";
 export * from "./contracts/profiler.ts";
+export * from "./contracts/cliproxy.ts";
