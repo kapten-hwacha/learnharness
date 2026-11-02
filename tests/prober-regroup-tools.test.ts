@@ -118,7 +118,7 @@ describe("search_propositions tool", () => {
 		const res = (await tools.search_propositions!.execute!("tc2", { query: "Matrix Multiplication" })).details as string;
 
 		assert.match(res, /Found \d+ candidate proposition\(s\) from other subjects:/);
-		assert.match(res, /1\. \[n_123\] "Matrix Multiplication": Matrix multiplication combines two matrices by taking dot products of rows and columns\. \(Current subject: "Machine Learning"\)/);
+		assert.match(res, /1\. \[n_123\] "Matrix Multiplication": Matrix multiplication combines two matrices by taking dot products of rows and columns\. \(Current subject: "Machine Learning" · /);
 	});
 
 	it("excludes propositions that are already in the current session", async () => {
@@ -214,7 +214,7 @@ describe("search_propositions tool", () => {
 		const res = (await tools.search_propositions!.execute!("tc5", { query: "Determinant" })).details as string;
 
 		assert.match(res, /Found 1 candidate proposition\(s\) from other subjects:/);
-		assert.match(res, /\(Current subject: "notes\/algebra\.md"\)/);
+		assert.match(res, /\(Current subject: "notes\/algebra\.md" · practiced · never practised\)/);
 	});
 
 	it("returns informative message when no matches are found", async () => {
@@ -252,6 +252,59 @@ describe("search_propositions tool", () => {
 		assert.match(res, /Found 2 candidate proposition\(s\) from other subjects:/);
 		const candidateLines = res.split("\n").filter((l) => /^\d+\./.test(l));
 		assert.equal(candidateLines.length, 2);
+	});
+
+	it("includes FSRS review status (stage, practice recency, and due flag) in search_propositions output", async () => {
+		const DAY = 86_400_000;
+		const now = Date.parse("2026-11-10T00:00:00.000Z");
+		const { chatStore, graphStore } = fakeStores(
+			[
+				node(
+					"n_due",
+					"Bayes Rule",
+					"Posterior is proportional to likelihood times prior.",
+					[pt("chat_prob")],
+				),
+				node(
+					"n_retained",
+					"Law of Total Probability",
+					"Marginal probability is the sum of joint probabilities over a partition.",
+					[pt("chat_prob")],
+				),
+			],
+			{
+				chats: [
+					{ id: "chat_prob", title: "Probability", createdAt: "2026-11-02T00:00:00Z", updatedAt: "2026-11-02T00:00:00Z" },
+					{ id: "chat_kalman", title: "Kalman Filters", createdAt: "2026-11-10T00:00:00Z", updatedAt: "2026-11-10T00:00:00Z" },
+				],
+			},
+		);
+
+		const tools = proberGraphTools({
+			chatStore,
+			graphStore,
+			chatId: "chat_kalman",
+			now: () => now,
+			history: () => ({
+				teachChatIds: new Set(["chat_prob"]),
+				teachRatings: new Map([["chat_prob", 3]]),
+				records: [
+					{
+						chatId: "prac_1",
+						at: now - 1 * DAY,
+						targets: ["n_retained"],
+						outcome: "solved",
+						rung: null,
+						missClass: null,
+						rating: 4,
+					},
+				],
+			}),
+		});
+
+		const res = (await tools.search_propositions!.execute!("tc_rev", { query: "probability prior" })).details as string;
+		assert.match(res, /\[n_due\] "Bayes Rule".*\(Current subject: "Probability" · practiced · never practised · due\)/);
+		assert.match(res, /\[n_retained\] "Law of Total Probability".*\(Current subject: "Probability" · demonstrated · last practised 1d ago\)/);
 	});
 });
 

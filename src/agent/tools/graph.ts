@@ -6,7 +6,7 @@ import { getGraph, graphSessionIndex, graphSessionPropositions } from "../../cor
 import type { ChatStore, GraphStore } from "../../core/ports.ts";
 import type { SettingsStore } from "../../core/ports.ts";
 import { practiceRecordsFromChat, reviewState, teachSessionSeedRating } from "../../core/review.ts";
-import type { GraphRegroup, PracticeHistory, PracticeRecord } from "../../core/contracts.ts";
+import type { GraphRegroup, PracticeHistory, PracticeRecord, PropositionReviewState } from "../../core/contracts.ts";
 import { effectiveSessionOf } from "../../core/session-clusters.ts";
 import { createPropositionCandidateSearch, propositionCandidateBatch, type CandidateBatch, type CandidateProposition, type CandidateRequest } from "../../core/proposition-candidates.ts";
 
@@ -58,6 +58,14 @@ const regroupPropositionsInput = Type.Object({
 	reason: Type.String({ minLength: 1, description: "Why these propositions align better with the current subject than their previous subject" }),
 });
 
+export function formatPropositionReviewSuffix(review: PropositionReviewState | undefined, now: number): string {
+	if (!review?.lastReview) {
+		return `${review?.stage ?? "practiced"} · never practised${review && review.dueAt <= now ? " · due" : ""}`;
+	}
+	const days = Math.max(0, Math.floor((now - review.lastReview) / 86_400_000));
+	return `${review.stage} · last practised ${days}d ago${review.dueAt <= now ? " · due" : ""}`;
+}
+
 export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentTool<any>> {
 	const deps = { chatStore: ctx.chatStore, graphStore: ctx.graphStore };
 	const history = (): PracticeHistory => {
@@ -67,8 +75,9 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 		for (const summary of ctx.chatStore.listChats()) {
 			const chat = ctx.chatStore.getChat(summary.id);
 			if (!chat) continue;
-			if (summary.kind === "practice") records.push(...practiceRecordsFromChat(summary.id, chat.messages));
-			else { teachChatIds.add(summary.id); teachRatings.set(summary.id, teachSessionSeedRating(chat.messages)); }
+			const messages = chat.messages ?? [];
+			if (summary.kind === "practice") records.push(...practiceRecordsFromChat(summary.id, messages));
+			else { teachChatIds.add(summary.id); teachRatings.set(summary.id, teachSessionSeedRating(messages)); }
 		}
 		return { records, teachChatIds, teachRatings };
 	};
@@ -106,12 +115,7 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 					const now = ctx.now?.() ?? Date.now();
 					const nodes = getGraph(deps.graphStore).nodes;
 					const state = reviewState(ctx.history?.() ?? history(), nodes, now, ctx.settingsStore?.readSettings()?.agent?.desiredRetention ?? 0.9);
-					const lines = propositions.map((p) => {
-						const review = state.get(p.nodeId);
-						if (!review?.lastReview) return `- ${p.name} · ${review?.stage ?? "practiced"} · never practised${review && review.dueAt <= now ? " · due" : ""}`;
-						const days = Math.max(0, Math.floor((now - review.lastReview) / 86_400_000));
-						return `- ${p.name} · ${review.stage} · last practised ${days}d ago${review.dueAt <= now ? " · due" : ""}`;
-					});
+					const lines = propositions.map((p) => `- ${p.name} · ${formatPropositionReviewSuffix(state.get(p.nodeId), now)}`);
 				return `${propositions.length} proposition(s) covered in this session:\n${lines.join("\n")}`;
 			}),
 		},
@@ -150,10 +154,13 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 					return sessionId;
 				};
 
+				const now = ctx.now?.() ?? Date.now();
+				const state = reviewState(ctx.history?.() ?? history(), nodes, now, ctx.settingsStore?.readSettings()?.agent?.desiredRetention ?? 0.9);
+
 				const lines = candidates.map((c, i) => {
 					const sessionId = effectiveSessionOf(c.node, regroupMap);
 					const subject = resolveSubjectLabel(sessionId);
-					return `${i + 1}. [${c.node.id}] "${c.node.name}": ${c.node.statement} (Current subject: "${subject}")`;
+					return `${i + 1}. [${c.node.id}] "${c.node.name}": ${c.node.statement} (Current subject: "${subject}" · ${formatPropositionReviewSuffix(state.get(c.node.id), now)})`;
 				});
 
 				return `Found ${candidates.length} candidate proposition(s) from other subjects:\n${lines.join("\n")}`;
