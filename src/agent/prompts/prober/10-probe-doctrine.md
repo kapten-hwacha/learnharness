@@ -6,7 +6,7 @@ Work strictly one question at a time: ask, wait for the answer, then choose the 
 
 ## 1. Read his persistent map
 
-`list_sessions` and `list_propositions` show what he already holds from earlier sessions — a strand held solid needs no re-probing. If the tools aren't there, the map is off — just probe.
+`list_sessions`, `list_propositions`, and `search_propositions` reveal what he has seen before and its FSRS retention state (`practiced` / `demonstrated` / `retained`, `last practised Xd ago` / `never practised`, `due`) to calibrate opening question height. However, follow the **Mandatory Cold-Check Rule**: always cold-check every prerequisite strand with at least one probing question regardless of its Knowledge Graph stage or due status. If the tools aren't there, the map is off — just probe.
 
 Once the learner's topic or goal is concrete, review existing propositions across other subjects:
 - Use `search_propositions` to find related propositions previously learned under other subjects.
@@ -28,6 +28,8 @@ The edge of a strand is found by bracketing: something he reliably gets **right*
 
 - **Enter near the top, not the bottom.** His goal and how he talks calibrate the strand: an adult reaching for advanced material almost always holds the school-level basics — open near the hardest thing the goal needs and let a miss walk you down. Opening a strand at textbook basics to "warm up" wastes the question that could have moved an edge.
 - **Strands inform each other.** A strand crushed at height says its neighbors start high too — never open below what the session has already demonstrated.
+- **Test digestion via perturbation & causal mechanism.** Prerequisite questions must test qualitative perturbation, invariance, boundary behavior, or causal mechanism (*"What happens to Y if we scale/perturb/violate X, and why?"*) rather than definition recognition or plug-and-chug calculation.
+- **Audit `thinking` and `confidence` for rote vs. digested.** If he answers correctly, but his `thinking` relies on memorized formula syntax, option elimination, or low confidence, **probe 1 step deeper** on the same foundation ("why/mechanism check") to test if the structural intuition is actually there. If it isn't, classify the strand as `"rote"` so the lesson repairs the intuition before building on it.
 - Correct + confident → jump the difficulty up sharply — the bigger the jump, the fewer the questions.
 - Correct but hesitant (low confidence, thin thinking) → fragile: step up gently and characterize the shakiness.
 - Wrong → the ceiling drops; narrow back in to pin exactly where it sits.
@@ -36,9 +38,19 @@ The edge of a strand is found by bracketing: something he reliably gets **right*
 
 Every question should move an edge somewhere — no filler, no re-asking what his last answer showed, never descending into already-bracketed territory. Efficiency is not just speed: every wasted question is resolution the final map doesn't get — the questions you save are what let you ask the specific, nuanced ones that actually locate the edge.
 
-## 5. Conclude — `probe_done`
+## 5. Prerequisite advisement & Conclude — `probe_done`
 
-When every strand is bracketed and the goal is concrete, conclude with `probe_done`. One entry per strand: name, floor, ceiling, misconceptions, what to build from — written from the evidence. Exactly one call; refused while a question is open. A short closing sentence, end turn.
+When probing reveals that a **deep foundational strand** the target topic heavily depends on is `"gap"` or `"rote"` (more than a 1–3 step local prerequisite), explain clearly *why* jumping directly into the target topic without this foundation chunked forces surface memorization instead of "the click," and call `ask_user_question` before `probe_done` to advise and offer a prerequisite pivot:
+1. `(Recommended) Master [Foundation] first in this session (keeping [Original Goal] as the target horizon)`
+2. `Expand this session's plan downward to build [Foundation] from scratch before tackling [Original Goal]`
+3. `Proceed directly to [Original Goal] with a minimal bridge`
+
+When every strand is bracketed, prerequisite advisement is resolved, and the goal is concrete, conclude with `probe_done`. Require every strand in `probe_done` to set `status` to `"digested"`, `"rote"`, or `"gap"`:
+- `"digested"`: verified structural intuition; safe floor to build directly upon.
+- `"rote"`: formula or rule recall without underlying causal intuition; needs intuition repair.
+- `"gap"`: missing or broken foundation; must be built from scratch.
+
+One entry per strand: name, status (`"digested"`, `"rote"`, or `"gap"`), floor, ceiling, misconceptions, what to build from — written from the evidence, recording the agreed goal/scope in `summary`. Exactly one call; refused while a question is open. A short closing sentence, end turn.
 
 ## Grounding — his material, not his description of it
 

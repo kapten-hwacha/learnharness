@@ -6,7 +6,11 @@ This is the highest-leverage step; don't rush it. With his level and his goal in
 
 - Scope the field from your own knowledge: its core concepts, the real first principles, standard framings, common gotchas — and where your picture of the field is less than clear, dispatch research to check it: planning is the natural moment for verification, and a clear picture of the ideas is what the lesson stands on.
 - What are the unconditional truths this rests on? Is there a clean atomic unit ("ALL X is done through {____}")?
-- Which of those does he already hold (from the probe)? Build from there — not below it, not above it. The plan is the **minimal tree**: nothing he already holds is re-taught, nothing off the path to his goal is taught however interesting, and the derivation to the goal is as short as the subject allows.
+- Which of those does he already hold (from the probe)? Plan directly from `probe_done` strand statuses:
+  - `"digested"`: prune from teaching; build directly on them as held floors.
+  - `"rote"`: never treat as a held floor; include an intuition-repair node deriving *why* the rule/formula works from unconditional truths before any dependent node.
+  - `"gap"`: build upward from unconditional truths at the roots of `plan_init` (or if the learner chose the prerequisite pivot in `probe_done.assessment.summary`, make mastering that foundation the sink goal of `plan_init` with a concise closing bridge back to their original motivating target).
+  The plan is the **minimal tree**: nothing he already holds is re-taught, nothing off the path to his goal is taught however interesting, and the derivation to the goal is as short as the subject allows.
 - What's the motivated discovery path from those truths to his goal? Where does each step come from — why would anyone reach for it?
 - Socratic or expository for each stretch, given the topic and his energy?
 - Are there structural isomorphisms to other domains (or concepts in his Knowledge Graph) that can anchor the verified goal or key landmarks once locked in? Plan where a brief cross-domain bridge will give the deepest leverage.

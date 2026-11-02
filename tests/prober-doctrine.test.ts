@@ -74,6 +74,25 @@ describe("prober doctrine prompt instructions", () => {
 			"prober prompt must instruct prober to mention/inform learner about regrouped concepts",
 		);
 	});
+
+	it("enforces mandatory cold-check on prerequisite strands, perturbation checks, 1-step deeper probing on rote answers, and prerequisite advisement fork in prober prompt", () => {
+		const proberPrompt = composeInstructions("prober");
+
+		assert.match(proberPrompt, /cold-check|at least one.*question/i, "must require cold-checking prerequisite strands even when present in graph");
+		assert.match(proberPrompt, /perturbation|causal mechanism|invariance/i, "must require testing perturbation/mechanism over surface formula recall");
+		assert.match(proberPrompt, /1 step deeper|one step deeper/i, "must require probing 1 step deeper when answer relies on rote formula memory");
+		assert.match(proberPrompt, /"digested".*"rote".*"gap"/s, "must instruct prober to classify strands as digested, rote, or gap");
+		assert.match(proberPrompt, /ask_user_question.*master.*foundation|pivot.*foundation/is, "must instruct prober to advise and offer a prerequisite pivot via ask_user_question before probe_done");
+	});
+
+	it("instructs teacher to plan from digested, rote, and gap strand statuses and verify perturbation/intuition on checks", () => {
+		const teacherPrompt = composeInstructions("teacher");
+
+		assert.match(teacherPrompt, /"digested"/, "teacher planning prompt must reference digested strands");
+		assert.match(teacherPrompt, /"rote"/, "teacher planning prompt must reference intuition repair for rote strands");
+		assert.match(teacherPrompt, /"gap"/, "teacher planning prompt must reference gap strands");
+		assert.match(teacherPrompt, /perturbation|causal mechanism/i, "teacher question principles must require perturbation/causal checks on foundations");
+	});
 });
 
 describe("prober tools availability via createProberTools", () => {
