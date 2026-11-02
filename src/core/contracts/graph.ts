@@ -363,6 +363,8 @@ export interface GraphSnapshot {
 	 *  exists (core/layout.ts settle writes it). Absent on a fresh graph —
 	 *  the view then falls back to its own one-shot forceAtlas2 pass. */
 	positions?: Record<string, Position>;
+	/** Active node regroupings: nodeId -> latest targetSessionId. */
+	regroups?: Record<string, string>;
 }
 
 /** A node's resting position in layout space (the positions ledger). */

@@ -51,20 +51,33 @@ export function birthSessionOf(node: Pick<GraphNode, "provenance">): string | nu
 	return node.provenance[0]?.chatId ?? null;
 }
 
+/** A node's effective session: target session if regrouped, otherwise its birth session.
+ *  null when unregrouped and the node carries no provenance (legacy data). */
+export function effectiveSessionOf(
+	node: Pick<GraphNode, "id" | "provenance">,
+	regroupMap?: ReadonlyMap<string, string>,
+): string | null {
+	return regroupMap?.get(node.id) ?? birthSessionOf(node);
+}
+
 /**
  * The birth-session partition over the given node LINES: dedupes by id
- * (first line defines — the getGraph rule), groups by birth session, and
- * returns the groups size-desc with members sorted (deterministic output:
- * ties break by session id ascending). A node with no provenance is left
- * unclustered — it belongs to no session the graph can name.
+ * (first line defines — the getGraph rule), groups by effective session
+ * (birth session or active regroup target), and returns the groups
+ * size-desc with members sorted (deterministic output: ties break by
+ * session id ascending). A node with no provenance (and no regroup) is
+ * left unclustered — it belongs to no session the graph can name.
  */
-export function birthSessionPartition(nodes: readonly GraphNode[]): BirthSessionCluster[] {
+export function birthSessionPartition(
+	nodes: readonly GraphNode[],
+	regroupMap?: ReadonlyMap<string, string>,
+): BirthSessionCluster[] {
 	const members = new Map<string, string[]>();
 	const seen = new Set<string>();
 	for (const node of nodes) {
 		if (seen.has(node.id)) continue;
 		seen.add(node.id);
-		const birth = birthSessionOf(node);
+		const birth = effectiveSessionOf(node, regroupMap);
 		if (birth === null) continue;
 		const bucket = members.get(birth);
 		if (bucket) bucket.push(node.id);
@@ -115,13 +128,14 @@ export function attachImpToCommunities(
 	communities: Array<{ id: string; members: string[] }>,
 	propositions: ReadonlyArray<Pick<GraphNode, "id" | "provenance">>,
 	chains: ReadonlyArray<Pick<GraphChain, "id" | "premises" | "conclusion" | "provenance">>,
+	regroupMap?: ReadonlyMap<string, string>,
 ): void {
-	const birthById = new Map(propositions.map((node) => [node.id, birthSessionOf(node)]));
+	const sessionById = new Map(propositions.map((node) => [node.id, effectiveSessionOf(node, regroupMap)]));
 	const live = new Set(propositions.map((node) => node.id));
 	for (const chain of chains) {
 		if (chain.premises.length < 2) continue;
 		if (!live.has(chain.conclusion) || !chain.premises.every((p) => live.has(p))) continue;
-		const key = impClusterKey(chain, (id) => birthById.get(id) ?? null);
+		const key = impClusterKey(chain, (id) => sessionById.get(id) ?? null);
 		const community = key === null ? undefined : communities.find((c) => c.id === key);
 		if (!community) continue;
 		community.members.push(chain.id);

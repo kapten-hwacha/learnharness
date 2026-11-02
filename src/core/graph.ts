@@ -516,6 +516,12 @@ export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<stri
 	const view = deriveView(graph);
 	const nodes = view.nodes;
 
+	const rawRegroups = deps.graphStore.readRegroups?.() ?? [];
+	const regroupMap = new Map<string, string>();
+	for (const r of rawRegroups) {
+		regroupMap.set(r.nodeId, r.targetSessionId);
+	}
+
 	const nodeChats = new Map<string, Set<string>>();
 	const touch = (nodeId: string, chatId: string): void => {
 		let chats = nodeChats.get(nodeId);
@@ -527,6 +533,8 @@ export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<stri
 	};
 	for (const node of nodes) {
 		for (const pt of node.provenance) touch(node.id, pt.chatId);
+		const targetSessionId = regroupMap.get(node.id);
+		if (targetSessionId) touch(node.id, targetSessionId);
 	}
 	// Labels for every source the graph can point back at: real chats
 	// (title, deep-linkable) and imported notes files (path, static — the
@@ -563,7 +571,7 @@ export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<stri
 	// but renders unlabeled — honest, never guessed.
 	// PROPOSITIONS ONLY (owner, 2026-09-30): derived implication nodes
 	// never partition — the stored world clusters, its image follows.
-	const communities = birthSessionPartition(graph.nodes);
+	const communities = birthSessionPartition(graph.nodes, regroupMap);
 	const clusters: Cluster[] = communities
 		.filter((community) => community.members.length >= MIN_CLUSTER_SIZE)
 		.map((community) => {
@@ -581,7 +589,7 @@ export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<stri
 	// never resurrects a hull (the filter counts propositions). Both
 	// cluster-membership consumers — the sim's centroid pull and the
 	// canvas's region rasterization — read it through this one list.
-	attachImpToCommunities(clusters, graph.nodes, graph.chains);
+	attachImpToCommunities(clusters, graph.nodes, graph.chains, regroupMap);
 
 	// Resting layout (Option A): the positions ledger, when the settle has
 	// ever run. Absent on a fresh graph — the view falls back to its own
@@ -599,6 +607,7 @@ export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<stri
 		fileSources,
 		nodeSessions,
 		clusters,
+		...(regroupMap.size > 0 ? { regroups: Object.fromEntries(regroupMap) } : {}),
 		...(Object.keys(positions).length > 0 ? { positions } : {}),
 	};
 }
