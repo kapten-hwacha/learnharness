@@ -83,13 +83,15 @@ describe("prober graph tools — registration", () => {
 		const tools = createProberTools({ ...baseCtx, chatStore });
 		assert.equal("list_sessions" in tools, false);
 		assert.equal("list_propositions" in tools, false);
+		assert.equal("search_propositions" in tools, false);
+		assert.equal("regroup_propositions" in tools, false);
 	});
 
 	it("graphStore present → list_sessions + list_propositions join the registry beside the usual set", () => {
 		const { chatStore, graphStore } = fakeStores([node("n1", "Water cycle", [pt("c1")])]);
 		const tools = createProberTools({ ...baseCtx, chatStore, graphStore });
 		// The standing set (fix wave 2026-09-20: research + pdf are
-		// phase-omnipresent) plus the two graph-map readers.
+		// phase-omnipresent) plus the graph tools.
 		assert.deepEqual(Object.keys(tools).sort(), [
 			"ask_user_question",
 			"find",
@@ -101,7 +103,10 @@ describe("prober graph tools — registration", () => {
 			"probe",
 			"probe_done",
 			"read",
+			"regroup_propositions",
 			"research",
+			"search_propositions",
+			"skill",
 		]);
 	});
 });
