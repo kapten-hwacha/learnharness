@@ -1758,6 +1758,7 @@ export function GraphView({
 				chains={snapshot?.chains ?? []}
 				sessions={snapshot?.sessions ?? {}}
 				fileSources={snapshot?.fileSources ?? {}}
+				regroups={snapshot?.regroups}
 				reviewStages={reviewStages}
 				onClose={() => {
 					setChainsOpen(false);

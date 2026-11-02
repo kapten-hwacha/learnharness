@@ -114,6 +114,7 @@ export function ChainTableBody({
 	chains: storedChains,
 	sessions,
 	fileSources,
+	regroups,
 	query,
 	onQuery,
 	sort,
@@ -149,6 +150,7 @@ export function ChainTableBody({
 	chains: GraphChain[];
 	sessions: Record<string, string>;
 	fileSources: Record<string, string>;
+	regroups?: Record<string, string>;
 	query: string;
 	onQuery: (v: string) => void;
 	sort: ChainSort;
@@ -199,14 +201,17 @@ export function ChainTableBody({
 	const allSourceNodes = useMemo(() => {
 		const membership = new Map<string, Set<string>>();
 		for (const chain of chains) {
-			const birth = byId.get(chain.conclusion)?.provenance[0]?.chatId;
+			const conclusion = byId.get(chain.conclusion);
+			const birth = (regroups && chain.conclusion in regroups)
+				? regroups[chain.conclusion]!
+				: conclusion?.provenance[0]?.chatId;
 			if (!birth) continue;
 			const members = membership.get(birth) ?? new Set<string>();
 			for (const id of [...chain.premises, chain.conclusion]) members.add(id);
 			membership.set(birth, members);
 		}
 		return membership;
-	}, [chains, byId]);
+	}, [chains, byId, regroups]);
 
 	// The fuzzy filter: a chain is visible when ANY member matches on
 	// name, aliases, or statement; chains rank by best member score.
@@ -214,7 +219,10 @@ export function ChainTableBody({
 		if (!searching) return chains;
 		const scored = chains
 			.map((chain) => {
-				const birth = byId.get(chain.conclusion)?.provenance[0]?.chatId;
+				const conclusion = byId.get(chain.conclusion);
+				const birth = (regroups && chain.conclusion in regroups)
+					? regroups[chain.conclusion]!
+					: conclusion?.provenance[0]?.chatId;
 				let best: number | null = birth && matchesSource(birth) ? 0 : null;
 				for (const id of [...chain.premises, chain.conclusion]) {
 					const node = byId.get(id);
@@ -229,7 +237,7 @@ export function ChainTableBody({
 		return scored
 			.sort((a, b) => b.best - a.best || (a.chain.id < b.chain.id ? -1 : 1))
 			.map(({ chain }) => chain);
-	}, [chains, byId, query, searching, matchesSource]);
+	}, [chains, byId, query, searching, matchesSource, regroups]);
 
 	// Group the visible chains by their CONCLUSION's birth (owner ruling).
 	// Unlabeled births (provenance gone / never named) form one honest
@@ -243,7 +251,9 @@ export function ChainTableBody({
 		}
 		for (const chain of visibleChains) {
 			const conclusion = byId.get(chain.conclusion);
-			const birth = conclusion?.provenance[0]?.chatId ?? null;
+			const birth = (regroups && chain.conclusion in regroups)
+				? regroups[chain.conclusion]!
+				: conclusion?.provenance[0]?.chatId ?? null;
 			const key = birth ?? "\0unlabeled";
 			let group = map.get(key);
 			if (!group) {
@@ -292,7 +302,7 @@ export function ChainTableBody({
 			);
 		}
 		return list;
-	}, [visibleChains, byId, sessions, fileSources, sort, directory, sourceRecords, searching, matchesSource]);
+	}, [visibleChains, byId, sessions, fileSources, regroups, sort, directory, sourceRecords, searching, matchesSource]);
 
 	// The derived shape under the floating bar (the agents' ACTUAL input).
 	const derived = useMemo(() => {
@@ -716,6 +726,7 @@ export function ChainTableOverlay({
 	chains: storedChains,
 	sessions,
 	fileSources,
+	regroups,
 	onClose,
 	/** PRACTICE SELECT (owner vision, 2026-10-04): the selection is
 	 *  PERSISTENT and caller-owned — when these props are present the
@@ -733,6 +744,7 @@ export function ChainTableOverlay({
 	chains: GraphChain[];
 	sessions: Record<string, string>;
 	fileSources: Record<string, string>;
+	regroups?: Record<string, string>;
 	onClose: () => void;
 	selectMode?: boolean;
 	controlledSelection?: ReadonlySet<string>;
@@ -867,6 +879,7 @@ export function ChainTableOverlay({
 					chains={storedChains}
 					sessions={sessions}
 					fileSources={fileSources}
+					regroups={regroups}
 					query={query}
 					onQuery={setQuery}
 					sort={sort}

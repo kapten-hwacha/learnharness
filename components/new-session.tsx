@@ -341,6 +341,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 						chains={snapshot?.chains ?? []}
 						sessions={snapshot?.sessions ?? {}}
 						fileSources={snapshot?.fileSources ?? {}}
+						regroups={snapshot?.regroups}
 						onClose={() => setPickerOpen(false)}
 						selectMode
 						controlledSelection={new Set(picks.map((p) => p.id))}

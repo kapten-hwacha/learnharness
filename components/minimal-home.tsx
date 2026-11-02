@@ -202,6 +202,7 @@ export function MinimalHome({
 				chains={snapshot?.chains ?? []}
 				sessions={snapshot?.sessions ?? {}}
 				fileSources={snapshot?.fileSources ?? {}}
+				regroups={snapshot?.regroups}
 				onClose={() => {
 					setChainsOpen(false);
 					onChainSelectClose?.();
