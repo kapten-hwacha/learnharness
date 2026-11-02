@@ -1,12 +1,13 @@
 import { Type } from "typebox";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import { getGraph, graphSessionIndex, graphSessionPropositions } from "../../core/graph.ts";
 import type { ChatStore, GraphStore } from "../../core/ports.ts";
 import type { SettingsStore } from "../../core/ports.ts";
 import { practiceRecordsFromChat, reviewState, teachSessionSeedRating } from "../../core/review.ts";
-import type { PracticeHistory, PracticeRecord } from "../../core/contracts.ts";
+import type { GraphRegroup, PracticeHistory, PracticeRecord } from "../../core/contracts.ts";
+import { effectiveSessionOf } from "../../core/session-clusters.ts";
 import { createPropositionCandidateSearch, propositionCandidateBatch, type CandidateBatch, type CandidateProposition, type CandidateRequest } from "../../core/proposition-candidates.ts";
 
 /**
@@ -32,6 +33,7 @@ import { createPropositionCandidateSearch, propositionCandidateBatch, type Candi
 export interface GraphToolContext {
 	chatStore: ChatStore;
 	graphStore: GraphStore;
+	chatId?: string;
 	settingsStore?: SettingsStore;
 	history?: () => PracticeHistory;
 	now?: () => number;
@@ -44,6 +46,16 @@ const listPropositionsInput = Type.Object({
 		minLength: 1,
 		description: "The session's id exactly as list_sessions reported it (a chat id or a notes source id)",
 	}),
+});
+
+const searchPropositionsInput = Type.Object({
+	query: Type.String({ minLength: 1, description: "Keywords or topic concepts to search for across existing knowledge graph propositions" }),
+	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 25, default: 10, description: "Maximum candidate propositions to return" })),
+});
+
+const regroupPropositionsInput = Type.Object({
+	nodeIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "IDs of existing propositions (n_...) to regroup under the current session" }),
+	reason: Type.String({ minLength: 1, description: "Why these propositions align better with the current subject than their previous subject" }),
 });
 
 export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentTool<any>> {
@@ -101,6 +113,119 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 						return `- ${p.name} · ${review.stage} · last practised ${days}d ago${review.dueAt <= now ? " · due" : ""}`;
 					});
 				return `${propositions.length} proposition(s) covered in this session:\n${lines.join("\n")}`;
+			}),
+		},
+		search_propositions: {
+			name: "search_propositions",
+			label: "search_propositions",
+			description:
+				"Search existing knowledge-graph propositions from other subjects by keywords or topic concepts. " +
+				"Use when learning a new subject to discover relevant propositions that were covered in earlier sessions and may belong here.",
+			parameters: searchPropositionsInput,
+			execute: serverExecute("search_propositions", searchPropositionsInput, async ({ query, limit }): Promise<string> => {
+				const nodes = getGraph(deps.graphStore).nodes;
+				if (nodes.length === 0) return "The knowledge graph is empty — no propositions exist yet.";
+
+				const rawRegroups = deps.graphStore.readRegroups();
+				const regroupMap = new Map<string, string>();
+				for (const r of rawRegroups) regroupMap.set(r.nodeId, r.targetSessionId);
+
+				const search = createPropositionCandidateSearch(nodes);
+				const hits = search({ id: "query", name: query, statement: query, aliases: [] });
+
+				const filtered = hits.filter((hit) => !ctx.chatId || effectiveSessionOf(hit.node, regroupMap) !== ctx.chatId);
+				const maxCandidates = limit ?? 10;
+				const candidates = filtered.slice(0, maxCandidates);
+
+				if (candidates.length === 0) {
+					return `No propositions matching "${query}" found in other subjects.`;
+				}
+
+				const resolveSubjectLabel = (sessionId: string | null): string => {
+					if (!sessionId) return "unlabeled";
+					const chat = deps.chatStore.getChat(sessionId);
+					if (chat?.title) return chat.title;
+					const source = deps.graphStore.readSources().find((s) => s.id === sessionId);
+					if (source?.filePath) return source.filePath;
+					return sessionId;
+				};
+
+				const lines = candidates.map((c, i) => {
+					const sessionId = effectiveSessionOf(c.node, regroupMap);
+					const subject = resolveSubjectLabel(sessionId);
+					return `${i + 1}. [${c.node.id}] "${c.node.name}": ${c.node.statement} (Current subject: "${subject}")`;
+				});
+
+				return `Found ${candidates.length} candidate proposition(s) from other subjects:\n${lines.join("\n")}`;
+			}),
+		},
+		regroup_propositions: {
+			name: "regroup_propositions",
+			label: "regroup_propositions",
+			description:
+				"Regroup existing knowledge-graph propositions into the current session's subject cluster. " +
+				"Preserves original birth provenance while moving the propositions to belong to the active subject.",
+			parameters: regroupPropositionsInput,
+			execute: serverExecute("regroup_propositions", regroupPropositionsInput, async ({ nodeIds, reason }): Promise<string> => {
+				if (!ctx.chatId) return "Cannot regroup propositions: active session ID is missing.";
+
+				const nodes = getGraph(deps.graphStore).nodes;
+				const knownNodes = new Map(nodes.map((n) => [n.id, n]));
+
+				const rawRegroups = deps.graphStore.readRegroups();
+				const regroupMap = new Map<string, string>();
+				for (const r of rawRegroups) regroupMap.set(r.nodeId, r.targetSessionId);
+
+				const uniqueNodeIds = [...new Set(nodeIds)];
+				const unknownIds: string[] = [];
+				const alreadyCurrent: Array<{ id: string; name: string }> = [];
+				const regrouped: Array<{ id: string; name: string }> = [];
+
+				for (const nodeId of uniqueNodeIds) {
+					const node = knownNodes.get(nodeId);
+					if (!node) {
+						unknownIds.push(nodeId);
+						continue;
+					}
+					const currentSession = effectiveSessionOf(node, regroupMap);
+					if (currentSession === ctx.chatId) {
+						alreadyCurrent.push({ id: node.id, name: node.name });
+						continue;
+					}
+					const record: GraphRegroup = {
+						id: "rg_" + randomBytes(6).toString("hex"),
+						nodeId: node.id,
+						targetSessionId: ctx.chatId,
+						reason: reason.trim(),
+						regroupedAt: new Date().toISOString(),
+					};
+					deps.graphStore.appendRegroup(record);
+					regroupMap.set(node.id, ctx.chatId);
+					regrouped.push({ id: node.id, name: node.name });
+				}
+
+				const targetTitle = deps.chatStore.getChat(ctx.chatId)?.title ?? ctx.chatId;
+				const parts: string[] = [];
+
+				if (regrouped.length > 0) {
+					parts.push(`Regrouped ${regrouped.length} proposition(s) to "${targetTitle}":`);
+					for (const r of regrouped) {
+						parts.push(`- ${r.name} (${r.id})`);
+					}
+					parts.push(`Reason: ${reason.trim()}`);
+				} else {
+					parts.push("No propositions regrouped.");
+				}
+
+				if (alreadyCurrent.length > 0) {
+					parts.push(`Already in "${targetTitle}": ${alreadyCurrent.map((r) => `${r.name} (${r.id})`).join(", ")}`);
+				}
+
+				if (unknownIds.length > 0) {
+					parts.push(`Unknown proposition ID(s): ${unknownIds.join(", ")}`);
+				}
+
+				return parts.join("\n");
 			}),
 		},
 	};

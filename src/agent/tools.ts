@@ -341,7 +341,12 @@ export function createProberTools(
 				// The map reader (wave 7): present only when the settings gate
 				// opened.
 				...(ctx.graphStore
-					? proberGraphTools({ chatStore: ctx.chatStore, graphStore: ctx.graphStore, settingsStore: ctx.settingsStore })
+					? proberGraphTools({
+							chatStore: ctx.chatStore,
+							graphStore: ctx.graphStore,
+							chatId: ctx.chatId,
+							settingsStore: ctx.settingsStore,
+						})
 					: {}),
 				...done,
 			},
