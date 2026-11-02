@@ -144,6 +144,7 @@ export function dueReviews(state: ReadonlyMap<string, PropositionReviewState>, n
 	const serves = new Map<string, number>();
 	for (const chain of chains) {
 		for (const premise of new Set(chain.premises)) {
+			if (premise === chain.conclusion) continue;
 			serves.set(premise, (serves.get(premise) ?? 0) + 1);
 		}
 	}

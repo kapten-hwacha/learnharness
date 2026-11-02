@@ -133,6 +133,28 @@ describe("due reviews and calibration", () => {
 		]);
 		assert.deepEqual(dueReviews(items, nodes, chains, DAY).due, ["n_a", "n_b"]);
 	});
+	it("ignores self-loops in serves count and handles duplicate premises without corrupting inDegree or deadlocking", () => {
+		const t0 = new Date(0).toISOString();
+		const nodes: GraphNode[] = [
+			{ ...node, id: "n_0", name: "Zero", createdAt: t0 },
+			{ ...node, id: "n_a", name: "A", createdAt: t0 },
+			{ ...node, id: "n_b", name: "B", createdAt: t0 },
+		];
+		const chains = [
+			// Self-loop: premise === conclusion. Must not count towards serves.
+			{ id: "c_self", premises: ["n_0"], conclusion: "n_0", createdAt: t0, provenance: [] },
+			// Duplicate premises: ["n_a", "n_a"]. Must count as 1 edge/serves and not deadlock inDegree.
+			{ id: "c_dup", premises: ["n_a", "n_a"], conclusion: "n_b", createdAt: t0, provenance: [] },
+		];
+		const items = new Map([
+			["n_0", { stability: null, difficulty: null, lastReview: null, reviews: 0, retrievability: null, dueAt: 0, lane: "new" as const, seedRating: 3 as const, stage: "practiced" as const }],
+			["n_a", { stability: null, difficulty: null, lastReview: null, reviews: 0, retrievability: null, dueAt: 0, lane: "new" as const, seedRating: 3 as const, stage: "practiced" as const }],
+			["n_b", { stability: null, difficulty: null, lastReview: null, reviews: 0, retrievability: null, dueAt: 0, lane: "new" as const, seedRating: 3 as const, stage: "practiced" as const }],
+		]);
+		// n_a serves n_b (serves: 1). n_0 has a self loop (serves: 0).
+		// Because n_a has serves: 1 > n_0's serves: 0, n_a must precede n_0 despite 'n_0' < 'n_a'.
+		assert.deepEqual(dueReviews(items, nodes, chains, DAY).due, ["n_a", "n_0", "n_b"]);
+	});
 	it("calibrates subsequent review outcomes", () => {
 		const records = [baseRecord({ chatId: "p1", at: 0, rating: 4 }), baseRecord({ chatId: "p2", at: DAY, outcome: "solved" })];
 		const result = reviewCalibration(records, [node]);
