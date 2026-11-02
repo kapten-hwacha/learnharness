@@ -37,9 +37,10 @@ function fakeStores(
 	nodes: GraphNode[],
 	over: {
 		chats?: Array<Pick<ChatSummary, "id" | "title" | "createdAt" | "updatedAt">>;
+		chains?: GraphChain[];
 	} = {},
 ): { chatStore: ChatStore; graphStore: GraphStore } {
-	const chains: GraphChain[] = [];
+	const chains: GraphChain[] = over.chains ?? [];
 	const graphStore: GraphStore = {
 		readNodes: () => nodes,
 		readChains: () => chains,
@@ -184,6 +185,32 @@ describe("list_propositions", () => {
 		const tools = createProberTools({ ...baseCtx, chatStore, graphStore });
 		const out = (await tools.list_propositions!.execute!("tc", { session: "no-such" })).details as string;
 		assert.equal(out, 'No propositions born in session "no-such". Call list_sessions for the current ids.');
+	});
+
+	it("appends reasoning chains for the session, resolving cross-session premise names without leaking statement prose", async () => {
+		const { chatStore, graphStore } = fakeStores(
+			[
+				node("n_other", "Solar radiation", [pt("c_other")]),
+				node("n1", "Evaporation", [pt("c1")]),
+				node("n2", "Precipitation", [pt("c1")]),
+			],
+			{
+				chains: [
+					{
+						id: "arg_1",
+						premises: ["n_other", "n1"],
+						conclusion: "n2",
+						createdAt: "2026-09-23T00:00:00.000Z",
+						provenance: [pt("c1")],
+					},
+				],
+			},
+		);
+		const tools = createProberTools({ ...baseCtx, chatStore, graphStore });
+		const out = (await tools.list_propositions!.execute!("tc", { session: "c1" })).details as string;
+		assert.match(out, /2 proposition\(s\) covered in this session:/);
+		assert.match(out, /Reasoning chains \(premises → conclusion\):\n- Evaporation, Solar radiation → Precipitation/);
+		assert.ok(!out.includes("statement of"));
 	});
 });
 

@@ -9,6 +9,7 @@ import { practiceRecordsFromChat, reviewState, teachSessionSeedRating } from "..
 import type { GraphRegroup, PracticeHistory, PracticeRecord, PropositionReviewState } from "../../core/contracts.ts";
 import { effectiveSessionOf } from "../../core/session-clusters.ts";
 import { createPropositionCandidateSearch, propositionCandidateBatch, type CandidateBatch, type CandidateProposition, type CandidateRequest } from "../../core/proposition-candidates.ts";
+import { nodeChainLines, sessionChainLines } from "../../core/chains.ts";
 
 /**
  * THE PROBER'S GRAPH TOOLS (wave 7, owner-locked 2026-09-23): context
@@ -104,7 +105,7 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 			name: "list_propositions",
 			label: "list_propositions",
 			description:
-				"List the propositions BORN in one knowledge-graph session — what was covered there. " +
+				"List the propositions BORN in one knowledge-graph session — what was covered there — and any reasoning chains (premises → conclusion) derived in that session. " +
 				"Names only — no statement text, no session contents (owner ruling 2026-09-23: the map's ORGANIZATION is your business, its prose is not).",
 			parameters: listPropositionsInput,
 			execute: serverExecute("list_propositions", listPropositionsInput, async ({ session }): Promise<string> => {
@@ -112,11 +113,17 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 				if (propositions.length === 0) {
 					return `No propositions born in session "${session}". Call list_sessions for the current ids.`;
 				}
-					const now = ctx.now?.() ?? Date.now();
-					const nodes = getGraph(deps.graphStore).nodes;
-					const state = reviewState(ctx.history?.() ?? history(), nodes, now, ctx.settingsStore?.readSettings()?.agent?.desiredRetention ?? 0.9);
-					const lines = propositions.map((p) => `- ${p.name} · ${formatPropositionReviewSuffix(state.get(p.nodeId), now)}`);
-				return `${propositions.length} proposition(s) covered in this session:\n${lines.join("\n")}`;
+				const now = ctx.now?.() ?? Date.now();
+				const graph = getGraph(deps.graphStore);
+				const nodes = graph.nodes;
+				const state = reviewState(ctx.history?.() ?? history(), nodes, now, ctx.settingsStore?.readSettings()?.agent?.desiredRetention ?? 0.9);
+				const lines = propositions.map((p) => `- ${p.name} · ${formatPropositionReviewSuffix(state.get(p.nodeId), now)}`);
+				const chainLines = sessionChainLines(new Set(propositions.map((p) => p.nodeId)), graph.nodes, graph.chains);
+				const baseOutput = `${propositions.length} proposition(s) covered in this session:\n${lines.join("\n")}`;
+				if (chainLines.length > 0) {
+					return `${baseOutput}\n\nReasoning chains (premises → conclusion):\n${chainLines.map((c) => `- ${c}`).join("\n")}`;
+				}
+				return baseOutput;
 			}),
 		},
 		search_propositions: {
@@ -127,7 +134,8 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 				"Use when learning a new subject to discover relevant propositions that were covered in earlier sessions and may belong here.",
 			parameters: searchPropositionsInput,
 			execute: serverExecute("search_propositions", searchPropositionsInput, async ({ query, limit }): Promise<string> => {
-				const nodes = getGraph(deps.graphStore).nodes;
+				const graph = getGraph(deps.graphStore);
+				const nodes = graph.nodes;
 				if (nodes.length === 0) return "The knowledge graph is empty — no propositions exist yet.";
 
 				const rawRegroups = deps.graphStore.readRegroups();
@@ -160,7 +168,16 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 				const lines = candidates.map((c, i) => {
 					const sessionId = effectiveSessionOf(c.node, regroupMap);
 					const subject = resolveSubjectLabel(sessionId);
-					return `${i + 1}. [${c.node.id}] "${c.node.name}": ${c.node.statement} (Current subject: "${subject}" · ${formatPropositionReviewSuffix(state.get(c.node.id), now)})`;
+					const headline = `${i + 1}. [${c.node.id}] "${c.node.name}": ${c.node.statement} (Current subject: "${subject}" · ${formatPropositionReviewSuffix(state.get(c.node.id), now)})`;
+					const { incoming, outgoing } = nodeChainLines(c.node.id, graph.nodes, graph.chains);
+					const sublines: string[] = [];
+					for (const line of incoming) {
+						sublines.push(`   derived from: ${line}`);
+					}
+					for (const line of outgoing) {
+						sublines.push(`   used to derive: ${line}`);
+					}
+					return sublines.length > 0 ? `${headline}\n${sublines.join("\n")}` : headline;
 				});
 
 				return `Found ${candidates.length} candidate proposition(s) from other subjects:\n${lines.join("\n")}`;

@@ -29,10 +29,11 @@ function fakeStores(
 		chats?: Array<Pick<ChatSummary, "id" | "title" | "createdAt" | "updatedAt">>;
 		sources?: NotesSource[];
 		regroups?: GraphRegroup[];
+		chains?: GraphChain[];
 	} = {},
 ): { chatStore: ChatStore; graphStore: GraphStore } {
 	const nodes = [...initialNodes];
-	const chains: GraphChain[] = [];
+	const chains = [...(over.chains ?? [])];
 	const regroups = [...(over.regroups ?? [])];
 	const sources = [...(over.sources ?? [])];
 
@@ -305,6 +306,31 @@ describe("search_propositions tool", () => {
 		const res = (await tools.search_propositions!.execute!("tc_rev", { query: "probability prior" })).details as string;
 		assert.match(res, /\[n_due\] "Bayes Rule".*\(Current subject: "Probability" · practiced · never practised · due\)/);
 		assert.match(res, /\[n_retained\] "Law of Total Probability".*\(Current subject: "Probability" · demonstrated · last practised 1d ago\)/);
+	});
+
+	it("includes incoming ('derived from') and outgoing ('used to derive') reasoning chains beneath matched candidates", async () => {
+		const { chatStore, graphStore } = fakeStores(
+			[
+				node("n_dot", "Dot Product", "Sum of products of components.", [pt("chat_ml")]),
+				node("n_mat", "Matrix Multiplication", "Combines matrices via row-column dot products.", [pt("chat_ml")]),
+				node("n_comp", "Linear Map Composition", "Matrix product represents composition of linear maps.", [pt("chat_ml")]),
+			],
+			{
+				chats: [
+					{ id: "chat_ml", title: "Machine Learning", createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z" },
+					{ id: "chat_la", title: "Linear Algebra", createdAt: "2026-11-02T00:00:00Z", updatedAt: "2026-11-02T00:00:00Z" },
+				],
+				chains: [
+					{ id: "arg_in", premises: ["n_dot"], conclusion: "n_mat", createdAt: "2026-10-01T00:00:00Z", provenance: [pt("chat_ml")] },
+					{ id: "arg_out", premises: ["n_mat"], conclusion: "n_comp", createdAt: "2026-10-01T00:00:00Z", provenance: [pt("chat_ml")] },
+				],
+			},
+		);
+		const tools = proberGraphTools({ chatStore, graphStore, chatId: "chat_la" });
+		const res = (await tools.search_propositions!.execute!("tc_chains", { query: "Matrix Multiplication", limit: 1 })).details as string;
+		assert.match(res, /1\. \[n_mat\] "Matrix Multiplication":/);
+		assert.match(res, /   derived from: Dot Product → Matrix Multiplication/);
+		assert.match(res, /   used to derive: Matrix Multiplication → Linear Map Composition/);
 	});
 });
 
