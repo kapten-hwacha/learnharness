@@ -36,6 +36,7 @@ import type {
 	ExtractionRunUsage,
 	GraphChain,
 	GraphNode,
+	GraphRegroup,
 
 	NotesSource,
 	SessionCheckpoint,
@@ -83,6 +84,7 @@ function memoryLedgers() {
 	const chains: GraphChain[] = [];
 	const checkpoints: SessionCheckpoint[] = [];
 	const coverage: CoverageEntry[] = [];
+	const regroups: GraphRegroup[] = [];
 	const sources = new Map<string, NotesSource>();
 	const positions = new Map<string, { x: number; y: number }>();
 		return {
@@ -96,6 +98,8 @@ function memoryLedgers() {
 		// the chat pipeline checkpoints one entry per covered message.
 		appendCoverage: (e) => void coverage.push({ ...e }),
 		readCoverage: () => coverage.map((e) => ({ ...e })),
+		appendRegroup: (r: GraphRegroup) => void regroups.push({ ...r }),
+		readRegroups: () => regroups.map((r) => ({ ...r })),
 		upsertSource: (s: NotesSource) => {
 			// Mirrors the real store: an upsert KEEPS the existing usage log.
 			const prev = sources.get(s.id);
@@ -124,6 +128,7 @@ function memoryLedgers() {
 			if (next.chains) chains.splice(0, chains.length, ...next.chains.map((c) => ({ ...c, premises: [...c.premises], provenance: [...c.provenance] })));
 			if (next.coverage) coverage.splice(0, coverage.length, ...next.coverage.map((c) => ({ ...c })));
 			if (next.checkpoints) checkpoints.splice(0, checkpoints.length, ...next.checkpoints.map((c) => ({ ...c })));
+			if (next.regroups) regroups.splice(0, regroups.length, ...next.regroups.map((r) => ({ ...r })));
 		},
 	} satisfies GraphStore;
 }

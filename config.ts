@@ -78,6 +78,7 @@ export const LEDGER_FILES = {
 	 *  the checkpoint's replacement for chat extractions — notes keep
 	 *  sessions.jsonl, whole-file as they are). */
 	coverage: path.join(PATHS.graph, "coverage.jsonl"),
+	regroups: path.join(PATHS.graph, "regroups.jsonl"),
 } as const;
 
 /**

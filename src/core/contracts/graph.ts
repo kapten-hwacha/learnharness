@@ -156,6 +156,23 @@ export interface SessionCheckpoint {
 	foldedAt: string;
 }
 
+/** One cross-subject regrouping assertion (regroups.jsonl line).
+ *  Reassigns a node's effective domain to targetSessionId while
+ *  preserving immutable birth provenance in nodes.jsonl. Later
+ *  lines for the same nodeId take precedence. */
+export interface GraphRegroup {
+	/** "rg_" + 12 hex chars (store-assigned). */
+	id: string;
+	/** Graph node ID (n_...). */
+	nodeId: string;
+	/** Target session ID (chatId or src_...). */
+	targetSessionId: string;
+	/** Justification from the agent for moving this node. */
+	reason: string;
+	/** ISO timestamp when the regroup was recorded. */
+	regroupedAt: string;
+}
+
 /** coverage.jsonl line (vision-extraction-coverage.md, settled 2026-09-15):
  *  ONE MESSAGE of one chat has been extracted — by content fingerprint over
  *  exactly what the extraction view sees. The MESSAGE is the unit of

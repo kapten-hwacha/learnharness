@@ -16,6 +16,7 @@ import type {
 	ChatSummary,
 	GraphChain,
 	GraphNode,
+	GraphRegroup,
 	JobKind,
 	JobRecord,
 	ExtractionRunUsage,
@@ -99,6 +100,11 @@ export interface GraphStore {
 	appendCoverage(entry: CoverageEntry): void;
 	readCoverage(): CoverageEntry[];
 
+	/** Append one cross-subject regrouping assertion. */
+	appendRegroup(regroup: GraphRegroup): void;
+	/** All regrouping assertions in append order. */
+	readRegroups(): readonly GraphRegroup[];
+
 	/** Append one cluster-naming run's usage (graph-global money channel) —
 	 *  idempotent per startedAt. */
 
@@ -133,6 +139,7 @@ export interface GraphStore {
 		chains?: GraphChain[];
 		coverage?: CoverageEntry[];
 		checkpoints?: SessionCheckpoint[];
+		regroups?: GraphRegroup[];
 	}): void;
 }
 

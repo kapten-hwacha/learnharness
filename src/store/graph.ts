@@ -39,6 +39,7 @@ import { assertGraphFormat, ensureGraphFormat } from "./graph-format.ts";
 import type {
 	GraphChain,
 	GraphNode,
+	GraphRegroup,
 	ExtractionRunUsage,
 	NotesSource,
 	Position,
@@ -126,6 +127,14 @@ const isCheckpoint = (v: unknown): v is SessionCheckpoint =>
 const isCoverageEntry = (v: unknown): v is CoverageEntry =>
 	isRecord(v) && isString(v.chatId) && isString(v.fp) && typeof v.tokens === "number" && isString(v.foldedAt);
 
+const isGraphRegroup = (v: unknown): v is GraphRegroup =>
+	isRecord(v) &&
+	isString(v.id) &&
+	isString(v.nodeId) &&
+	isString(v.targetSessionId) &&
+	isString(v.reason) &&
+	isString(v.regroupedAt);
+
 // ─── the port implementation ────────────────────────────────────────────────
 
 export const graphStore: GraphStore = {
@@ -160,6 +169,13 @@ export const graphStore: GraphStore = {
 	},
 	readCoverage(): CoverageEntry[] {
 		return readValid(LEDGER_FILES.coverage, isCoverageEntry);
+	},
+
+	appendRegroup(regroup: GraphRegroup): void {
+		appendLine(LEDGER_FILES.regroups, regroup);
+	},
+	readRegroups(): readonly GraphRegroup[] {
+		return readValid(LEDGER_FILES.regroups, isGraphRegroup);
 	},
 
 	// ── imported-notes bookkeeping (config.SOURCES_FILE — a JSON map) ──
@@ -219,12 +235,14 @@ export const graphStore: GraphStore = {
 		chains?: GraphChain[];
 		coverage?: CoverageEntry[];
 		checkpoints?: SessionCheckpoint[];
+		regroups?: GraphRegroup[];
 	}): void {
 		const files = {
 			nodes: LEDGER_FILES.nodes,
 			chains: LEDGER_FILES.chains,
 			coverage: LEDGER_FILES.coverage,
 			checkpoints: LEDGER_FILES.sessions,
+			regroups: LEDGER_FILES.regroups,
 		} as const;
 		for (const [key, records] of Object.entries(next) as [keyof typeof files, unknown[]][]) {
 			const file = files[key];
