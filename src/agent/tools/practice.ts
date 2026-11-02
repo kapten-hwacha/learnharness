@@ -253,6 +253,10 @@ export function practiceTools(ctx: PracticeToolContext): Record<string, AgentToo
 		skill: skillTool,
 		...(jobs?.research ? { research: jobs.research } : {}),
 		...(jobs ? { pdf: jobs.pdf! } : {}),
-		...(ctx.graph ? proberGraphTools(ctx.graph) : {}),
+		...(ctx.graph
+			? Object.fromEntries(
+					Object.entries(proberGraphTools(ctx.graph)).filter(([k]) => k === "list_sessions" || k === "list_propositions"),
+				)
+			: {}),
 	});
 }
