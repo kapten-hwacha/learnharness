@@ -164,6 +164,7 @@ const ACTIVITY_LABELS: Record<string, string> = {
 	ls: "Listing a directory…",
 	find: "Finding files…",
 	grep: "Searching file contents…",
+	skill: "Loading skill…",
 	research: "Dispatching research…",
 	demo: "Building a demo…",
 	visual: "Making a visual…",

@@ -16,12 +16,12 @@ function getCliproxyVersion(binary: string): string | null {
 			timeout: 2000,
 		});
 		const match = /CLIProxyAPI Version:\s*([^\s,]+)/i.exec(out);
-		return match ? match[1] : null;
+		return match && match[1] ? match[1] : null;
 	} catch (err: unknown) {
 		const stderr = (err as { stderr?: string })?.stderr ?? "";
 		const stdout = (err as { stdout?: string })?.stdout ?? "";
 		const match = /CLIProxyAPI Version:\s*([^\s,]+)/i.exec(stdout + stderr);
-		return match ? match[1] : null;
+		return match && match[1] ? match[1] : null;
 	}
 }
 

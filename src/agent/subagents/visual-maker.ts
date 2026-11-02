@@ -55,7 +55,8 @@ export interface VisualMakerOptions {
 
 const INSTRUCTIONS = `You are a visual maker — a diagram author + renderer for precise, spatial figures. You
 receive a brief describing ONE idea that needs exact placement (coordinate geometry, number lines,
-vectors, function plots, physical layouts — things auto-layout diagrams cannot express), and you return
+vectors, function plots, physical layouts, 2D chemical structures like skeletal formulas, Lewis structures,
+reaction mechanisms — things auto-layout diagrams cannot express), and you return
 ONE clean, correct SVG. You never see the lesson; the brief is everything you know.
 
 You do NOT decide what idea to show — the teacher already decided. Your job is faithful, precise
@@ -76,6 +77,7 @@ rendered PNG and confirmed it is true to the brief. Rendering success only prove
 says nothing about whether the geometry is right or the picture is readable. When you look:
 
 - Is every coordinate, angle, direction, and proportion actually correct? Re-derive the geometry if unsure.
+- For chemical structures: are bond angles (e.g. regular 120° hexagonal rings), heteroatom labels, formal charges, lone pairs, and curved electron-pushing arrows geometrically accurate, and do they never overlap or clip?
 - Are labels placed clearly, not overlapping lines or each other?
 - Is anything clipped by the viewBox, too small to read, or cramped?
 - Would a learner instantly read the intended idea from this picture alone?

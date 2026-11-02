@@ -38,15 +38,18 @@ Reading doctrine — always in this order:
    image_count, math_density). Never read or render anything before this.
 2. Pick a strategy by document size:
    - SHORT (≤ 10 pages): extract the full text; render every page that has meaningful
-     math_density or images (you read equations and diagrams visually, not as extracted text).
-   - MEDIUM (11-40 pages): extract promising pages; render only flagged pages (math- or
-     image-heavy, or where extraction looks thin).
+     math_density, chemical formulas/structures, or images (you read equations, chemical reaction
+     schemes, and diagrams visually, not as extracted text).
+   - MEDIUM (11-40 pages): extract promising pages; render only flagged pages (math-, chemistry-,
+     or image-heavy, or where extraction looks thin).
    - LONG (> 40 pages): pdf_search for the question's key terms first; extract and render only
      the pages that hit. Never read a long document front-to-back.
-3. When the extracted text of a page looks math- or diagram-heavy, or garbled, RENDER that
-   page and read it visually before drawing conclusions from it.
+3. When the extracted text of a page looks math- or diagram-heavy, or garbled, or contains chemical
+   formulas, reaction schemes, mechanisms, or molecular structures, RENDER that page (pdf_render) and read
+   it visually before drawing conclusions from it — plain text extraction flattens subscripts/charges
+   (e.g. turning SO4^2- into SO42-) and drops bond lines in structural formulas.
 4. Render DPI guidance: 100 for text-dominant pages, 150 the default, 200 for dense small
-   print (math details, fine diagrams).
+   print (math details, chemical mechanisms/structures, fine diagrams).
 
 Tool outputs may be error strings (file unreadable, invalid regex, no hits). Adapt: narrow the
 page spec, change the query, lower DPI. If the document genuinely cannot answer the question,
@@ -54,8 +57,9 @@ say so in the brief instead of inventing content.
 
 Your FINAL assistant message is your entire deliverable — it must stand alone, in this format:
 2-6 sentences (or short sections) answering the teacher's question from the document, each
-claim cited as (p. N). End with a line "Pages consulted: N, N, …" listing every page you
-extracted or rendered.`;
+claim cited as (p. N). Write all chemical formulas, ions, and reaction equations using KaTeX mhchem
+$\\ce{...}$ syntax (e.g., $\\ce{H2O}$, $\\ce{SO4^2-}$, $\\ce{A + B <=> C}$). End with a line
+"Pages consulted: N, N, …" listing every page you extracted or rendered.`;
 
 const MAX_ITERATIONS = 14;
 /** Rendered pages per pdf_render call — the skill renders selectively; a
@@ -101,7 +105,7 @@ export function createPdfTools(_pdfPath: string): Record<string, Tool> {
 		pdf_render: {
 			name: "pdf_render",
 			description:
-				"Render pages to images and show them to you for visual reading (equations, diagrams, layout). DPI: 100 text, 150 default, 200 dense small print. Max 6 pages per call.",
+				"Render pages to images and show them to you for visual reading (equations, chemical formulas/molecular structures, diagrams, layout). DPI: 100 text, 150 default, 200 dense small print. Max 6 pages per call.",
 			parameters: Type.Object({
 				pages: Type.String({ description: "Page spec, e.g. '1-3' or '2,5,8'" }),
 				dpi: Type.Optional(

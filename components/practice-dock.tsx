@@ -146,6 +146,12 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 					attachedFiles={attachments}
 					onAttach={(att) => setAttachments((prev) => [...prev.filter((a) => a.name !== att.name), att])}
 					onRemoveAttachment={(name) => setAttachments((prev) => prev.filter((a) => a.name !== name))}
+					onTranscribed={(transcription) => {
+						const current = thinkingRef.current.trim();
+						const next = current ? `${current}\n\n${transcription}` : transcription;
+						thinkingRef.current = next;
+						setThinking(next);
+					}}
 				/>
 			</div>
 

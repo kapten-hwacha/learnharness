@@ -244,4 +244,180 @@ describe("Quaderno DOM Interactions & Submission", () => {
 		assert.ok(Array.isArray(submittedAttachments));
 		assert.equal((submittedAttachments as Array<{ name: string }>)[0]?.name, "practice-sol.pdf");
 	});
+
+	it("QuestionDock: populates transcribed derivation into answer field and appends to existing text", async () => {
+		let submittedAnswer: unknown = null;
+
+		host = document.createElement("div");
+		document.body.appendChild(host);
+		root = createRoot(host);
+
+		globalThis.fetch = async () => {
+			return Response.json({
+				ok: true,
+				mode: "daemon",
+				attachment: {
+					name: "transcribed-derivation.pdf",
+					mimeType: "application/pdf",
+					data: "JVBERi0xLjQK...",
+				},
+				transcription: "Derivation: $x^2 = 2 \\implies x = \\sqrt{2} \\notin \\mathbb{Q}$",
+			});
+		};
+
+		await act(async () => {
+			root!.render(
+				<QuestionDock
+					toolName="explain"
+					toolCallId="call_explain_transcribe"
+					input={{
+						question: "Prove that sqrt(2) is irrational.",
+						correctAnswer: "Standard contradiction proof using divisibility by 2.",
+					}}
+					initialDraft={{
+						selection: { selected: new Set(), otherSelected: false, dontKnow: false },
+						thinking: "",
+						other: "",
+						text: "My starting assumption: assume sqrt(2) = a/b in lowest terms.",
+						confidenceIndex: 2,
+					}}
+					expanded={true}
+					onExpand={() => {}}
+					onSubmit={(ans) => {
+						submittedAnswer = ans;
+					}}
+				/>,
+			);
+		});
+
+		const attachBtn = host.querySelector('[data-testid="quaderno-attach-button"]') as HTMLButtonElement;
+		assert.ok(attachBtn, "attach button must exist");
+
+		await act(async () => {
+			attachBtn.click();
+		});
+
+		const submitBtn = host.querySelector('button[type="submit"]') as HTMLButtonElement;
+		assert.ok(submitBtn);
+		assert.equal(submitBtn.disabled, false);
+
+		await act(async () => {
+			submitBtn.click();
+		});
+
+		assert.ok(submittedAnswer !== null);
+		assert.equal(
+			(submittedAnswer as QuestionAnswerData).text,
+			"My starting assumption: assume sqrt(2) = a/b in lowest terms.\n\nDerivation: $x^2 = 2 \\implies x = \\sqrt{2} \\notin \\mathbb{Q}$",
+		);
+		assert.equal(
+			(submittedAnswer as QuestionAnswerData).attachments?.[0]?.name,
+			"transcribed-derivation.pdf",
+		);
+	});
+
+	it("PracticeDock: populates transcribed notes into thinking field", async () => {
+		let submittedText = "";
+		let submittedAttachments: unknown = null;
+
+		host = document.createElement("div");
+		document.body.appendChild(host);
+		root = createRoot(host);
+
+		globalThis.fetch = async () => {
+			return Response.json({
+				ok: true,
+				mode: "daemon",
+				attachment: {
+					name: "primes-solution.pdf",
+					mimeType: "application/pdf",
+					data: "JVBERi0xLjQK...",
+				},
+				transcription: "Let $p = 3$: $3^2 + 2 = 11$, which is prime.",
+			});
+		};
+
+		await act(async () => {
+			root!.render(
+				<PracticeDock
+					problemCallId="call_practice_transcribe"
+					input={{ statement: "Find all primes p such that p^2 + 2 is also prime." }}
+					expanded={true}
+					onExpand={() => {}}
+					onSubmit={(text, atts) => {
+						submittedText = text;
+						submittedAttachments = atts;
+					}}
+				/>,
+			);
+		});
+
+		const attachBtn = host.querySelector('[data-testid="quaderno-attach-button"]') as HTMLButtonElement;
+		assert.ok(attachBtn, "attach button must exist");
+
+		await act(async () => {
+			attachBtn.click();
+		});
+
+		const sendBtn = host.querySelector('[data-testid="practice-send"]') as HTMLButtonElement;
+		assert.ok(sendBtn);
+		assert.equal(sendBtn.disabled, false);
+
+		await act(async () => {
+			sendBtn.click();
+		});
+
+		assert.equal(submittedText, "Let $p = 3$: $3^2 + 2 = 11$, which is prime.");
+		assert.ok(Array.isArray(submittedAttachments));
+		assert.equal((submittedAttachments as Array<{ name: string }>)[0]?.name, "primes-solution.pdf");
+	});
+
+	it("QuadernoRoundTripBar: fires onTranscribed callback when pullPdf response contains transcription", async () => {
+		let attachedName = "";
+		let receivedTranscription = "";
+
+		host = document.createElement("div");
+		document.body.appendChild(host);
+		root = createRoot(host);
+
+		globalThis.fetch = async () => {
+			return Response.json({
+				ok: true,
+				mode: "daemon",
+				message: "Attached and transcribed math-notes.pdf",
+				attachment: {
+					name: "math-notes.pdf",
+					mimeType: "application/pdf",
+					data: "JVBERi0xLjQK...",
+				},
+				transcription: "Euler formula: $e^{i\\pi} + 1 = 0$",
+			});
+		};
+
+		await act(async () => {
+			root!.render(
+				<QuadernoRoundTripBar
+					title="Math Problem"
+					markdown="# Problem"
+					docTitle="math-notes"
+					onAttach={(att) => {
+						attachedName = att.name;
+					}}
+					onTranscribed={(t) => {
+						receivedTranscription = t;
+					}}
+				/>,
+			);
+		});
+
+		const attachBtn = host.querySelector('[data-testid="quaderno-attach-button"]') as HTMLButtonElement;
+		assert.ok(attachBtn);
+
+		await act(async () => {
+			attachBtn.click();
+		});
+
+		assert.equal(attachedName, "math-notes.pdf");
+		assert.equal(receivedTranscription, "Euler formula: $e^{i\\pi} + 1 = 0$");
+	});
 });

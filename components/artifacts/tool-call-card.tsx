@@ -39,6 +39,9 @@ function headlineArg(tool: string, input: unknown): string {
 	if (tool === "list_propositions" && typeof inp.session === "string" && inp.session.length > 0) {
 		return inp.session;
 	}
+	if (tool === "skill" && typeof inp.name === "string" && inp.name.length > 0) {
+		return inp.name;
+	}
 	return "";
 }
 

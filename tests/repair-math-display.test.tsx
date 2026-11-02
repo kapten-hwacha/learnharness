@@ -250,3 +250,33 @@ describe("practice display surfaces", () => {
 		assert.deepEqual(toLlmMessages(concluded), history);
 	});
 });
+
+describe("chemistry over-escaped tool JSON strings with mhchem", () => {
+	it("heals overescaped mhchem and pu commands and renders cleanly without .katex-error in ToolContentResponse, QuestionDock, and PracticeDock", () => {
+		const overescapedCe = "$\\\\ce{2H2 + O2 -> 2H2O}$";
+		const overescapedPu = "$\\\\pu{9.8 m/s^2}$";
+
+		assert.equal(repairMathForDisplay(overescapedCe), "$\\ce{2H2 + O2 -> 2H2O}$");
+		assert.equal(repairMathForDisplay(overescapedPu), "$\\pu{9.8 m/s^2}$");
+
+		for (const raw of [overescapedCe, overescapedPu]) {
+			for (const element of [
+				<ToolContentResponse>{raw}</ToolContentResponse>,
+				<QuestionDock
+					toolName="ask_user_question"
+					toolCallId="q_chem"
+					input={{ question: raw }}
+					expanded
+					onExpand={() => {}}
+					onSubmit={() => {}}
+				/>,
+				dock({ statement: raw }),
+			]) {
+				const html = renderToStaticMarkup(element);
+				const { document } = parseHTML(html);
+				assert.equal(document.querySelectorAll(".katex-error").length, 0, "zero .katex-error elements");
+				assert.ok(document.querySelectorAll(".katex").length >= 1, "renders at least one .katex span");
+			}
+		}
+	});
+});

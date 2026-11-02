@@ -90,12 +90,18 @@ function mathDensity(text: string): number {
 			(code >= 0x2200 && code <= 0x22ff) || // Mathematical Operators
 			(code >= 0x2100 && code <= 0x214f) || // Letterlike Symbols
 			(code >= 0x2190 && code <= 0x21ff) || // Arrows
+			(code >= 0x2070 && code <= 0x209f) || // Superscripts and Subscripts
 			(code >= 0x27c0 && code <= 0x27ef) || // Misc Mathematical Symbols-A
+			(code >= 0x27f0 && code <= 0x27ff) || // Supplemental Arrows-A (long arrows)
 			(code >= 0x2980 && code <= 0x29ff) || // Misc Mathematical Symbols-B
 			(code >= 0x2a00 && code <= 0x2aff) || // Supplemental Mathematical Operators
 			(code >= 0x0370 && code <= 0x03ff) || // Greek
 			(code >= 0x1d400 && code <= 0x1d7ff) || // Mathematical Alphanumeric Symbols
-			"∫∑∏√∂∇∞≈≠≤≥±×÷∈∉⊂⊃∪∩∧∨¬∀∃∅".includes(c)
+			code === 0x00b0 ||
+			code === 0x00b2 ||
+			code === 0x00b3 ||
+			code === 0x00b9 ||
+			"∫∑∏√∂∇∞≈≠≤≥±×÷∈∉⊂⊃∪∩∧∨¬∀∃∅⇌⇋∆".includes(c)
 		) {
 			mathChars++;
 		}

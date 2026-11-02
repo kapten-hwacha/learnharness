@@ -444,3 +444,31 @@ describe("over-escaped command heal — doubled backslashes in tool args (owner 
 	});
 });
 
+describe("render — chemistry formulas and units (KaTeX mhchem)", () => {
+	it("renders inline chemical formulas $\\ce{H2O}$ without errors", () => {
+		const html = render("Water is $\\ce{H2O}$.");
+		assert.ok(html.includes("katex"), "renders KaTeX span");
+		assert.ok(!html.includes("katex-display"), "inline formula is not display");
+		assert.ok(!html.includes("katex-error"), "zero .katex-error elements");
+	});
+
+	it("renders charged ions $\\ce{SO4^2-}$ without errors", () => {
+		const html = render("Sulfate is $\\ce{SO4^2-}$.");
+		assert.ok(html.includes("katex"), "renders KaTeX span");
+		assert.ok(!html.includes("katex-error"), "zero .katex-error elements");
+	});
+
+	it("renders equilibrium reactions fenced in display math", () => {
+		const html = render("Equilibrium:\n\n$$\n\\ce{N2 + 3H2 <=> 2NH3}\n$$\n\nReversible.");
+		assert.ok(html.includes("katex-display"), "renders display KaTeX");
+		assert.ok(!html.includes("katex-error"), "zero .katex-error elements");
+	});
+
+	it("renders physical units $\\pu{12.3 kJ/mol}$ without errors", () => {
+		const html = render("Enthalpy change is $\\pu{12.3 kJ/mol}$.");
+		assert.ok(html.includes("katex"), "renders KaTeX span");
+		assert.ok(!html.includes("katex-display"), "inline units are not display");
+		assert.ok(!html.includes("katex-error"), "zero .katex-error elements");
+	});
+});
+

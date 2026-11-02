@@ -27,6 +27,7 @@ export interface QuadernoRoundTripBarProps {
 	attachedFiles?: readonly { name: string; mimeType: string; data: string }[];
 	onAttach: (attachment: QuadernoAttachmentPayload) => void;
 	onRemoveAttachment?: (name: string) => void;
+	onTranscribed?: (text: string) => void;
 }
 
 export function QuadernoRoundTripBar({
@@ -39,6 +40,7 @@ export function QuadernoRoundTripBar({
 	attachedFiles = [],
 	onAttach,
 	onRemoveAttachment,
+	onTranscribed,
 }: QuadernoRoundTripBarProps) {
 	const [activeDocTitle, setActiveDocTitle] = useState(docTitle);
 	const [sending, setSending] = useState(false);
@@ -93,6 +95,9 @@ export function QuadernoRoundTripBar({
 			const result = (await res.json()) as QuadernoActionResult;
 			if (result.ok && result.attachment) {
 				onAttach(result.attachment);
+				if (result.transcription && onTranscribed) {
+					onTranscribed(result.transcription);
+				}
 				setStatusMessage(result.message || `Attached ${result.attachment.name}`);
 			} else {
 				setStatusMessage(result.message || "No returned PDF found");

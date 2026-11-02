@@ -47,6 +47,7 @@ export type QuadernoActionRequest =
 			action: "pullPdf";
 			docTitle?: string | null;
 			filePath?: string | null;
+			transcribe?: boolean;
 	  };
 
 export interface QuadernoAttachmentPayload {
@@ -63,4 +64,5 @@ export interface QuadernoActionResult {
 	relativePath?: string;
 	filePath?: string;
 	attachment?: QuadernoAttachmentPayload;
+	transcription?: string;
 }

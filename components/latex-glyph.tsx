@@ -1,4 +1,5 @@
 import katex from "katex";
+import "katex/contrib/mhchem";
 
 /**
  * THE LaTeX glyph seam (owner ruling, 2026-09-30): UI connectors that

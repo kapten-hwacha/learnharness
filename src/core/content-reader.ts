@@ -1,6 +1,7 @@
 /** Source-preserving boundaries for tool-authored Markdown. Recovery never
  * mutates input, reserializes Markdown, or enters protected literal content. */
 import katex from "katex";
+import "katex/contrib/mhchem";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { mathFromMarkdown } from "mdast-util-math";
 import { math } from "micromark-extension-math";

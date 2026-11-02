@@ -132,4 +132,56 @@ describe("pdf-ops — the pdfjs text layer", () => {
 		assert.deepEqual(parsePageSpec("3", 3), [3]);
 		assert.deepEqual(parsePageSpec(" 2 , 1 ", 3), [1, 2]);
 	});
+
+	it("pdfInfo detects positive math density for Unicode chemical formulas and equilibrium arrows", async () => {
+		const toUnicode = `/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Tiny def /CMapType 2 def
+1 begincodespacerange <00> <FF> endcodespacerange
+5 beginbfchar
+<71> <2082>
+<72> <21CC>
+<73> <2084>
+<74> <00B2>
+<75> <207B>
+endbfchar
+endcmap CMapName currentdict /CMap defineresource pop end end`;
+
+		// "2Hq + Oq r 2HqO, SOstu" maps via ToUnicode to "2H₂ + O₂ ⇌ 2H₂O, SO₄²⁻"
+		const textStr = "2Hq + Oq r 2HqO, SOstu";
+		const content = `BT /F1 12 Tf 50 700 Td (${textStr}) Tj ET`;
+		const streamLen = content.length;
+		const pdf = `%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 6 0 R >> endobj
+4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 5 0 R >> endobj
+5 0 obj << /Length ${toUnicode.length} >> stream
+${toUnicode}
+endstream endobj
+6 0 obj << /Length ${streamLen} >> stream
+${content}
+endstream endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000244 00000 n 
+0000000330 00000 n 
+0000000550 00000 n 
+trailer << /Size 7 /Root 1 0 R >>
+startxref
+700
+%%EOF`;
+
+		const tmpFile = path.join(os.tmpdir(), `pdf-ops-chem-${process.pid}.pdf`);
+		fs.writeFileSync(tmpFile, Buffer.from(pdf));
+		try {
+			const info = await pdfInfo(tmpFile);
+			assert.equal(info.page_count, 1);
+			assert.ok(info.pages[0]!.math_density > 0, `expected math_density > 0, got ${info.pages[0]!.math_density}`);
+		} finally {
+			fs.rmSync(tmpFile, { force: true });
+		}
+	});
 });

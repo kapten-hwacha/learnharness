@@ -18,6 +18,7 @@ import {
 import {
 	parseQuadernoDotEnv,
 	buildQuadernoDocTitle,
+	cleanTranscribedMarkdown,
 } from "../core/quaderno.ts";
 
 /**
@@ -79,6 +80,21 @@ export async function resolveQuadernoConfig(opts?: {
 	};
 }
 
+const SUP_ASCII_MAP: Record<string, string> = {
+	"\u2070": "0",
+	"\u00B9": "1",
+	"\u00B2": "2",
+	"\u00B3": "3",
+	"\u2074": "4",
+	"\u2075": "5",
+	"\u2076": "6",
+	"\u2077": "7",
+	"\u2078": "8",
+	"\u2079": "9",
+	"\u207A": "+",
+	"\u207B": "-",
+};
+
 /**
  * Helper to sanitize markdown text into safe ASCII for standard PDF rendering.
  */
@@ -89,6 +105,16 @@ function sanitizePdfText(str: string): string {
 		.replace(/[\u2013\u2014]/g, "-")
 		.replace(/\u2026/g, "...")
 		.replace(/\u2022/g, "*")
+		.replace(/[\u2080-\u2089]/g, (c) => String(c.charCodeAt(0) - 0x2080))
+		.replace(/\u208A/g, "+")
+		.replace(/\u208B/g, "-")
+		.replace(/[\u2070\u00B9\u00B2\u00B3\u2074-\u2079\u207A\u207B]+/g, (m) => `^${m.split("").map((c) => SUP_ASCII_MAP[c] || c).join("")}`)
+		.replace(/[\u21CC\u21CB]/g, "<=>")
+		.replace(/[\u2192\u27F6]/g, "->")
+		.replace(/[\u2190\u27F5]/g, "<-")
+		.replace(/[\u2194\u27F7]/g, "<->")
+		.replace(/[\u2206\u0394]/g, "Delta")
+		.replace(/\u00B0/g, " deg")
 		.replace(/[^\x20-\x7E\t\n\r]/g, " ");
 }
 
@@ -545,10 +571,58 @@ export async function executeQuadernoAction(
 		const docTitle = fileName.replace(/\.pdf$/i, "");
 		const rel = path.relative(config.syncDir, resolvedPath);
 
+		// 4. Best-effort handwritten note & math transcription via companion daemon
+		let transcription: string | undefined;
+		let transcriptionAttempted = false;
+
+		if (req.transcribe !== false) {
+			transcriptionAttempted = true;
+			try {
+				const form = new FormData();
+				form.append("doc_path", resolvedPath);
+
+				const headers: Record<string, string> = { Accept: "application/json" };
+				if (config.apiKey) headers["X-API-Key"] = config.apiKey;
+
+				const transcribeRes = await fetchImpl(`${config.baseUrl}/api/documents/transcribe`, {
+					method: "POST",
+					headers,
+					body: form,
+					signal: AbortSignal.timeout(45000),
+				});
+
+				if (transcribeRes.ok) {
+					const transcribeData = (await transcribeRes.json()) as {
+						content?: string;
+						markdown?: string;
+						transcription?: string;
+					};
+					const rawContent =
+						transcribeData.content ??
+						transcribeData.markdown ??
+						transcribeData.transcription ??
+						"";
+					const cleaned = cleanTranscribedMarkdown(rawContent);
+					if (cleaned) {
+						transcription = cleaned;
+					}
+				}
+			} catch {
+				// Companion transcription is best-effort; fall back gracefully
+			}
+		}
+
+		let message = `Attached ${fileName} from ${config.folder}/`;
+		if (transcription) {
+			message = `Attached and transcribed ${fileName} from ${config.folder}/`;
+		} else if (transcriptionAttempted && syncSucceeded) {
+			message = `Attached ${fileName} from ${config.folder}/ (transcription unavailable)`;
+		}
+
 		return {
 			ok: true,
 			mode: syncSucceeded ? "daemon" : "filesystem",
-			message: `Attached ${fileName} from ${config.folder}/`,
+			message,
 			docTitle,
 			relativePath: rel.startsWith("..") ? fileName : rel,
 			filePath: resolvedPath,
@@ -557,6 +631,7 @@ export async function executeQuadernoAction(
 				mimeType: "application/pdf",
 				data: base64Data,
 			},
+			...(transcription ? { transcription } : {}),
 		};
 	}
 

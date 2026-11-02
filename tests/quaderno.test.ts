@@ -14,6 +14,8 @@ import {
 	formatQuestionForQuaderno,
 	formatPracticeProblemForQuaderno,
 	buildColdCompressionSheet,
+	cleanTranscribedMarkdown,
+	normalizeTranscribedChemistry,
 } from "../src/core/quaderno.ts";
 import {
 	resolveQuadernoConfig,
@@ -128,6 +130,125 @@ OTHER_VAR=ignored
 		assert.ok(sheet.markdown.includes("1. Derive the wave equation in vacuum"));
 		assert.ok(sheet.markdown.includes("## Cold Reconstruction & Derivation (Write below on Quaderno)"));
 	});
+
+	it("cleanTranscribedMarkdown strips companion header and redundant single Page 1 heading", () => {
+		const raw = [
+			"# Linear Independence - Transcribed Notes",
+			"",
+			"> **Source File**: `linear-independence.pdf`  ",
+			"> **Transcribed**: 2026-11-01 19:30:00  ",
+			"> **Model**: `gemini-3.8-flash`  ",
+			"> **Pages**: 1 of 1  ",
+			"",
+			"---",
+			"",
+			"## Page 1",
+			"",
+			"Assume $c_1 v_1 + c_2 v_2 = 0$.",
+			"Taking inner product with $v_1$:",
+			"$$\\langle v_1, c_1 v_1 + c_2 v_2 \\rangle = c_1 \\|v_1\\|^2 = 0 \\implies c_1 = 0$$",
+			"",
+			"---",
+		].join("\n");
+
+		const cleaned = cleanTranscribedMarkdown(raw);
+		assert.ok(!cleaned.includes("Transcribed Notes"));
+		assert.ok(!cleaned.includes("Source File"));
+		assert.ok(!cleaned.includes("Page 1"));
+		assert.ok(cleaned.startsWith("Assume $c_1 v_1 + c_2 v_2 = 0$."));
+		assert.ok(cleaned.includes("c_1 = 0"));
+	});
+
+	it("cleanTranscribedMarkdown retains page headers when multiple pages exist", () => {
+		const raw = [
+			"# Two Page Solution - Transcribed Notes",
+			"> **Source File**: `two-page.pdf`  ",
+			"> **Pages**: 1, 2 of 2  ",
+			"---",
+			"",
+			"## Page 1",
+			"",
+			"Step 1: Compute matrix characteristic polynomial.",
+			"",
+			"---",
+			"",
+			"## Page 2",
+			"",
+			"Step 2: Solve for eigenvalues.",
+		].join("\n");
+
+		const cleaned = cleanTranscribedMarkdown(raw);
+		assert.ok(cleaned.includes("## Page 1"));
+		assert.ok(cleaned.includes("## Page 2"));
+		assert.ok(cleaned.includes("Step 1: Compute"));
+		assert.ok(cleaned.includes("Step 2: Solve"));
+	});
+
+	it("cleanTranscribedMarkdown preserves raw text when no companion header is present", () => {
+		const raw = "Simple handwritten solution without header: $x = 42$.";
+		assert.equal(cleanTranscribedMarkdown(raw), raw);
+		assert.equal(cleanTranscribedMarkdown(""), "");
+		assert.equal(cleanTranscribedMarkdown("   \n\t  "), "");
+	});
+
+	it("normalizeTranscribedChemistry normalizes standalone Unicode chemical formulas in prose", () => {
+		const input = "Mix H₂O with SO₄²⁻ and Ca(OH)₂.";
+		const output = normalizeTranscribedChemistry(input);
+		assert.equal(output, "Mix $\\ce{H2O}$ with $\\ce{SO4^2-}$ and $\\ce{Ca(OH)2}$.");
+	});
+
+	it("normalizeTranscribedChemistry normalizes full Unicode reaction equations in prose", () => {
+		assert.equal(
+			normalizeTranscribedChemistry("Combustion: 2H₂ + O₂ → 2H₂O"),
+			"Combustion: $\\ce{2H2 + O2 -> 2H2O}$",
+		);
+		assert.equal(
+			normalizeTranscribedChemistry("Haber process: N₂ + 3H₂ ⇌ 2NH₃"),
+			"Haber process: $\\ce{N2 + 3H2 <=> 2NH3}$",
+		);
+	});
+
+	it("normalizeTranscribedChemistry converts verbose LaTeX chemical runs inside math spans", () => {
+		assert.equal(
+			normalizeTranscribedChemistry("$\\text{H}_2\\text{O}$"),
+			"$\\ce{H2O}$",
+		);
+		assert.equal(
+			normalizeTranscribedChemistry("$\\mathrm{SO}_4^{2-}$"),
+			"$\\ce{SO4^2-}$",
+		);
+		assert.equal(
+			normalizeTranscribedChemistry("$\\mathrm{Fe}^{3+}$ and $\\text{NH}_4^+$ and $\\text{CH}_3\\text{COOH}$"),
+			"$\\ce{Fe^3+}$ and $\\ce{NH4+}$ and $\\ce{CH3COOH}$",
+		);
+	});
+
+	it("normalizeTranscribedChemistry preserves ordinary math variables and code blocks", () => {
+		const mathInput = "$c_1 v_1 + c_2 v_2 = 0$";
+		assert.equal(normalizeTranscribedChemistry(mathInput), mathInput);
+
+		const inlineCode = "Use `H₂O` in the code.";
+		assert.equal(normalizeTranscribedChemistry(inlineCode), inlineCode);
+
+		const fencedCode = "```\nconst formula = \"2H₂ + O₂ → 2H₂O\";\n```";
+		assert.equal(normalizeTranscribedChemistry(fencedCode), fencedCode);
+	});
+
+	it("cleanTranscribedMarkdown applies chemistry normalization to companion transcription", () => {
+		const raw = [
+			"# Chemistry Notes - Transcribed Notes",
+			"> **Source File**: `chem.pdf`",
+			"> **Pages**: 1 of 1",
+			"---",
+			"",
+			"## Page 1",
+			"",
+			"Dissolve SO₄²⁻ in H₂O to yield 2H₂ + O₂ → 2H₂O.",
+		].join("\n");
+
+		const cleaned = cleanTranscribedMarkdown(raw);
+		assert.equal(cleaned, "Dissolve $\\ce{SO4^2-}$ in $\\ce{H2O}$ to yield $\\ce{2H2 + O2 -> 2H2O}$.");
+	});
 });
 
 describe("Quaderno Server Implementation", () => {
@@ -149,6 +270,17 @@ describe("Quaderno Server Implementation", () => {
 		assert.ok(text.includes("trailer\n"));
 		assert.ok(text.includes("startxref\n"));
 		assert.ok(text.trimEnd().endsWith("%%EOF"));
+	});
+
+	it("buildMinimalPdfBytes transliterates Unicode chemistry into readable ASCII in PDF stream", () => {
+		const bytes = buildMinimalPdfBytes(
+			"Chemical Reactions",
+			"Reaction: 2H₂ + O₂ ⇌ 2H₂O, SO₄²⁻",
+		);
+		const text = Buffer.from(bytes).toString("ascii");
+		assert.ok(text.includes("2H2 + O2 <=> 2H2O"));
+		assert.ok(text.includes("SO4^2-"));
+		assert.ok(!text.includes("2H  + O"));
 	});
 
 	it("resolveQuadernoConfig resolves defaults and expands tilde", async () => {
@@ -411,6 +543,131 @@ describe("Quaderno Server Implementation", () => {
 			);
 			assert.equal(traversal.ok, false);
 			assert.match(traversal.message, /Invalid filePath/);
+		} finally {
+			await fs.rm(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("executeQuadernoAction: pullPdf calls /api/documents/transcribe and returns cleaned transcription", async () => {
+		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lh-quaderno-test-"));
+		try {
+			const folderDir = path.join(tmpDir, "learn-harness");
+			await fs.mkdir(folderDir, { recursive: true });
+
+			const samplePdfBytes = Buffer.from("%PDF-1.4\nAnnotated Solution\n%%EOF");
+			const targetDocTitle = "taylor-expansion-101";
+			const targetPdfPath = path.join(folderDir, `${targetDocTitle}.pdf`);
+			await fs.writeFile(targetPdfPath, samplePdfBytes);
+
+			let syncCalled = false;
+			let transcribeCalled = false;
+			let capturedDocPath = "";
+			let capturedApiKey = "";
+
+			const result = await executeQuadernoAction(
+				{
+					action: "pullPdf",
+					docTitle: targetDocTitle,
+				},
+				{
+					config: {
+						baseUrl: "http://127.0.0.1:5000",
+						apiKey: "test-auth-key",
+						syncDir: tmpDir,
+						folder: "learn-harness",
+					},
+					fetchImpl: async (url, init) => {
+						const urlStr = String(url);
+						if (urlStr.endsWith("/api/sync")) {
+							syncCalled = true;
+							return new Response(JSON.stringify({ synced: 1 }), { status: 200 });
+						}
+						if (urlStr.endsWith("/api/documents/transcribe")) {
+							transcribeCalled = true;
+							const headers = init?.headers as Record<string, string>;
+							capturedApiKey = headers?.["X-API-Key"] ?? "";
+							const body = init?.body as FormData;
+							capturedDocPath = String(body.get("doc_path"));
+							const fakeCompanionOutput = [
+								"# Taylor Expansion - Transcribed Notes",
+								"> **Source File**: `taylor-expansion-101.pdf`  ",
+								"> **Model**: `gemini-3.8-flash`  ",
+								"---",
+								"",
+								"## Page 1",
+								"",
+								"$f(x) = \\sum_{n=0}^\\infty \\frac{f^{(n)}(a)}{n!} (x-a)^n$",
+							].join("\n");
+							return new Response(
+								JSON.stringify({
+									status: "success",
+									content: fakeCompanionOutput,
+								}),
+								{ status: 200, headers: { "Content-Type": "application/json" } },
+							);
+						}
+						return new Response(null, { status: 404 });
+					},
+				},
+			);
+
+			assert.equal(syncCalled, true);
+			assert.equal(transcribeCalled, true);
+			assert.equal(capturedApiKey, "test-auth-key");
+			assert.equal(capturedDocPath, targetPdfPath);
+			assert.equal(result.ok, true);
+			assert.equal(result.mode, "daemon");
+			assert.equal(result.transcription, "$f(x) = \\sum_{n=0}^\\infty \\frac{f^{(n)}(a)}{n!} (x-a)^n$");
+			assert.ok(result.message.includes("Attached and transcribed"));
+		} finally {
+			await fs.rm(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("executeQuadernoAction: pullPdf skips transcription when transcribe is false", async () => {
+		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lh-quaderno-test-"));
+		try {
+			const folderDir = path.join(tmpDir, "learn-harness");
+			await fs.mkdir(folderDir, { recursive: true });
+
+			const samplePdfBytes = Buffer.from("%PDF-1.4\nNo OCR\n%%EOF");
+			const targetDocTitle = "no-ocr-doc";
+			const targetPdfPath = path.join(folderDir, `${targetDocTitle}.pdf`);
+			await fs.writeFile(targetPdfPath, samplePdfBytes);
+
+			let transcribeCalled = false;
+
+			const result = await executeQuadernoAction(
+				{
+					action: "pullPdf",
+					docTitle: targetDocTitle,
+					transcribe: false,
+				},
+				{
+					config: {
+						baseUrl: "http://127.0.0.1:5000",
+						apiKey: "test-auth-key",
+						syncDir: tmpDir,
+						folder: "learn-harness",
+					},
+					fetchImpl: async (url) => {
+						const urlStr = String(url);
+						if (urlStr.endsWith("/api/sync")) {
+							return new Response(JSON.stringify({ synced: 1 }), { status: 200 });
+						}
+						if (urlStr.endsWith("/api/documents/transcribe")) {
+							transcribeCalled = true;
+							return new Response(JSON.stringify({ status: "success" }), { status: 200 });
+						}
+						return new Response(null, { status: 404 });
+					},
+				},
+			);
+
+			assert.equal(transcribeCalled, false);
+			assert.equal(result.ok, true);
+			assert.equal(result.transcription, undefined);
+			assert.equal(result.message, `Attached ${targetDocTitle}.pdf from learn-harness/`);
 		} finally {
 			await fs.rm(tmpDir, { recursive: true, force: true });
 		}

@@ -921,6 +921,19 @@ function QuestionDockForm({
 					attachedFiles={attachments}
 					onAttach={(att) => setAttachments((prev) => [...prev.filter((a) => a.name !== att.name), att])}
 					onRemoveAttachment={(name) => setAttachments((prev) => prev.filter((a) => a.name !== name))}
+					onTranscribed={(transcription) => {
+						if (qd.mode === "text") {
+							const current = answerTextRef.current.trim();
+							const next = current ? `${current}\n\n${transcription}` : transcription;
+							answerTextRef.current = next;
+							setText(next);
+						} else {
+							const current = thinkingTextRef.current.trim();
+							const next = current ? `${current}\n\n${transcription}` : transcription;
+							thinkingTextRef.current = next;
+							setThinking(next);
+						}
+					}}
 				/>
 			</div>
 			<form
