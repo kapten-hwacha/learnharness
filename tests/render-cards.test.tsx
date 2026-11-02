@@ -533,6 +533,24 @@ describe("probe-done card", () => {
 		);
 		assert.match(html, /Writing the assessment/);
 	});
+
+	it("renders Digested, Rote, and Gap status badges when status is present on strands", () => {
+		const withBadges = {
+			strands: [
+				{ strand: "linear independence", status: "digested", assessment: "Solid geometric grasp." },
+				{ strand: "characteristic polynomial", status: "rote", assessment: "Computes det(A - λI) mechanically." },
+				{ strand: "spectral theorem", status: "gap", assessment: "Not yet encountered." },
+			],
+		};
+		const html = renderToStaticMarkup(
+			<ProbeDoneCard
+				part={{ state: "output-available", input: { assessment: withBadges }, output: { ok: true } } as never}
+			/>,
+		);
+		assert.match(html, /Digested/);
+		assert.match(html, /Rote/);
+		assert.match(html, /Gap/);
+	});
 });
 
 // ─── the explain reveal (free-recall, owner 2026-09-27) ────────────────────

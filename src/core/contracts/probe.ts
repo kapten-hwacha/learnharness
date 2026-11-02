@@ -17,10 +17,15 @@
 
 import { Type, type Static } from "typebox";
 
+export type ProbeStrandStatus = "digested" | "rote" | "gap";
+
 /** One dependency strand the planned lesson will rest on. */
 export interface ProbeStrand {
 	/** Name/description of the strand (e.g. "the derivative as a limit"). */
 	strand: string;
+	/** Classification of his foundation on this strand: 'digested' (verified structural
+	 *  intuition), 'rote' (formula recall without intuition), or 'gap' (missing foundation). */
+	status?: ProbeStrandStatus;
 	/** Free-form: where the learner's edge sits on this strand — floor,
 	 *  ceiling, misconceptions found, what to build from. */
 	assessment: string;
@@ -53,6 +58,15 @@ export const probeDoneInputSchema = Type.Object({
 						description:
 							"The dependency strand (e.g. 'the derivative as a limit') — a name the plan can hang a node on.",
 					}),
+					status: Type.Optional(
+						Type.Union(
+							[Type.Literal("digested"), Type.Literal("rote"), Type.Literal("gap")],
+							{
+								description:
+									"Classification of his foundation on this strand: 'digested' (verified structural intuition, safe to build on), 'rote' (formula or rule recall without underlying causal intuition — needs intuition repair), or 'gap' (missing or broken foundation — must be built from unconditional truths). Always supply this for every strand.",
+							},
+						),
+					),
 					assessment: Type.String({
 						description:
 							"Where his edge sits on this strand: the floor (what he reliably gets right), the ceiling (where it runs out), " +

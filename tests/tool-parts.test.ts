@@ -165,6 +165,33 @@ describe("parseProbeDoneInput", () => {
 	it("a mid-stream partial (no strands yet) does not parse", () => {
 		assert.equal(parseProbeDoneInput({ assessment: { summary: "…" } }), undefined);
 	});
+
+	it("accepts strands with status ('digested' | 'rote' | 'gap') and rejects invalid status values", () => {
+		const withStatus = {
+			assessment: {
+				strands: [
+					{ strand: "eigenvalues", status: "digested", assessment: "Solid geometric intuition." },
+					{ strand: "covariance matrix", status: "rote", assessment: "Recalls formula, shaky on geometry." },
+					{ strand: "Gaussian conditioning", status: "gap", assessment: "Needs derivation from joint density." },
+				],
+				summary: "Master Gaussian conditioning first.",
+			},
+		};
+		assert.ok(Value.Check(probeDoneInputSchema, withStatus));
+		const parsed = parseProbeDoneInput(withStatus);
+		assert.ok(parsed);
+		assert.equal(parsed.assessment.strands[0]?.status, "digested");
+		assert.equal(parsed.assessment.strands[1]?.status, "rote");
+		assert.equal(parsed.assessment.strands[2]?.status, "gap");
+
+		const invalidStatus = {
+			assessment: {
+				strands: [{ strand: "eigenvalues", status: "mastered", assessment: "Invalid enum." }],
+			},
+		};
+		assert.equal(Value.Check(probeDoneInputSchema, invalidStatus), false);
+		assert.equal(parseProbeDoneInput(invalidStatus), undefined);
+	});
 });
 describe("LaTeX-escape restoration (the JSON-debris fix, owner ruling 2026-09-26)", () => {
 	// The exact live shapes from the modal-logic session: single-backslash

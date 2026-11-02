@@ -1,7 +1,13 @@
 "use client";
 
 import { ClipboardCheckIcon } from "lucide-react";
-import { parseProbeDoneInput, type ProbeDoneResult } from "@/src/core";
+import { parseProbeDoneInput, type ProbeDoneResult, type ProbeStrandStatus } from "@/src/core";
+
+const STATUS_BADGES: Record<ProbeStrandStatus, { label: string; className: string }> = {
+	digested: { label: "Digested", className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" },
+	rote: { label: "Rote", className: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
+	gap: { label: "Gap", className: "bg-rose-500/15 text-rose-600 dark:text-rose-400" },
+};
 
 /**
  * The probe conclusion card (docs/probe-teach-split.md §2): renders the
@@ -53,12 +59,24 @@ export function ProbeDoneCard({ part }: { part: { input?: unknown; output?: unkn
 				</p>
 			) : strands ? (
 				<div className="space-y-2">
-					{strands.map((s, i) => (
-						<div key={i} className="rounded-lg bg-background/60 px-3 py-2">
-							<div className="text-sm font-medium">{s.strand}</div>
-							<div className="mt-0.5 text-sm text-muted-foreground">{s.assessment}</div>
-						</div>
-					))}
+					{strands.map((s, i) => {
+						const badge = s.status ? STATUS_BADGES[s.status] : null;
+						return (
+							<div key={i} className="rounded-lg bg-background/60 px-3 py-2">
+								<div className="flex items-center gap-2">
+									<span className="text-sm font-medium">{s.strand}</span>
+									{badge ? (
+										<span
+											className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${badge.className}`}
+										>
+											{badge.label}
+										</span>
+									) : null}
+								</div>
+								<div className="mt-0.5 text-sm text-muted-foreground">{s.assessment}</div>
+							</div>
+						);
+					})}
 					{assessment?.summary && (
 						<p className="px-1 text-sm text-muted-foreground">{assessment.summary}</p>
 					)}
