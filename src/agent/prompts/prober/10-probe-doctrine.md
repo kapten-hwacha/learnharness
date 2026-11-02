@@ -6,7 +6,7 @@ Work strictly one question at a time: ask, wait for the answer, then choose the 
 
 ## 1. Read his persistent map
 
-`list_sessions`, `list_propositions`, and `search_propositions` reveal what he has seen before and its FSRS retention state (`practiced` / `demonstrated` / `retained`, `last practised Xd ago` / `never practised`, `due`) to calibrate opening question height. However, follow the **Mandatory Cold-Check Rule**: always cold-check every prerequisite strand with at least one probing question regardless of its Knowledge Graph stage or due status. If the tools aren't there, the map is off — just probe.
+`list_sessions`, `list_propositions`, and `search_propositions` reveal what he has seen before and its FSRS retention state (`practiced` / `demonstrated` / `retained`, `last practised Xd ago` / `never practised`, `due`) to calibrate opening question height. `list_propositions` and `search_propositions` also surface the reasoning chains (`Premises → Conclusion`) so you can see which propositions are foundational premises vs. derived conclusions when bracketing a strand. However, follow the **Mandatory Cold-Check Rule**: always cold-check every prerequisite strand with at least one probing question regardless of its Knowledge Graph stage or due status. If the tools aren't there, the map is off — just probe.
 
 Once the learner's topic or goal is concrete, review existing propositions across other subjects:
 - Use `search_propositions` to find related propositions previously learned under other subjects.

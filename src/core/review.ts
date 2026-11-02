@@ -142,18 +142,93 @@ export function reviewState(practiceRecords: PracticeHistory, graphNodes: readon
 export function dueReviews(state: ReadonlyMap<string, PropositionReviewState>, nodes: readonly GraphNode[], chains: readonly GraphChain[], now: number): { due: string[]; nextDueAt: number | null } {
 	const byId = new Map(nodes.map((node) => [node.id, node]));
 	const serves = new Map<string, number>();
-	for (const chain of chains) for (const premise of chain.premises) serves.set(premise, (serves.get(premise) ?? 0) + 1);
-	const entries = [...state].filter(([, value]) => value.dueAt <= now);
-	entries.sort(([aId, a], [bId, b]) => {
-		if (a.lane !== b.lane) return a.lane === "review" ? -1 : 1;
-		if (a.lane === "review" && a.retrievability !== b.retrievability) return (a.retrievability ?? 1) - (b.retrievability ?? 1);
-		if (a.lane === "review" && serves.get(aId) !== serves.get(bId)) return (serves.get(bId) ?? 0) - (serves.get(aId) ?? 0);
-		if (a.lane === "new") return parseTimestamp(byId.get(aId)?.createdAt) - parseTimestamp(byId.get(bId)?.createdAt) || aId.localeCompare(bId);
+	for (const chain of chains) {
+		for (const premise of new Set(chain.premises)) {
+			serves.set(premise, (serves.get(premise) ?? 0) + 1);
+		}
+	}
+
+	const compareEntry = ([aId, a]: [string, PropositionReviewState], [bId, b]: [string, PropositionReviewState]): number => {
+		if (a.lane === "review") {
+			const aRet = a.retrievability ?? 1;
+			const bRet = b.retrievability ?? 1;
+			if (aRet !== bRet) return aRet - bRet;
+			const aServes = serves.get(aId) ?? 0;
+			const bServes = serves.get(bId) ?? 0;
+			if (aServes !== bServes) return bServes - aServes;
+			return parseTimestamp(byId.get(aId)?.createdAt) - parseTimestamp(byId.get(bId)?.createdAt) || aId.localeCompare(bId);
+		}
+		if (a.lane === "new") {
+			const aServes = serves.get(aId) ?? 0;
+			const bServes = serves.get(bId) ?? 0;
+			if (aServes !== bServes) return bServes - aServes;
+			return parseTimestamp(byId.get(aId)?.createdAt) - parseTimestamp(byId.get(bId)?.createdAt) || aId.localeCompare(bId);
+		}
 		return aId.localeCompare(bId);
-	});
+	};
+
+	const orderLane = (laneEntries: Array<[string, PropositionReviewState]>): string[] => {
+		const entryById = new Map(laneEntries);
+		const laneSet = new Set(entryById.keys());
+		const dependents = new Map<string, Set<string>>();
+		const inDegree = new Map<string, number>();
+		for (const id of laneSet) {
+			dependents.set(id, new Set());
+			inDegree.set(id, 0);
+		}
+		for (const chain of chains) {
+			if (!laneSet.has(chain.conclusion)) continue;
+			for (const premise of chain.premises) {
+				if (!laneSet.has(premise) || premise === chain.conclusion) continue;
+				const deps = dependents.get(premise)!;
+				if (!deps.has(chain.conclusion)) {
+					deps.add(chain.conclusion);
+					inDegree.set(chain.conclusion, (inDegree.get(chain.conclusion) ?? 0) + 1);
+				}
+			}
+		}
+		const ready: Array<[string, PropositionReviewState]> = laneEntries.filter(([id]) => (inDegree.get(id) ?? 0) === 0);
+		const scheduled = new Set<string>();
+		const ordered: string[] = [];
+
+		while (ready.length > 0) {
+			ready.sort(compareEntry);
+			const [uId] = ready.shift()!;
+			ordered.push(uId);
+			scheduled.add(uId);
+			for (const vId of dependents.get(uId) ?? []) {
+				const nextDeg = (inDegree.get(vId) ?? 1) - 1;
+				inDegree.set(vId, nextDeg);
+				if (nextDeg === 0) {
+					ready.push([vId, entryById.get(vId)!]);
+				}
+			}
+		}
+
+		if (scheduled.size < laneEntries.length) {
+			const unscheduled = laneEntries.filter(([id]) => !scheduled.has(id));
+			unscheduled.sort(compareEntry);
+			for (const [id] of unscheduled) {
+				ordered.push(id);
+			}
+		}
+
+		return ordered;
+	};
+
+	const dueEntries = [...state].filter(([, value]) => value.dueAt <= now);
+	const reviewEntries = dueEntries.filter(([, value]) => value.lane === "review");
+	const newEntries = dueEntries.filter(([, value]) => value.lane === "new");
+
+	const due = [...orderLane(reviewEntries), ...orderLane(newEntries)];
+
 	let nextDueAt: number | null = null;
-	for (const [, value] of state) if (value.dueAt > now && (nextDueAt === null || value.dueAt < nextDueAt)) nextDueAt = value.dueAt;
-	return { due: entries.map(([id]) => id), nextDueAt };
+	for (const [, value] of state) {
+		if (value.dueAt > now && (nextDueAt === null || value.dueAt < nextDueAt)) {
+			nextDueAt = value.dueAt;
+		}
+	}
+	return { due, nextDueAt };
 }
 
 export function reviewCalibration(records: readonly PracticeRecord[], nodes: readonly GraphNode[]): { brier: number | null; logLoss: number | null; n: number } {

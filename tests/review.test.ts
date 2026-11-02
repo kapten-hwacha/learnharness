@@ -88,6 +88,51 @@ describe("due reviews and calibration", () => {
 		]);
 		assert.deepEqual(dueReviews(items, nodes, [], DAY), { due: ["n1", "n2"], nextDueAt: null });
 	});
+	it("orders due premises before due conclusions within each lane, then releases conclusions to compete by retrievability and serves count", () => {
+		const t0 = new Date(0).toISOString();
+		const nodes: GraphNode[] = [
+			{ ...node, id: "n_conc", name: "Conclusion", createdAt: t0 },
+			{ ...node, id: "n_prem", name: "Premise", createdAt: t0 },
+			{ ...node, id: "n_mid", name: "Unrelated Mid", createdAt: t0 },
+			{ ...node, id: "n_new_leaf", name: "New Leaf", createdAt: t0 },
+			{ ...node, id: "n_new_root", name: "New Root", createdAt: t0 },
+		];
+		const chains = [
+			{ id: "arg_rev", premises: ["n_prem"], conclusion: "n_conc", createdAt: t0, provenance: [] },
+			{ id: "arg_new", premises: ["n_new_root"], conclusion: "n_new_leaf", createdAt: t0, provenance: [] },
+		];
+		const items = new Map([
+			// n_conc has lower retrievability (0.3) than n_prem (0.5) and n_mid (0.6), but depends on n_prem
+			["n_conc", { stability: 1, difficulty: 5, lastReview: 0, reviews: 1, retrievability: 0.3, dueAt: 0, lane: "review" as const, seedRating: 3 as const, stage: "practiced" as const }],
+			["n_prem", { stability: 1, difficulty: 5, lastReview: 0, reviews: 1, retrievability: 0.5, dueAt: 0, lane: "review" as const, seedRating: 3 as const, stage: "practiced" as const }],
+			["n_mid", { stability: 1, difficulty: 5, lastReview: 0, reviews: 1, retrievability: 0.6, dueAt: 0, lane: "review" as const, seedRating: 3 as const, stage: "practiced" as const }],
+			// In 'new', n_new_leaf ('n_new_leaf' < 'n_new_root' lexicographically) depends on n_new_root
+			["n_new_leaf", { stability: null, difficulty: null, lastReview: null, reviews: 0, retrievability: null, dueAt: 0, lane: "new" as const, seedRating: 3 as const, stage: "practiced" as const }],
+			["n_new_root", { stability: null, difficulty: null, lastReview: null, reviews: 0, retrievability: null, dueAt: 0, lane: "new" as const, seedRating: 3 as const, stage: "practiced" as const }],
+		]);
+		// In review: n_prem (0.5, ready) beats n_mid (0.6, ready); once n_prem is queued, n_conc (0.3) unlocks and beats n_mid (0.6).
+		// In new: n_new_root precedes n_new_leaf despite 'n_new_leaf' < 'n_new_root'.
+		assert.deepEqual(dueReviews(items, nodes, chains, DAY), {
+			due: ["n_prem", "n_conc", "n_mid", "n_new_root", "n_new_leaf"],
+			nextDueAt: null,
+		});
+	});
+	it("handles cyclic chains gracefully without dropping due items", () => {
+		const t0 = new Date(0).toISOString();
+		const nodes: GraphNode[] = [
+			{ ...node, id: "n_b", name: "B", createdAt: t0 },
+			{ ...node, id: "n_a", name: "A", createdAt: t0 },
+		];
+		const chains = [
+			{ id: "c1", premises: ["n_a"], conclusion: "n_b", createdAt: t0, provenance: [] },
+			{ id: "c2", premises: ["n_b"], conclusion: "n_a", createdAt: t0, provenance: [] },
+		];
+		const items = new Map([
+			["n_b", { stability: null, difficulty: null, lastReview: null, reviews: 0, retrievability: null, dueAt: 0, lane: "new" as const, seedRating: 3 as const, stage: "practiced" as const }],
+			["n_a", { stability: null, difficulty: null, lastReview: null, reviews: 0, retrievability: null, dueAt: 0, lane: "new" as const, seedRating: 3 as const, stage: "practiced" as const }],
+		]);
+		assert.deepEqual(dueReviews(items, nodes, chains, DAY).due, ["n_a", "n_b"]);
+	});
 	it("calibrates subsequent review outcomes", () => {
 		const records = [baseRecord({ chatId: "p1", at: 0, rating: 4 }), baseRecord({ chatId: "p2", at: DAY, outcome: "solved" })];
 		const result = reviewCalibration(records, [node]);
