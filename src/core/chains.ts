@@ -53,6 +53,107 @@ export function chainsForSelection(
 	return included.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+export interface PracticeSelectionContext {
+	/** Supporting premise nodes not in the initial picks, in deterministic id order. */
+	supportingNodes: GraphNode[];
+	/** Reasoning chains whose conclusion is in picks (and all premises exist in allNodes),
+	 *  plus singleton chains for picked nodes that participate in no included chain. */
+	chains: ReasoningChain[];
+}
+
+export function practiceContextForSelection(
+	pickedNodes: ReadonlyArray<GraphNode>,
+	allNodes: ReadonlyArray<GraphNode>,
+	chains: ReadonlyArray<Pick<{ id: string; premises: string[]; conclusion: string }, "id" | "premises" | "conclusion">>,
+): PracticeSelectionContext {
+	const byId = new Map(allNodes.map((n) => [n.id, n]));
+	const pickedSet = new Set(pickedNodes.map((n) => n.id));
+	const chained = new Set<string>();
+	const included: ReasoningChain[] = [];
+	const supportingMap = new Map<string, GraphNode>();
+
+	for (const chain of chains) {
+		if (!pickedSet.has(chain.conclusion)) continue;
+		if (!chain.premises.every((p) => byId.has(p))) continue;
+		included.push({ id: chain.id, premises: [...chain.premises].sort(), conclusion: chain.conclusion });
+		chained.add(chain.conclusion);
+		for (const p of chain.premises) {
+			chained.add(p);
+			if (!pickedSet.has(p)) {
+				const node = byId.get(p);
+				if (node) {
+					supportingMap.set(p, node);
+				}
+			}
+		}
+	}
+
+	for (const node of pickedNodes) {
+		if (!chained.has(node.id)) {
+			included.push({ id: node.id, premises: [], conclusion: node.id });
+		}
+	}
+
+	return {
+		supportingNodes: Array.from(supportingMap.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+		chains: included.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+	};
+}
+
+/** Formatted chain lines ("Premise A, Premise B → Conclusion") for all live
+ *  chains whose conclusion belongs to sessionNodeIds, sorted by chain id. */
+export function sessionChainLines(
+	sessionNodeIds: ReadonlySet<string>,
+	allNodes: ReadonlyArray<Pick<GraphNode, "id" | "name">>,
+	chains: ReadonlyArray<Pick<{ id: string; premises: string[]; conclusion: string }, "id" | "premises" | "conclusion">>,
+): string[] {
+	const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+	const lookup: Record<string, { name: string }> = Object.fromEntries(
+		allNodes.map((n) => [n.id, { name: n.name }]),
+	);
+	const matching: Pick<{ id: string; premises: string[]; conclusion: string }, "id" | "premises" | "conclusion">[] = [];
+	for (const chain of chains) {
+		if (!sessionNodeIds.has(chain.conclusion)) continue;
+		if (!nodeMap.has(chain.conclusion) || !chain.premises.every((p) => nodeMap.has(p))) continue;
+		matching.push(chain);
+	}
+	matching.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+	return matching.map((c) => formatChainLine(c, lookup));
+}
+
+/** Formatted incoming (conclusion === nodeId) and outgoing (premises includes nodeId)
+ *  live chain lines for a single proposition node, sorted by chain id. */
+export function nodeChainLines(
+	nodeId: string,
+	allNodes: ReadonlyArray<Pick<GraphNode, "id" | "name">>,
+	chains: ReadonlyArray<Pick<{ id: string; premises: string[]; conclusion: string }, "id" | "premises" | "conclusion">>,
+): { incoming: string[]; outgoing: string[] } {
+	const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+	const lookup: Record<string, { name: string }> = Object.fromEntries(
+		allNodes.map((n) => [n.id, { name: n.name }]),
+	);
+	const incomingChains: Pick<{ id: string; premises: string[]; conclusion: string }, "id" | "premises" | "conclusion">[] = [];
+	const outgoingChains: Pick<{ id: string; premises: string[]; conclusion: string }, "id" | "premises" | "conclusion">[] = [];
+
+	for (const chain of chains) {
+		if (!nodeMap.has(chain.conclusion) || !chain.premises.every((p) => nodeMap.has(p))) continue;
+		if (chain.conclusion === nodeId) {
+			incomingChains.push(chain);
+		}
+		if (chain.premises.includes(nodeId)) {
+			outgoingChains.push(chain);
+		}
+	}
+
+	incomingChains.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+	outgoingChains.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+	return {
+		incoming: incomingChains.map((c) => formatChainLine(c, lookup)),
+		outgoing: outgoingChains.map((c) => formatChainLine(c, lookup)),
+	};
+}
+
 /** A chain as one world-facing line — the propositions' NAMES joined
  *  by the derivation arrow: "Premise one, Premise two → Conclusion"; a
  *  singleton shows its "(no premises)" marker. Pure + browser-safe.

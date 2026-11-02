@@ -1,5 +1,5 @@
-import { chainsForSelection, formatChainLine } from "@/src/core";
-import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
+import { chainsForSelection, formatChainLine, practiceContextForSelection } from "@/src/core";
+import { newGraphContextMessage, type GraphContextPick, type GraphNode, type PropositionReviewState } from "@/src/core";
 import { compactionInFlight, createChat, isTurnRunning, listChats, readReview, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
 import type { ChatListItem } from "@/src/core";
 
@@ -10,6 +10,14 @@ import type { ChatListItem } from "@/src/core";
  *  count — the sidebar's Background agents section is their channel now
  *  (a running spinner per row would double-signal them), so busy means
  *  exactly "a teach turn is in flight". */
+function formatReviewTag(item: PropositionReviewState | undefined, now: number, prefix?: string): string {
+	const base =
+		!item || item.lastReview === null
+			? "new"
+			: `review · ${item.stage} · last practised ${Math.max(0, Math.floor((now - item.lastReview) / 86_400_000))} days ago`;
+	return prefix ? `${prefix} · ${base}` : base;
+}
+
 export async function GET() {
 	const chats: ChatListItem[] = listChats().map((c) => ({
 		...c,
@@ -59,20 +67,33 @@ export async function POST(req: Request) {
 					)
 					.slice(0, 64)
 			: [];
-	if (kind === "practice" && picks.length > 0) {
-		const review = readReview();
-		for (const pick of picks) {
-			const item = review.state.get(pick.id);
-			pick.tag = item?.lastReview === null || !item ? "new" : `review · ${item.stage} · last practised ${Math.max(0, Math.floor((Date.now() - item.lastReview) / 86_400_000))} days ago`;
-		}
-	}
 	if (picks.length > 0) {
-		const byId = new Map(stores.graphStore.readNodes().map((n) => [n.id, n]));
-		const pickedNodes = picks.map((p) => byId.get(p.id)).filter((n) => n !== undefined);
-		const chainLines = chainsForSelection(pickedNodes, stores.graphStore.readChains()).map((c) =>
-			formatChainLine(c, Object.fromEntries(byId)),
-		);
-		stores.chatStore.saveMessages(chat.id, [newGraphContextMessage(picks, chainLines)]);
+		const allNodes = stores.graphStore.readNodes();
+		const allChains = stores.graphStore.readChains();
+		const byId = new Map(allNodes.map((n) => [n.id, n]));
+		const pickedNodes = picks.map((p) => byId.get(p.id)).filter((n): n is GraphNode => n !== undefined);
+
+		if (kind === "practice") {
+			const review = readReview();
+			const now = Date.now();
+			for (const pick of picks) {
+				pick.tag = formatReviewTag(review.state.get(pick.id), now);
+			}
+			const { supportingNodes, chains } = practiceContextForSelection(pickedNodes, allNodes, allChains);
+			const supportingPicks: GraphContextPick[] = supportingNodes.map((node) => ({
+				id: node.id,
+				name: node.name,
+				statement: node.statement,
+				tag: formatReviewTag(review.state.get(node.id), now, "supporting premise"),
+			}));
+			const chainLines = chains.map((c) => formatChainLine(c, Object.fromEntries(byId)));
+			stores.chatStore.saveMessages(chat.id, [newGraphContextMessage([...picks, ...supportingPicks], chainLines)]);
+		} else {
+			const chainLines = chainsForSelection(pickedNodes, allChains).map((c) =>
+				formatChainLine(c, Object.fromEntries(byId)),
+			);
+			stores.chatStore.saveMessages(chat.id, [newGraphContextMessage(picks, chainLines)]);
+		}
 	}
 	return Response.json({ id: chat.id, title: chat.title });
 }

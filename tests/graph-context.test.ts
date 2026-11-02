@@ -28,6 +28,7 @@ const { newGraphContextMessage } = await import("../src/core/native-messages.ts"
 const { toLlmMessages } = await import("../src/core/native-messages.ts");
 import type { LhMessage } from "../src/core/native-messages.ts";
 const { projectView } = await import("../src/core/view.ts");
+const { practiceContextForSelection, sessionChainLines, nodeChainLines } = await import("../src/core/chains.ts");
 const { POST } = await import("../app/api/chats/route.ts");
 const { initialPromptOwed } = await import("../components/chat.tsx");
 const { chatStore } = await import("../src/store/chats.ts");
@@ -155,5 +156,78 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 			const { id } = (await res.json()) as { id: string };
 			assert.equal(chatStore.getChat(id)!.messages.length, 0);
 		}
+	});
+
+	it("auto-pulls missing direct premises tagged as 'supporting premise' for practice sessions only, not teach sessions", async () => {
+		const node = (id: string, name: string, statement: string) => ({
+			id, name, statement, aliases: [] as string[], createdAt: "2026-10-01T00:00:00.000Z", provenance: [],
+		});
+		graphStore.appendNode(node("n_prem", "Cauchy-Schwarz", "Inner product bound."));
+		graphStore.appendNode(node("n_conc", "Triangle inequality", "Norm of sum bound."));
+		graphStore.appendChain({
+			id: "arg_tri", premises: ["n_prem"], conclusion: "n_conc",
+			provenance: [], createdAt: "2026-10-01T00:00:00.000Z",
+		});
+
+		const onlyConclusion = [{ id: "n_conc", name: "Triangle inequality", statement: "Norm of sum bound." }];
+
+		const pracRes = await POST(new Request("http://test/api/chats", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title: "practice norms", kind: "practice", graphContext: { propositions: onlyConclusion } }),
+		}));
+		const { id: pracId } = (await pracRes.json()) as { id: string };
+		const pracMsg = chatStore.getChat(pracId)!.messages[0] as { content: string };
+		assert.ok(pracMsg.content.includes("- [n_conc] Triangle inequality (new): Norm of sum bound."));
+		assert.ok(pracMsg.content.includes("- [n_prem] Cauchy-Schwarz (supporting premise · new): Inner product bound."));
+		assert.ok(pracMsg.content.includes("- Cauchy-Schwarz → Triangle inequality"));
+
+		const teachRes = await POST(new Request("http://test/api/chats", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title: "teach norms", graphContext: { propositions: onlyConclusion } }),
+		}));
+		const { id: teachId } = (await teachRes.json()) as { id: string };
+		const teachMsg = chatStore.getChat(teachId)!.messages[0] as { content: string };
+		assert.ok(teachMsg.content.includes("- [n_conc] Triangle inequality: Norm of sum bound."));
+		assert.ok(!teachMsg.content.includes("n_prem"));
+		assert.ok(teachMsg.content.includes("- Triangle inequality (no premises)"));
+	});
+});
+
+describe("practiceContextForSelection & chain line helpers", () => {
+	const allNodes = [
+		{ id: "n_p1", name: "Premise 1", statement: "S1", aliases: [], createdAt: "2026-10-01T00:00:00.000Z", provenance: [] },
+		{ id: "n_p2", name: "Premise 2", statement: "S2", aliases: [], createdAt: "2026-10-01T00:00:00.000Z", provenance: [] },
+		{ id: "n_c", name: "Conclusion", statement: "SC", aliases: [], createdAt: "2026-10-01T00:00:00.000Z", provenance: [] },
+		{ id: "n_solo", name: "Solo", statement: "SS", aliases: [], createdAt: "2026-10-01T00:00:00.000Z", provenance: [] },
+	];
+	const chains = [
+		{ id: "arg_1", premises: ["n_p2", "n_p1"], conclusion: "n_c" },
+		{ id: "arg_dangling", premises: ["n_missing"], conclusion: "n_c" },
+	];
+
+	it("auto-pulls missing direct premises for picked conclusions, skips dangling chains, and keeps unchained picks as singletons", () => {
+		const ctx = practiceContextForSelection([allNodes[2]!, allNodes[3]!], allNodes, chains);
+		assert.deepEqual(ctx.supportingNodes.map((n) => n.id), ["n_p1", "n_p2"]);
+		assert.deepEqual(ctx.chains, [
+			{ id: "arg_1", premises: ["n_p1", "n_p2"], conclusion: "n_c" },
+			{ id: "n_solo", premises: [], conclusion: "n_solo" },
+		]);
+	});
+
+	it("sessionChainLines and nodeChainLines format live chains deterministically and skip dangling endpoints", () => {
+		assert.deepEqual(
+			sessionChainLines(new Set(["n_c"]), allNodes, chains),
+			["Premise 1, Premise 2 → Conclusion"],
+		);
+		assert.deepEqual(
+			nodeChainLines("n_p1", allNodes, chains),
+			{ incoming: [], outgoing: ["Premise 1, Premise 2 → Conclusion"] },
+		);
+		assert.deepEqual(
+			nodeChainLines("n_c", allNodes, chains),
+			{ incoming: ["Premise 1, Premise 2 → Conclusion"], outgoing: [] },
+		);
 	});
 });
