@@ -28,11 +28,12 @@ export function createPortFetch(postToWorker: (msg: unknown, transfer: Transfera
 			transfer.push(bodyBuffer);
 		}
 
-		if (init?.signal) {
-			if (init.signal.aborted) {
+		const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+		if (signal) {
+			if (signal.aborted) {
 				postToWorker({ type: "lh:api-abort", id }, []);
 			} else {
-				init.signal.addEventListener("abort", () => {
+				signal.addEventListener("abort", () => {
 					postToWorker({ type: "lh:api-abort", id }, []);
 				});
 			}
@@ -179,91 +180,115 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 			}
 		});
 
-		// EventSource polyfill for same-origin /api/* URLs
-		const OriginalEventSource = window.EventSource;
-		window.EventSource = class WorkerEventSource extends EventTarget {
-			url: string;
-			readyState: number = 0; // CONNECTING
-			CONNECTING = 0;
-			OPEN = 1;
-			CLOSED = 2;
-			onopen: ((this: EventSource, ev: Event) => unknown) | null = null;
-			onmessage: ((this: EventSource, ev: MessageEvent) => unknown) | null = null;
-			onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
-			private abortController = new AbortController();
-
-			constructor(url: string | URL) {
-				super();
-				this.url = typeof url === "string" ? url : url.toString();
-
-				if (!isApiUrl(this.url) && OriginalEventSource) {
-					return new OriginalEventSource(url) as unknown as WorkerEventSource;
-				}
-
-				this.connect();
-			}
-
-			private async connect() {
-				try {
-					const res = await portFetch(this.url, {
-						signal: this.abortController.signal,
-						headers: { Accept: "text/event-stream" },
-					});
-
-					if (!res.ok || !res.body) {
-						throw new Error(`SSE failed with status ${res.status}`);
-					}
-
-					this.readyState = 1; // OPEN
-					const openEv = new Event("open");
-					this.onopen?.call(this as unknown as EventSource, openEv);
-					this.dispatchEvent(openEv);
-
-					const reader = res.body.getReader();
-					const decoder = new TextDecoder();
-					let buffer = "";
-
-					while (true) {
-						const { done, value } = await reader.read();
-						if (done) break;
-						buffer += decoder.decode(value, { stream: true });
-						const lines = buffer.split("\n\n");
-						buffer = lines.pop() ?? "";
-
-						for (const block of lines) {
-							if (!block.trim()) continue;
-							const dataLines: string[] = [];
-							for (const line of block.split("\n")) {
-								if (line.startsWith("data: ")) {
-									dataLines.push(line.slice(6));
-								} else if (line.startsWith("data:")) {
-									dataLines.push(line.slice(5));
-								}
-							}
-							if (dataLines.length > 0) {
-								const payload = dataLines.join("\n");
-								const msgEv = new MessageEvent("message", { data: payload });
-								this.onmessage?.call(this as unknown as EventSource, msgEv);
-								this.dispatchEvent(msgEv);
-							}
-						}
-					}
-
-					this.close();
-				} catch (err) {
-					this.readyState = 2; // CLOSED
-					const errEv = new Event("error");
-					this.onerror?.call(this as unknown as EventSource, errEv);
-					this.dispatchEvent(errEv);
-				}
-			}
-
-			close() {
-				this.readyState = 2; // CLOSED
-				this.abortController.abort();
-			}
-		} as unknown as typeof EventSource;
+		window.EventSource = WorkerEventSource as unknown as typeof EventSource;
 	}
 
 	return { worker, portFetch };
+}
+
+export interface ParsedSseBlock {
+	event: string;
+	data: string;
+}
+
+export function parseSseBlock(block: string): ParsedSseBlock | null {
+	if (!block.trim()) return null;
+	let eventType = "message";
+	const dataLines: string[] = [];
+
+	for (const rawLine of block.split("\n")) {
+		const line = rawLine.replace(/\r$/, "");
+		if (line.startsWith("event: ")) {
+			eventType = line.slice(7).trim();
+		} else if (line.startsWith("event:")) {
+			eventType = line.slice(6).trim();
+		} else if (line.startsWith("data: ")) {
+			dataLines.push(line.slice(6));
+		} else if (line.startsWith("data:")) {
+			dataLines.push(line.slice(5));
+		}
+	}
+
+	if (dataLines.length === 0) return null;
+	return {
+		event: eventType || "message",
+		data: dataLines.join("\n"),
+	};
+}
+
+export class WorkerEventSource extends EventTarget {
+	url: string;
+	readyState: number = 0; // CONNECTING
+	CONNECTING = 0;
+	OPEN = 1;
+	CLOSED = 2;
+	onopen: ((this: EventSource, ev: Event) => unknown) | null = null;
+	onmessage: ((this: EventSource, ev: MessageEvent) => unknown) | null = null;
+	onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
+	private abortController = new AbortController();
+	private fetchImpl: typeof fetch;
+
+	constructor(url: string | URL, fetchImpl?: typeof fetch) {
+		super();
+		this.url = typeof url === "string" ? url : url.toString();
+		this.fetchImpl = fetchImpl ?? workerFetch ?? (typeof window !== "undefined" ? window.fetch.bind(window) : fetch);
+
+		if (!fetchImpl && !isApiUrl(this.url) && typeof window !== "undefined" && window.EventSource && window.EventSource !== (WorkerEventSource as unknown)) {
+			return new (window.EventSource as unknown as new (url: string | URL) => WorkerEventSource)(url);
+		}
+
+		this.connect();
+	}
+
+	private async connect() {
+		try {
+			const res = await this.fetchImpl(this.url, {
+				signal: this.abortController.signal,
+				headers: { Accept: "text/event-stream" },
+			});
+
+			if (!res.ok || !res.body) {
+				throw new Error(`SSE failed with status ${res.status}`);
+			}
+
+			this.readyState = 1; // OPEN
+			const openEv = new Event("open");
+			this.onopen?.call(this as unknown as EventSource, openEv);
+			this.dispatchEvent(openEv);
+
+			const reader = res.body.getReader();
+			const decoder = new TextDecoder();
+			let buffer = "";
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split("\n\n");
+				buffer = lines.pop() ?? "";
+
+				for (const block of lines) {
+					const parsed = parseSseBlock(block);
+					if (!parsed) continue;
+					const msgEv = new MessageEvent(parsed.event, { data: parsed.data });
+					if (parsed.event === "message") {
+						this.onmessage?.call(this as unknown as EventSource, msgEv);
+					}
+					this.dispatchEvent(msgEv);
+				}
+			}
+
+			this.close();
+		} catch (err) {
+			this.readyState = 2; // CLOSED
+			const errEv = new Event("error");
+			this.onerror?.call(this as unknown as EventSource, errEv);
+			this.dispatchEvent(errEv);
+		}
+	}
+
+	close() {
+		this.readyState = 2; // CLOSED
+		this.abortController.abort();
+	}
 }

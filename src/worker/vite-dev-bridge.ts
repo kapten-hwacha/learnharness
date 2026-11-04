@@ -9,7 +9,7 @@ export function isAllowedSyncPath(targetPath: string, dataDir: string, authFile:
 	const normDataDir = path.posix.normalize(dataDir);
 	const normAuth = path.posix.normalize(authFile);
 
-	if (normTarget === normAuth) return true;
+	if (normTarget === normAuth || normTarget === normDataDir) return true;
 	const dataDirPrefix = normDataDir.endsWith("/") ? normDataDir : normDataDir + "/";
 	return normTarget.startsWith(dataDirPrefix);
 }
@@ -202,6 +202,7 @@ export function lhViteDevBridgePlugin(): Plugin {
 						response.headers.forEach((value, key) => {
 							res.setHeader(key, value);
 						});
+						res.setHeader("x-lh-dev-proxied", "1");
 
 						if (response.body) {
 							const reader = response.body.getReader();

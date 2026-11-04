@@ -50,15 +50,37 @@ function svgViewport(svg: string, opts: RenderSvgOptions): { width: number; heig
 }
 
 async function renderSvg(svg: string, opts: RenderSvgOptions = {}): Promise<Buffer> {
-	await ensureResvgWasm();
-	const { width } = svgViewport(svg, opts);
-	const resvg = new Resvg(svg, {
-		fitTo: { mode: "width", value: width },
-		background: "#ffffff",
-	});
-	const rendered = resvg.render();
-	const pngBytes = rendered.asPng();
-	return providerSafePng(Buffer.from(pngBytes));
+	const { width, height } = svgViewport(svg, opts);
+	try {
+		await ensureResvgWasm();
+		const resvg = new Resvg(svg, {
+			fitTo: { mode: "width", value: width },
+			background: "#ffffff",
+		});
+		const rendered = resvg.render();
+		const pngBytes = rendered.asPng();
+		return providerSafePng(Buffer.from(pngBytes));
+	} catch (resvgErr) {
+		if (typeof OffscreenCanvas !== "undefined" && typeof createImageBitmap !== "undefined" && typeof Blob !== "undefined") {
+			try {
+				const blob = new Blob([svg], { type: "image/svg+xml" });
+				const img = await createImageBitmap(blob);
+				const canvas = new OffscreenCanvas(width, height);
+				const ctx = canvas.getContext("2d");
+				if (ctx) {
+					ctx.fillStyle = "#ffffff";
+					ctx.fillRect(0, 0, width, height);
+					ctx.drawImage(img, 0, 0, width, height);
+					const blobOut = await canvas.convertToBlob({ type: "image/png" });
+					const arr = new Uint8Array(await blobOut.arrayBuffer());
+					return providerSafePng(Buffer.from(arr));
+				}
+			} catch (canvasErr) {
+				throw new Error(`Failed to render SVG with Resvg (${String(resvgErr)}) and OffscreenCanvas (${String(canvasErr)})`);
+			}
+		}
+		throw resvgErr;
+	}
 }
 
 async function renderPdfPages(
@@ -170,7 +192,11 @@ export function buildDemoVerifySrcDoc(html: string, requestId: string, settleMs:
 		pageErrors.push(String(e.reason && e.reason.message ? e.reason.message : e.reason));
 	});
 
+	var finished = false;
 	function finish() {
+		if (finished) return;
+		finished = true;
+		clearTimeout(maxTimeout);
 		if (probe) {
 			try {
 				probeResult = window.eval(probe);
@@ -193,6 +219,7 @@ export function buildDemoVerifySrcDoc(html: string, requestId: string, settleMs:
 		window.parent.postMessage(result, '*');
 	}
 
+	var maxTimeout = setTimeout(finish, 30000);
 	if (document.readyState === 'complete') {
 		setTimeout(finish, settleMs);
 	} else {
@@ -237,8 +264,11 @@ export function createWorkerHeadless(opts?: {
 			const probe = runOpts?.probe;
 
 			return new Promise<DemoRunResult>((resolve) => {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+
 				const handler = (event: MessageEvent) => {
 					if (event.data?.type === "lh:demo-probe-done" && event.data?.requestId === requestId) {
+						if (timer) clearTimeout(timer);
 						if (typeof self !== "undefined" && self.removeEventListener) {
 							self.removeEventListener("message", handler);
 						}
@@ -253,6 +283,21 @@ export function createWorkerHeadless(opts?: {
 				};
 
 				if (typeof self !== "undefined" && self.addEventListener) {
+					timer = setTimeout(() => {
+						if (typeof self !== "undefined" && self.removeEventListener) {
+							self.removeEventListener("message", handler);
+						}
+						resolve({
+							consoleErrors: [],
+							pageErrors: ["Demo verification timed out after 30s"],
+							failedRequests: [],
+							ok: false,
+						});
+					}, 35000);
+					if (typeof timer === "object" && typeof (timer as { unref?: () => void }).unref === "function") {
+						(timer as { unref: () => void }).unref();
+					}
+
 					self.addEventListener("message", handler);
 					self.postMessage({
 						type: "lh:run-demo",

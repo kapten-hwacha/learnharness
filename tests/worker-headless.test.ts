@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { createCanvas } from "@napi-rs/canvas";
 import { buildDemoVerifySrcDoc, createWorkerHeadless } from "../src/worker/headless-worker.ts";
-import { loadPhotonWasm } from "../src/worker/shims/photon-wasm.ts";
+import { loadPhotonWasm, PhotonImage, SamplingFilter, resize } from "../src/worker/shims/photon-wasm.ts";
 
 const PDF_FIXTURE = path.resolve("tests/fixtures/sample-3page.pdf");
 
@@ -39,8 +39,12 @@ describe("src/worker/headless-worker.ts & photon-wasm.ts", () => {
 		const srcDoc = buildDemoVerifySrcDoc("<!doctype html><html><body><h1>Demo</h1></body></html>", "req-1", 500, "1 + 1");
 		assert.match(srcDoc, /lh:demo-probe-done/);
 		assert.match(srcDoc, /req-1/);
+		assert.match(srcDoc, /30000/);
 
 		const photon = await loadPhotonWasm();
 		assert.equal(typeof photon.PhotonImage.new_from_byteslice, "function");
+		assert.equal(typeof PhotonImage.new_from_byteslice, "function");
+		assert.equal(typeof resize, "function");
+		assert.equal(typeof SamplingFilter.Lanczos3, "number");
 	});
 });

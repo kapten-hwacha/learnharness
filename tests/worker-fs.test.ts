@@ -36,6 +36,8 @@ describe("Worker write-through memfs & node:* shims", () => {
 		});
 
 		assert.equal(memfs.readFileSync("/app/data/chats/../settings.json", "utf8"), '{"v":1}');
+		assert.equal(memfs.existsSync("/app/data/"), true);
+		assert.equal(memfs.statSync("/app/data/").isDirectory(), true);
 		memfs.writeFileSync("/app/data/settings.json.tmp", '{"v":2}');
 		memfs.renameSync("/app/data/settings.json.tmp", "/app/data/settings.json");
 		assert.equal(memfs.existsSync("/app/data/settings.json.tmp"), false);

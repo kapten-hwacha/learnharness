@@ -28,7 +28,11 @@ export function normalizeFsPath(p: PathLike): string {
 		str = String(p);
 	}
 	const norm = normalize(str);
-	return norm.startsWith("/") ? norm : "/" + norm;
+	const rooted = norm.startsWith("/") ? norm : "/" + norm;
+	if (rooted.length > 1 && rooted.endsWith("/")) {
+		return rooted.replace(/\/+$/, "");
+	}
+	return rooted;
 }
 
 const files = new Map<string, Uint8Array>();

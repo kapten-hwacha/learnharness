@@ -95,7 +95,7 @@ export function createBrowserDevHostBridge(): HostBridge {
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({ url, method, headers, body }),
 				});
-				if (res.ok) return res;
+				if (res.headers.get("x-lh-dev-proxied") === "1") return res;
 			} catch {
 				// Fall back to direct fetch if /__lh_dev/fetch is unavailable
 			}

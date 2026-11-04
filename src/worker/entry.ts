@@ -20,7 +20,10 @@ export interface WorkerApiAbortMessage {
 
 export type WorkerInboundMessage = WorkerApiRequestMessage | WorkerApiAbortMessage;
 
-export function createWorkerMessageHandler(dispatch: (req: Request) => Promise<Response>): (event: MessageEvent) => void {
+export function createWorkerMessageHandler(
+	dispatch: (req: Request) => Promise<Response>,
+	ensureReady?: () => Promise<void>,
+): (event: MessageEvent) => void {
 	const activeRequests = new Map<string, AbortController>();
 
 	return (event: MessageEvent) => {
@@ -60,6 +63,9 @@ export function createWorkerMessageHandler(dispatch: (req: Request) => Promise<R
 
 			(async () => {
 				try {
+					if (ensureReady) {
+						await ensureReady();
+					}
 					const res = await dispatch(req);
 					const hasBody = res.body !== null;
 					const resHeaders: [string, string][] = [];
@@ -113,22 +119,30 @@ export function createWorkerMessageHandler(dispatch: (req: Request) => Promise<R
 	};
 }
 
-// In dedicated worker scope, self-initialize
-if (typeof self !== "undefined" && typeof (self as unknown as { importScripts?: unknown }).importScripts !== "undefined") {
-	(async () => {
-		try {
+let bootPromise: Promise<void> | null = null;
+
+export function ensureWorkerBooted(): Promise<void> {
+	if (!bootPromise) {
+		bootPromise = (async () => {
 			const bridge = getHostBridge();
 			const snapshot = await bridge.hydrateFs();
 			hydrateMemfs(snapshot);
 
 			headlessOverride.current = createWorkerHeadless();
 
-			const handler = createWorkerMessageHandler(dispatchWorkerRequest);
-			self.addEventListener("message", handler);
+			if (typeof self !== "undefined" && typeof (self as unknown as { postMessage?: unknown }).postMessage === "function") {
+				self.postMessage({ type: "lh:worker-ready" });
+			}
+		})();
+	}
+	return bootPromise;
+}
 
-			self.postMessage({ type: "lh:worker-ready" });
-		} catch (err) {
-			console.error("[worker/entry] Failed to initialize backend worker:", err);
-		}
-	})();
+// In dedicated worker scope, self-initialize synchronously
+if (typeof self !== "undefined" && typeof (self as unknown as { importScripts?: unknown }).importScripts !== "undefined") {
+	const handler = createWorkerMessageHandler(dispatchWorkerRequest, ensureWorkerBooted);
+	self.addEventListener("message", handler);
+	ensureWorkerBooted().catch((err) => {
+		console.error("[worker/entry] Failed to initialize backend worker:", err);
+	});
 }
