@@ -20,3 +20,7 @@ xai-credentials.json*
 
 # dev-fresh launcher scratch (fresh-user sim): disposable per launch
 .fresh-data/
+
+# Tauri v2 build artifacts
+src-tauri/target/
+src-tauri/gen/

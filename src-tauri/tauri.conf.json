@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LearnHarness",
+  "version": "0.4.1",
+  "identifier": "com.amosblomqvist.learnharness",
+  "build": {
+    "beforeDevCommand": "npm run vite:dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run vite:build",
+    "frontendDist": "../dist-web"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "LearnHarness",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 640,
+        "minHeight": 600,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 16,
+          "y": 22.5
+        }
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' asset: https: data: blob:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "../build/icon.icns",
+      "../build/icon.ico",
+      "../build/icon.png"
+    ],
+    "resources": [
+      "../package.json",
+      "../src/agent/system-prompt.md",
+      "../src/agent/prompts/**/*",
+      "../skills/**/*"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/amosblomqvist/learnharness/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
