@@ -16,6 +16,22 @@ import { Chat } from "@/components/chat";
 import { resolveSettings, slotsConfigured, type UserSettings } from "@/src/core";
 import { usePathname, useRouter, useSearchParams } from "./router.tsx";
 import { initWorkerClient } from "./worker-client.ts";
+import { installTauriPreload } from "./tauri-preload.ts";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+	const platform = navigator.userAgent.includes("Mac")
+		? "darwin"
+		: navigator.userAgent.includes("Win")
+			? "win32"
+			: "linux";
+	installTauriPreload({
+		invoke,
+		listen,
+		platform,
+	});
+}
 
 initWorkerClient();
 

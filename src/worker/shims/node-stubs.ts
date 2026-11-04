@@ -133,15 +133,129 @@ export const workerThreads = {
 	workerData: undefined,
 };
 
+function getTauriInvoke(): (<T>(cmd: string, args?: Record<string, unknown>) => Promise<T>) | null {
+	const tauri = (globalThis as any).__TAURI_INTERNALS__;
+	if (typeof tauri?.invoke === "function") return tauri.invoke;
+	return null;
+}
+
 export const childProcess = {
-	spawn(..._args: unknown[]) {
-		throw new Error("child_process.spawn unavailable in Web Worker");
+	spawn(file: string, ...argsAndOptions: any[]) {
+		const invoke = getTauriInvoke();
+		if (!invoke) {
+			throw new Error("child_process.spawn unavailable in Web Worker");
+		}
+		let args: string[] = [];
+		let options: any = {};
+		for (const item of argsAndOptions) {
+			if (Array.isArray(item)) args = item;
+			else if (typeof item === "object" && item !== null) options = item;
+		}
+
+		const listeners = new Map<string, ((...args: any[]) => void)[]>();
+		const stdoutListeners = new Map<string, ((...args: any[]) => void)[]>();
+		const stderrListeners = new Map<string, ((...args: any[]) => void)[]>();
+
+		const createEmitter = (map: Map<string, ((...args: any[]) => void)[]>) => ({
+			on(event: string, fn: (...args: any[]) => void) {
+				const list = map.get(event) ?? [];
+				list.push(fn);
+				map.set(event, list);
+				return this;
+			},
+			once(event: string, fn: (...args: any[]) => void) {
+				const wrapper = (...args: any[]) => {
+					this.removeListener(event, wrapper);
+					fn(...args);
+				};
+				return this.on(event, wrapper);
+			},
+			removeListener(event: string, fn: (...args: any[]) => void) {
+				const list = map.get(event);
+				if (list) map.set(event, list.filter((f) => f !== fn));
+				return this;
+			},
+			emit(event: string, ...args: any[]) {
+				const list = map.get(event);
+				if (list) {
+					for (const fn of list) {
+						try { fn(...args); } catch (e) { console.error(e); }
+					}
+				}
+			},
+		});
+
+		const stdout = createEmitter(stdoutListeners);
+		const stderr = createEmitter(stderrListeners);
+		const proc = {
+			...createEmitter(listeners),
+			stdout,
+			stderr,
+			stdin: { write() {}, end() {} },
+			kill() {},
+		};
+
+		const envList: [string, string][] = options.env
+			? Object.entries(options.env).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)])
+			: [];
+
+		invoke<{ code: number | null; stdout: string; stderr: string }>("lh_exec_command", {
+			cmd: file,
+			args,
+			env: envList.length > 0 ? envList : undefined,
+			timeoutMs: options.timeout,
+		})
+			.then((res) => {
+				if (res.stdout) stdout.emit("data", Buffer.from(res.stdout));
+				if (res.stderr) stderr.emit("data", Buffer.from(res.stderr));
+				proc.emit("exit", res.code, null);
+				proc.emit("close", res.code);
+			})
+			.catch((err) => {
+				proc.emit("error", err);
+			});
+
+		return proc;
 	},
 	execSync(..._args: unknown[]) {
 		throw new Error("child_process.execSync unavailable in Web Worker");
 	},
-	execFile(..._args: unknown[]) {
-		throw new Error("child_process.execFile unavailable in Web Worker");
+	execFile(file: string, ...argsAndOptions: any[]) {
+		const invoke = getTauriInvoke();
+		if (!invoke) {
+			throw new Error("child_process.execFile unavailable in Web Worker");
+		}
+		let args: string[] = [];
+		let options: any = {};
+		let callback: ((error: Error | null, stdout: string, stderr: string) => void) | undefined;
+		for (const item of argsAndOptions) {
+			if (Array.isArray(item)) args = item;
+			else if (typeof item === "function") callback = item;
+			else if (typeof item === "object" && item !== null) options = item;
+		}
+
+		const envList: [string, string][] = options.env
+			? Object.entries(options.env).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)])
+			: [];
+
+		invoke<{ code: number | null; stdout: string; stderr: string }>("lh_exec_command", {
+			cmd: file,
+			args,
+			env: envList.length > 0 ? envList : undefined,
+			timeoutMs: options.timeout,
+		})
+			.then((res) => {
+				if (res.code === 0 || res.code === null) {
+					callback?.(null, res.stdout, res.stderr);
+				} else {
+					const err = new Error(`Command failed with code ${res.code}: ${res.stderr}`);
+					(err as any).code = res.code;
+					callback?.(err, res.stdout, res.stderr);
+				}
+			})
+			.catch((err) => {
+				callback?.(err, "", "");
+			});
 	},
 	exec(..._args: unknown[]) {
 		throw new Error("child_process.exec unavailable in Web Worker");
@@ -152,20 +266,117 @@ export const childProcess = {
 };
 
 export const http = {
-	createServer() {
-		return {
-			listen(_port?: number, cb?: () => void) {
-				cb?.();
+	createServer(requestListener?: (req: any, res: any) => void) {
+		const invoke = getTauriInvoke();
+		const listeners = new Map<string, ((...args: any[]) => void)[]>();
+		let port = 0;
+		let unlisten: (() => void) | undefined;
+
+		const server = {
+			on(event: string, fn: (...args: any[]) => void) {
+				const list = listeners.get(event) ?? [];
+				list.push(fn);
+				listeners.set(event, list);
+				return this;
+			},
+			once(event: string, fn: (...args: any[]) => void) {
+				const wrapper = (...args: any[]) => {
+					this.removeListener(event, wrapper);
+					fn(...args);
+				};
+				return this.on(event, wrapper);
+			},
+			removeListener(event: string, fn: (...args: any[]) => void) {
+				const list = listeners.get(event);
+				if (list) {
+					listeners.set(event, list.filter((f) => f !== fn));
+				}
+				return this;
+			},
+			emit(event: string, ...args: any[]) {
+				const list = listeners.get(event);
+				if (list) {
+					for (const fn of list) {
+						try { fn(...args); } catch (e) { console.error(e); }
+					}
+				}
+			},
+			address() {
+				return { port, family: "IPv4", address: "127.0.0.1" };
+			},
+			listen(_port?: number, _host?: any, cb?: () => void) {
+				const callback = typeof _host === "function" ? _host : cb;
+				if (invoke) {
+					invoke<number>("lh_oauth_listen_start")
+						.then((boundPort) => {
+							port = boundPort;
+							const tauri = (globalThis as any).__TAURI_INTERNALS__;
+							if (typeof tauri?.listen === "function") {
+								unlisten = tauri.listen("lh://oauth-request", (event: any) => {
+									const payload = event?.payload;
+									if (!payload) return;
+									const req = {
+										method: payload.method,
+										url: payload.url,
+										headers: Object.fromEntries(payload.headers ?? []),
+									};
+									let statusCode = 200;
+									const responseHeaders: Record<string, string> = {};
+									const res = {
+										statusCode: 200,
+										writeHead(code: number, headers?: Record<string, string>) {
+											statusCode = code;
+											if (headers) Object.assign(responseHeaders, headers);
+											return this;
+										},
+										setHeader(name: string, value: string) {
+											responseHeaders[name.toLowerCase()] = value;
+											return this;
+										},
+										end(body?: string) {
+											const bodyStr = body ? String(body) : "";
+											invoke("lh_oauth_respond", {
+												status: statusCode,
+												headers: Object.entries(responseHeaders),
+												body: bodyStr,
+											}).catch(() => {});
+											return this;
+										},
+									};
+									if (requestListener) requestListener(req, res);
+									server.emit("request", req, res);
+								});
+							}
+							callback?.();
+						})
+						.catch((err) => {
+							server.emit("error", err);
+						});
+				} else {
+					callback?.();
+				}
 				return this;
 			},
 			close(cb?: () => void) {
-				cb?.();
+				unlisten?.();
+				if (invoke) {
+					invoke("lh_oauth_listen_close")
+						.then(() => cb?.())
+						.catch(() => cb?.());
+				} else {
+					cb?.();
+				}
 				return this;
 			},
-			on() {
+			closeAllConnections() {
 				return this;
 			},
 		};
+
+		if (requestListener) {
+			server.on("request", requestListener);
+		}
+		return server;
 	},
 	get() {
 		throw new Error("http.get not supported in Web Worker");

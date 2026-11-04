@@ -19,9 +19,9 @@
 		"test": "NODE_ENV=test tsx --test tests/*.test.ts tests/*.test.tsx",
 		"lint": "eslint .",
 		"typecheck": "tsc --noEmit",
-		"desktop:dev": "concurrently -k \"next dev\" \"LH_DEV_URL=http://localhost:3000 electron .\"",
+		"desktop:dev": "tauri dev",
 		"dev:fresh": "bash scripts/dev-fresh.sh",
-		"desktop:dist": "rm -rf dist .next/standalone && next build && node scripts/smoke-provider-runtime.mjs && node scripts/build-server.mjs && node scripts/smoke-server.mjs && DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer} APPLE_KEYCHAIN_PROFILE=LH_NOTARY APPLE_TEAM_ID=JS6XN22HY6 electron-builder --mac --arm64",
+		"desktop:dist": "tauri build",
 		"vite:dev": "vite",
 		"vite:build": "vite build"
 	},
@@ -41,6 +41,8 @@
 		"@streamdown/code": "^1.1.1",
 		"@streamdown/math": "^1.0.2",
 		"@streamdown/mermaid": "^1.0.2",
+		"@tauri-apps/api": "^2.12.4",
+		"@tauri-apps/plugin-updater": "^2.14.1",
 		"@xyflow/react": "^12.11.3",
 		"ansi-to-react": "^6.2.6",
 		"class-variance-authority": "^0.7.1",
@@ -87,6 +89,7 @@
 	"devDependencies": {
 		"@next/eslint-plugin-next": "^16.4.3",
 		"@tailwindcss/postcss": "^4.3.3",
+		"@tauri-apps/cli": "^2.12.4",
 		"@types/node": "^24.0.0",
 		"@types/react": "^19.2.18",
 		"@types/react-dom": "^19.2.4",
