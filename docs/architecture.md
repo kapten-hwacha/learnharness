@@ -1,6 +1,6 @@
 # LearnHarness architecture
 
-This is the current implementation reference for the released app: a Next.js application with an Electron host, native Pi conversations, adaptive teaching and conversational practice, and a persistent knowledge graph. [Development](development.md) covers setup and commands; [teaching methodology](teaching-methodology.md) covers the pedagogical method. Older design documents and the [archived architecture](archive/architecture-2026-09-08.md) are history, not runtime specifications.
+This is the current implementation reference for the app: a client SPA and Dedicated Web Worker backend hosted in a Tauri desktop shell (with legacy Next.js web runtime maintained during migration), native Pi conversations, adaptive teaching and conversational practice, and a persistent knowledge graph. [Development](development.md) covers setup and commands; [teaching methodology](teaching-methodology.md) covers the pedagogical method. Older design documents and the [archived architecture](archive/architecture-2026-09-08.md) are history, not runtime specifications.
 
 ## 1. Code boundaries
 
@@ -12,7 +12,8 @@ This is the current implementation reference for the released app: a Next.js app
 | `src/agent/` | Native agent construction, tools, provider streams and background workers | `teacher-agent.ts`, `models.ts`, `tools.ts`, `subagents/` |
 | `src/core/` | Contracts, record/view/model projections and domain algorithms | `native-messages.ts`, `input-events.ts`, `view.ts`, `graph.ts`, `coverage.ts` |
 | `src/store/` | Filesystem persistence adapters | `chats.ts`, `jobs.ts`, `graph.ts`, `settings.ts` |
-| `electron/` | Desktop launch, navigation/permission security, credentials and browser helper | `main.cjs`, subscription controllers |
+| `src-tauri/` | Tauri desktop host, window/updater/fs/oauth commands | `src/lib.rs`, `tauri.conf.json` |
+| `electron/` | Pure-JS OAuth subscription modules | `chatgpt.cjs`, `subscriptions.cjs` |
 
 The import restrictions in [`eslint.config.mjs`](../eslint.config.mjs) enforce specific boundaries:
 
@@ -20,7 +21,7 @@ The import restrictions in [`eslint.config.mjs`](../eslint.config.mjs) enforce s
 - Imports from `app/` into `src/` must use the core or server barrel.
 - Core cannot import agent, server or store modules; agents cannot import server or store modules.
 
-These are not a complete hexagonal-architecture proof. Some core modules are Node-bound (for example, graph/coverage hashing), and the core barrel deliberately excludes them. Agents read prompt assets and learner files and perform external operations; their storage and delivery dependencies arrive through injected contexts. `src/server/stores.ts` wires the main storage ports, but other server modules also import adapters, and the server barrel exposes settings/auth/override operations. There is no lint-enforced “only two composition roots” or “one writer per store” rule. Tests import across layers; scripts and Electron are outside these import restrictions.
+These are not a complete hexagonal-architecture proof. Some core modules are Node-bound (for example, graph/coverage hashing), and the core barrel deliberately excludes them. Agents read prompt assets and learner files and perform external operations; their storage and delivery dependencies arrive through injected contexts. `src/server/stores.ts` wires the main storage ports, but other server modules also import adapters, and the server barrel exposes settings/auth/override operations. There is no lint-enforced “only two composition roots” or “one writer per store” rule. Tests import across layers; scripts and desktop host bridges are outside these import restrictions.
 
 ## 2. Conversation, engine, agent and turn
 
@@ -113,7 +114,7 @@ Practice outcomes are evidence in the session, not graph mastery levels, certifi
 
 ## 5. Background work and delivery
 
-Researcher, PDF reader, demo builder and visual maker run independently (`src/agent/subagents/runner.ts`). Dispatch tools persist a job and its input, return an acknowledgement, then spawn the worker. Demos are executed through the browser helper before delivery; visual verification uses rendered images. PDF/SVG rendering and shared image postprocessing are native; demos use the app's Electron browser service with system Chrome as fallback, not an extra downloaded Chromium.
+Researcher, PDF reader, demo builder and visual maker run independently (`src/agent/subagents/runner.ts`). Dispatch tools persist a job and its input, return an acknowledgement, then spawn the worker. Demos are executed through the browser helper before delivery; visual verification uses rendered images. PDF/SVG rendering and shared image postprocessing are native; demos use system Chrome or configured headless browser, not an extra downloaded Chromium.
 
 **Worker completion is not session delivery.** The runner saves a terminal worker outcome plus pending delivery metadata before queueing the result. Worker resources and the running activity row can end while an unanswered question holds its result. Only computing workers are abortable; abort notices have their own pending-delivery lifecycle.
 
@@ -221,11 +222,11 @@ Golden fixtures under `tests/fixtures/golden-data/` exercise real saved records 
 
 ## 9. Host, providers and external effects
 
-Production Electron launches the standalone Next server as a private child on loopback, sets the data/auth paths and loads a sandboxed renderer. Teaching, practice, extraction and storage stay server-side. Main-process navigation/permission guards and private credential transport are desktop boundaries, not a web multi-user authentication system. Build/packaging guards in `scripts/build-server.mjs` check data exclusion and traced assets; native runtime smoke scripts check the packaged provider/renderer dependencies. See [desktop release](desktop-release.md).
+The desktop shell is built on Tauri (v2), hosting the client SPA and Dedicated Web Worker backend. Native host operations (window management, filesystem access within data directories, OAuth callback loopback listeners, in-app updates) are provided via Tauri IPC commands (`src-tauri/src/lib.rs`) and bridged to the worker via `src/worker/host-bridge.ts`. Main window navigation guards and private credential transport are desktop boundaries, not a web multi-user authentication system. See [desktop release](desktop-release.md).
 
 `src/agent/models.ts` exposes Pi's native provider collection plus app bridges. Settings supply strong/cheap/vision slots and background-role overrides; there are **no factory model pins**. New sessions copy the strong slot into their conversation settings. Existing explicit session choices remain local; absent model/thinking fields still resolve through the conversation fallback. Missing configuration/readiness refuses at the point of need. Background roles resolve independently and do not inherit an in-session model pick.
 
-Ordinary API credentials are read through the key seam, with real environment variables taking precedence over saved file values. Web/dev subscription connections have a server-owned credential directory; packaged subscriptions keep refresh credentials in Electron main and use private scoped request transport. These logical subscription routes do not silently fall back to API-key billing. Claude Code is a separate local CLI provider with its own authentication/process lifecycle; custom endpoints have their own configuration and credential binding. Focused references:
+Ordinary API credentials are read through the key seam, with real environment variables taking precedence over saved file values. Web/dev subscription connections have a server-owned credential directory; packaged subscriptions use local credential storage and scoped request transport. These logical subscription routes do not silently fall back to API-key billing. Claude Code is a separate local CLI provider with its own authentication/process lifecycle; custom endpoints have their own configuration and credential binding. Focused references:
 
 - [Claude Code](claude-code.md)
 - [Custom providers](custom-providers.md)

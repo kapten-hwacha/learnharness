@@ -1,6 +1,6 @@
 # Development guide
 
-LearnHarness is a Next.js application with an Electron desktop host. Teaching and practice use native Pi agents and server-owned conversation records; the browser projects those records into the transcript, docks and knowledge graph.
+LearnHarness is an application with a Tauri desktop host (and legacy Next.js web runtime maintained during migration). Teaching and practice use native Pi agents and server-owned conversation records; the browser projects those records into the transcript, docks and knowledge graph.
 
 Start here for local work. The [architecture reference](architecture.md) describes the shipped runtime and its boundaries; [prompt composition](../src/agent/prompts/README.md) describes source fragments and user overrides. Older vision/build-plan documents record design history, not the current implementation contract.
 
@@ -15,12 +15,12 @@ npm run dev            # Next development server, normally http://localhost:3000
 npm run build          # production Next build, including standalone output
 npm start              # serve the production build with Next
 
-npm run desktop:dev    # Next dev + Electron pointed at localhost:3000
+npm run desktop:dev    # Tauri desktop development (tauri dev)
 ```
 
 No API key is required just to start the UI. Configure a provider/connection and the strong, cheap and vision model slots in Settings before model-driven use. There are no factory model choices. OpenRouter is one supported API provider, **not a required gateway for all calls**. Existing sessions keep their explicit conversation model; background roles use their own settings resolution.
 
-For local signed macOS packaging, `npm run desktop:dist` runs the build, runtime smoke/assembly checks and Electron Builder with the configured signing/notarization setup. It is not a portable unsigned-build shortcut. See [desktop release](desktop-release.md) for prerequisites, target-OS builds, Windows/Linux packages and release verification.
+For local desktop builds, `npm run desktop:dist` runs `tauri build`. Note that full release and signing workflows for Tauri packaging are not yet fully ported. See [desktop release](desktop-release.md) for notes.
 
 ## Configuration and credentials
 
@@ -33,11 +33,11 @@ Secrets and machine-specific paths may be supplied through the process environme
 | Provider-specific API key variables | Optional; needed only for the selected API provider. The supported UI key names are defined in `src/core/auth-keys.ts`. |
 | `TAVILY_API_KEY` / `BRAVE_API_KEY` | Optional search adapters. Research remains available without a search key and can fetch known URLs. |
 | `DEEPGRAM_API_KEY` | Optional dictation: short-lived token minting on the server; audio streams directly from the browser to Deepgram. |
-| `CHROME_PATH` | Optional Chrome/Chromium executable fallback for demo verification. The Electron browser helper is primary; no extra Chromium is downloaded. PDFs/SVGs use native rendering. |
+| `CHROME_PATH` | Optional Chrome/Chromium executable fallback for demo verification. PDFs/SVGs use native rendering. |
 | `LH_DATA_DIR` | Relocates mutable chats, jobs, graph, settings and prompt overrides; default is repo `data/`. |
 | `LH_AUTH_FILE` | Relocates the API-key/custom-endpoint credential file; default is repo-root `auth.json`, separate from `data/`. |
 
-The packaged desktop host sets its own data/auth locations under Electron `userData`; it does not use the repository's development profile. Auth files are owner-only plaintext, not an encrypted vault. Keep `.env.local`, auth/connection files and learning data out of commits and build artifacts. Do not copy a personal profile into fixtures or a reproduction workspace.
+The packaged desktop host sets its own data/auth locations under the Tauri app data directory (`app_data_dir`); it does not use the repository's development profile. Auth files are owner-only plaintext, not an encrypted vault. Keep `.env.local`, auth/connection files and learning data out of commits and build artifacts. Do not copy a personal profile into fixtures or a reproduction workspace.
 
 Provider-specific references:
 
@@ -51,7 +51,7 @@ Ordinary `npm run dev` and `npm start` support ChatGPT, GitHub Copilot and Grok 
 
 Web/dev stores `chatgpt-credentials.json`, `github-copilot-credentials.json` and `xai-credentials.json` **beside the configured `auth.json`**: in the project directory by default, or the directory containing `LH_AUTH_FILE`. They are not under `data/`, packaged Application Support or a global Pi profile. Git/build exclusions cover the credential files and their atomic-write temporary files. Use only one server process per credential directory; refresh serialization is process-local.
 
-Sign-in opens a tab in the browser that initiated it; allow that tab if blocked. **Complete ChatGPT sign-in in a browser on the server's machine**, because the callback listener is `127.0.0.1` on that machine. Copilot/Grok use device codes. The Electron dev shell opens provider pages in the system browser. Credentials/refresh remain server-owned; other browsers connected to the same server share its connections and background-use consent, just as they share its keys and learning data.
+Sign-in opens a tab in the browser that initiated it; allow that tab if blocked. **Complete ChatGPT sign-in in a browser on the server's machine**, because the callback listener is `127.0.0.1` on that machine. Copilot/Grok use device codes. The desktop shell opens provider pages in the system browser. Credentials/refresh remain server-owned; other browsers connected to the same server share its connections and background-use consent, just as they share its keys and learning data.
 
 This is a **trusted local/shared developer-server mode**, not multi-user hosting. Same-origin JSON/custom-header checks and short-lived, origin-bound, one-use browser-opening actions prevent ordinary cross-origin browser controls. They are **not user authentication or DNS-rebinding protection**. Subscription support does not change Next's listening/LAN behavior. Do not expose the server to untrusted users or the public Internet without an independent access/host gate. Remote ChatGPT callback routing, per-user isolation and credential import are not implemented.
 
@@ -68,7 +68,7 @@ This is a **trusted local/shared developer-server mode**, not multi-user hosting
 | Stores and resolved settings | `src/server/stores.ts`, `src/store/`, `src/core/settings-resolution.ts` |
 | Provider/model configuration | `src/agent/models.ts`, `src/server/model-catalog.ts`, linked provider references above |
 | Push notifications | `src/core/events.ts`, `src/server/events-stream.ts`, `components/server-events.tsx` |
-| Desktop launch/security/packaging | `electron/main.cjs`, `scripts/build-server.mjs`, [desktop release](desktop-release.md) |
+| Desktop launch/security/host | `src-tauri/`, `src/client/tauri-preload.ts`, [desktop release](desktop-release.md) |
 
 PDF note imports use the same extraction pipeline after local conversion to page-marked Markdown by `src/agent/subagents/pdf-markdown.ts`.
 
@@ -98,7 +98,7 @@ For background-worker behavioral inspection, use `LH_BACKGROUND_CAPTURE=auditor`
 LH_BACKGROUND_CAPTURE=auditor npm run desktop:dev
 ```
 
-The flag must reach the **Next server** process; `desktop:dev` starts both Next and Electron with it. Restart an existing server to change the flag. Captures are off by default and written locally to `<data root>/debug/background-captures/<role>-<run ID>.json`, one file per worker run. Each model turn replaces the previous request body and reply; the final file retains the last request, its final assistant response/error, and its tool results. Earlier tool calls/results and returned thinking remain in the conversation replayed by that last request. Compact per-turn timings remain without duplicated request bodies.
+The flag must reach the runtime process; `desktop:dev` starts the app with it. Restart an existing session/server to change the flag. Captures are off by default and written locally to `<data root>/debug/background-captures/<role>-<run ID>.json`, one file per worker run. Each model turn replaces the previous request body and reply; the final file retains the last request, its final assistant response/error, and its tool results. Earlier tool calls/results and returned thinking remain in the conversation replayed by that last request. Compact per-turn timings remain without duplicated request bodies.
 
 `request.format` is `provider` when the adapter exposes its outgoing payload (after the app's final subscription-body restrictions, including ChatGPT's developer-role/tool-namespace rewrite), or `context` for the model-facing conversation when it does not (for example, CLI adapters). The latter is not an HTTP wire capture. Captures do not enable thinking or recover reasoning a provider does not return. Configure model/thinking settings normally. Request options, credentials and HTTP headers are not recorded; recognized credential/header fields nested in payloads are redacted. Files are owner-only on POSIX systems. Serialization/disk errors do not fail workers. Captures contain private source/graph content, have no automatic expiry, and should be reviewed before sharing and deleted manually when no longer needed. This flag does not change model selection, instructions, retries or timeouts.
 

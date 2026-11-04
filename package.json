@@ -7,11 +7,9 @@
 		"email": "255718537+amosblomqvist@users.noreply.github.com"
 	},
 	"homepage": "https://github.com/amosblomqvist/learnharness",
-	"desktopName": "learnharness.desktop",
 	"description": "An agent harness for learning: adaptive teaching, practice, and a persistent knowledge graph.",
 	"type": "module",
 	"private": true,
-	"main": "electron/main.cjs",
 	"scripts": {
 		"dev": "next dev",
 		"build": "next build",
@@ -53,7 +51,6 @@
 		"d3-shape": "^3.2.0",
 		"d3-zoom": "^3.0.0",
 		"dagre-d3-es": "7.0.14",
-		"electron-updater": "^6.8.9",
 		"embla-carousel-react": "^8.6.0",
 		"jose": "^6.2.12",
 		"katex": "0.18.2",
@@ -97,8 +94,6 @@
 		"@typescript-eslint/parser": "^8.68.0",
 		"@vitejs/plugin-react": "^4.7.0",
 		"concurrently": "^10.0.5",
-		"electron": "^44.9.3",
-		"electron-builder": "26.16.1",
 		"eslint": "^9.39.5",
 		"eslint-import-resolver-typescript": "^4.4.5",
 		"eslint-plugin-import": "^2.32.0",

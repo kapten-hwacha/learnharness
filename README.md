@@ -45,6 +45,8 @@ Future teaching sessions can read the graph instead of starting from scratch. Pr
 
 **[Download from learnharness.ai](https://learnharness.ai)** · [GitHub Releases](https://github.com/amosblomqvist/learnharness/releases)
 
+*(Note: Desktop packaging and release/signing are currently being migrated to Tauri 2; release binaries for the Tauri desktop shell are in progress.)*
+
 - **macOS (Apple Silicon):** signed and notarized DMG. Drag the app to Applications.
 - **Windows (x64):** run the installer. It is currently unsigned; Windows may show an “unknown publisher” or SmartScreen warning.
 - **Linux (x64):** make the AppImage executable and open it, or install the Debian/Ubuntu `.deb`.
@@ -68,8 +70,9 @@ All three platforms support in-app updates.
 
 ```bash
 npm install
-npm run dev        # http://localhost:3000
-npm test           # deterministic, no LLM, no network
+npm run dev         # http://localhost:3000
+npm run desktop:dev # desktop app (Tauri)
+npm test            # deterministic, no LLM, no network
 ```
 
 See the [development guide](docs/development.md) for setup and checks, [architecture](docs/architecture.md) for the shipped runtime, [keyboard reference](docs/keyboard.md) for shortcuts, and [desktop release guide](docs/desktop-release.md) for packaging and updates.
