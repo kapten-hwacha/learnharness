@@ -165,4 +165,10 @@ export const posix = {
 	},
 };
 
+export const win32 = {
+	...posix,
+	sep: "\\",
+	delimiter: ";",
+};
+
 export default posix;

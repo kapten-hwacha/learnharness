@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="color-scheme" content="light dark" />
+		<title>Learning Harness</title>
+		<script>
+			(function () {
+				try {
+					var m = window.matchMedia("(prefers-color-scheme: dark)").matches;
+					var r = document.documentElement;
+					r.classList.add(m ? "dark" : "light");
+					r.style.colorScheme = m ? "dark" : "light";
+				} catch (e) {}
+			})();
+		</script>
+	</head>
+	<body class="min-h-dvh antialiased">
+		<div id="root"></div>
+		<script type="module" src="/src/client/main.tsx"></script>
+	</body>
+</html>

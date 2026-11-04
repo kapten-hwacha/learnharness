@@ -227,14 +227,66 @@ export function readFileSync(path: PathLike, options?: MemfsOptions | string | n
 	return toBuffer(bytes);
 }
 
+let nextFd = 100;
+interface OpenFd {
+	path: string;
+	flags: string;
+	position: number;
+}
+const openFds = new Map<number, OpenFd>();
+
+export function openSync(path: PathLike, flags: string | number = "r", _mode?: number): number {
+	const norm = normalizeFsPath(path);
+	const fd = nextFd++;
+	openFds.set(fd, { path: norm, flags: String(flags), position: 0 });
+	if (String(flags).includes("w") || String(flags).includes("a")) {
+		ensureParentDirs(norm);
+		if (!files.has(norm)) files.set(norm, new Uint8Array(0));
+	}
+	return fd;
+}
+
+export function closeSync(fd: number): void {
+	openFds.delete(fd);
+}
+
+export function fsyncSync(_fd: number): void {
+	// Sync in memory
+}
+
+export function readSync(
+	fd: number,
+	buffer: NodeJS.ArrayBufferView,
+	offset?: number,
+	length?: number,
+	position?: number | null,
+): number {
+	const handle = openFds.get(fd);
+	if (!handle) throw createError("EBADF", "bad file descriptor");
+	const data = files.get(handle.path) ?? new Uint8Array(0);
+	const pos = position != null ? position : handle.position;
+	const len = length ?? buffer.byteLength;
+	const off = offset ?? 0;
+	const bytesToRead = Math.min(len, Math.max(0, data.length - pos));
+	const target = new Uint8Array(buffer.buffer, buffer.byteOffset + off, bytesToRead);
+	target.set(data.subarray(pos, pos + bytesToRead));
+	if (position == null) handle.position += bytesToRead;
+	return bytesToRead;
+}
+
 export function writeFileSync(
-	path: PathLike,
+	file: PathLike | number,
 	data: string | Uint8Array | ArrayBufferView,
 	options?: MemfsOptions | string | null,
 ): void {
-	const norm = normalizeFsPath(path);
+	if (typeof file === "number") {
+		const handle = openFds.get(file);
+		if (!handle) throw createError("EBADF", "bad file descriptor");
+		return writeFileSync(handle.path, data, options);
+	}
+	const norm = normalizeFsPath(file);
 	if (dirs.has(norm)) {
-		throw createError("EISDIR", `EISDIR: illegal operation on a directory, open '${path}'`);
+		throw createError("EISDIR", `EISDIR: illegal operation on a directory, open '${String(file)}'`);
 	}
 	ensureParentDirs(norm);
 
@@ -653,6 +705,10 @@ const fsShim = {
 	realpathSync,
 	accessSync,
 	chmodSync,
+	openSync,
+	readSync,
+	closeSync,
+	fsyncSync,
 	constants,
 	promises,
 	Dirent,
