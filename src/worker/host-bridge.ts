@@ -23,6 +23,132 @@ export interface HostBridge {
 	nativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
+export type TauriInvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+
+interface PendingRpc {
+	resolve: (val: any) => void;
+	reject: (err: any) => void;
+}
+
+const pendingInvocations = new Map<string, PendingRpc>();
+const tauriEventListeners = new Map<string, Set<(event: { payload: any }) => void>>();
+
+let workerTauriInvoke: TauriInvokeFn | null = null;
+
+export function isTauriEnvironment(): boolean {
+	if (typeof (globalThis as any).__TAURI_INTERNALS__?.invoke === "function") return true;
+	if (typeof (globalThis as any).__TAURI_INVOKE__ === "function") return true;
+	if (typeof location !== "undefined") {
+		try {
+			if (new URL(location.href).searchParams.get("tauri") === "1") return true;
+		} catch {}
+	}
+	return false;
+}
+
+export function createWorkerTauriInvoke(): TauriInvokeFn {
+	return <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+		return new Promise<T>((resolve, reject) => {
+			const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+			pendingInvocations.set(id, { resolve, reject });
+			if (typeof self !== "undefined" && typeof (self as any).postMessage === "function") {
+				(self as any).postMessage({
+					type: "lh:tauri-invoke",
+					id,
+					cmd,
+					args,
+				});
+			} else {
+				pendingInvocations.delete(id);
+				reject(new Error("Worker postMessage is unavailable"));
+			}
+		});
+	};
+}
+
+export function listenTauriEvent(event: string, handler: (e: { payload: any }) => void): () => void {
+	let set = tauriEventListeners.get(event);
+	if (!set) {
+		set = new Set();
+		tauriEventListeners.set(event, set);
+	}
+	set.add(handler);
+	return () => {
+		set?.delete(handler);
+	};
+}
+
+export function handleWorkerTauriMessage(event: { data: any }): void {
+	const data = event?.data;
+	if (!data) return;
+
+	if (data.type === "lh:tauri-init") {
+		const invoke = getTauriInvoke() ?? createWorkerTauriInvoke();
+		workerTauriInvoke = invoke;
+		if (typeof globalThis !== "undefined") {
+			(globalThis as any).__TAURI_INTERNALS__ = {
+				invoke,
+				listen: listenTauriEvent,
+			};
+		}
+		setHostBridge(createTauriHostBridge(invoke));
+	} else if (data.type === "lh:tauri-invoke-result") {
+		const { id, result, error } = data;
+		const pending = pendingInvocations.get(id);
+		if (pending) {
+			pendingInvocations.delete(id);
+			if (error !== undefined) {
+				pending.reject(new Error(error));
+			} else {
+				pending.resolve(result);
+			}
+		}
+	} else if (data.type === "lh:tauri-event") {
+		const { event: evtName, payload } = data;
+		const set = tauriEventListeners.get(evtName);
+		if (set) {
+			for (const handler of set) {
+				try {
+					handler({ payload });
+				} catch (err) {
+					console.error(err);
+				}
+			}
+		}
+	}
+}
+
+if (typeof self !== "undefined" && typeof (self as any).addEventListener === "function") {
+	(self as any).addEventListener("message", handleWorkerTauriMessage);
+}
+
+export function getTauriInvoke(): TauriInvokeFn | null {
+	const tauriInternals = (globalThis as any).__TAURI_INTERNALS__;
+	if (typeof tauriInternals?.invoke === "function") {
+		return tauriInternals.invoke;
+	}
+	const tauriInvoke = (globalThis as any).__TAURI_INVOKE__;
+	if (typeof tauriInvoke === "function") {
+		return tauriInvoke;
+	}
+	if (isTauriEnvironment() && typeof self !== "undefined" && typeof (self as any).postMessage === "function") {
+		if (!workerTauriInvoke) {
+			workerTauriInvoke = createWorkerTauriInvoke();
+		}
+		return workerTauriInvoke;
+	}
+	return null;
+}
+
+if (typeof globalThis !== "undefined" && !(globalThis as any).__TAURI_INTERNALS__ && isTauriEnvironment()) {
+	const invoke = getTauriInvoke() ?? createWorkerTauriInvoke();
+	workerTauriInvoke = invoke;
+	(globalThis as any).__TAURI_INTERNALS__ = {
+		invoke,
+		listen: listenTauriEvent,
+	};
+}
+
 let activeBridge: HostBridge | null = null;
 
 export function setHostBridge(bridge: HostBridge | null): void {
@@ -31,9 +157,9 @@ export function setHostBridge(bridge: HostBridge | null): void {
 
 export function getHostBridge(): HostBridge {
 	if (!activeBridge) {
-		const tauriInternals = (globalThis as any).__TAURI_INTERNALS__;
-		if (tauriInternals?.invoke) {
-			activeBridge = createTauriHostBridge(tauriInternals.invoke);
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			activeBridge = createTauriHostBridge(invoke);
 		} else {
 			activeBridge = createBrowserDevHostBridge();
 		}

@@ -55,7 +55,7 @@ pub fn start_oauth_listener_internal(
         while !shutdown.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    handle_connection(&mut stream, &shutdown, &rx, &on_request);
+                    handle_connection(&mut stream, &shutdown, &rx, &on_request, port);
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(std::time::Duration::from_millis(25));
@@ -77,6 +77,7 @@ fn handle_connection(
     shutdown: &Arc<AtomicBool>,
     rx: &mpsc::Receiver<OAuthResponse>,
     on_request: &Option<Box<dyn Fn(OAuthRequestPayload) + Send + 'static>>,
+    my_port: u16,
 ) {
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
@@ -168,7 +169,11 @@ fn handle_connection(
 
     shutdown.store(true, Ordering::SeqCst);
     let mut lock = OAUTH_STATE.lock().unwrap();
-    *lock = None;
+    if let Some(ref p) = *lock {
+        if p.port == my_port {
+            *lock = None;
+        }
+    }
 }
 
 pub fn start_oauth_listener() -> Result<u16, String> {
@@ -263,6 +268,17 @@ mod tests {
             "expected 404 response, got: {resp}"
         );
         assert!(start_oauth_listener().is_err());
+        close_oauth_listener();
+    }
+
+    #[test]
+    fn consecutive_sign_in_attempts_succeed_after_close() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        let port1 = start_oauth_listener().expect("first attempt succeeds");
+        close_oauth_listener();
+        let port2 = start_oauth_listener().expect("second attempt succeeds after close");
+        assert_ne!(port1, 0);
+        assert_ne!(port2, 0);
         close_oauth_listener();
     }
 }

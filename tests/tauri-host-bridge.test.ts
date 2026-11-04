@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	createTauriHostBridge,
+	createWorkerTauriInvoke,
 	getHostBridge,
+	handleWorkerTauriMessage,
 	setHostBridge,
 	type FsMutationOp,
 	type HydratedFsSnapshot,
@@ -105,6 +107,123 @@ describe("Tauri HostBridge", () => {
 		} finally {
 			delete globalAny.__TAURI_INTERNALS__;
 			setHostBridge(null as any);
+		}
+	});
+
+	it("worker invoke forwards calls via postMessage and resolves on lh:tauri-invoke-result", async () => {
+		const posted: any[] = [];
+		const originalSelf = (globalThis as any).self;
+		(globalThis as any).self = {
+			postMessage: (msg: any) => {
+				posted.push(msg);
+			},
+		};
+
+		try {
+			const invoke = createWorkerTauriInvoke();
+			const invokePromise = invoke<{ data: string }>("lh_custom_cmd", { foo: "bar" });
+
+			assert.equal(posted.length, 1);
+			assert.equal(posted[0].type, "lh:tauri-invoke");
+			assert.equal(posted[0].cmd, "lh_custom_cmd");
+			assert.deepEqual(posted[0].args, { foo: "bar" });
+			const id = posted[0].id;
+
+			handleWorkerTauriMessage({
+				data: {
+					type: "lh:tauri-invoke-result",
+					id,
+					result: { data: "success" },
+				},
+			});
+
+			const res = await invokePromise;
+			assert.deepEqual(res, { data: "success" });
+		} finally {
+			(globalThis as any).self = originalSelf;
+		}
+	});
+
+	it("worker invoke rejects when lh:tauri-invoke-result contains an error", async () => {
+		const posted: any[] = [];
+		const originalSelf = (globalThis as any).self;
+		(globalThis as any).self = {
+			postMessage: (msg: any) => {
+				posted.push(msg);
+			},
+		};
+
+		try {
+			const invoke = createWorkerTauriInvoke();
+			const invokePromise = invoke("lh_failing_cmd");
+
+			assert.equal(posted.length, 1);
+			const id = posted[0].id;
+
+			handleWorkerTauriMessage({
+				data: {
+					type: "lh:tauri-invoke-result",
+					id,
+					error: "Command execution failed",
+				},
+			});
+
+			await assert.rejects(invokePromise, /Command execution failed/);
+		} finally {
+			(globalThis as any).self = originalSelf;
+		}
+	});
+
+	it("lh:tauri-init initializes tauri bridge in worker scope", async () => {
+		const originalSelf = (globalThis as any).self;
+		const globalAny = globalThis as any;
+		delete globalAny.__TAURI_INTERNALS__;
+		setHostBridge(null as any);
+
+		(globalThis as any).self = {
+			postMessage: () => {},
+		};
+
+		try {
+			handleWorkerTauriMessage({
+				data: { type: "lh:tauri-init" },
+			});
+
+			const bridge = getHostBridge();
+			assert.ok(bridge);
+			assert.ok(globalAny.__TAURI_INTERNALS__?.invoke);
+		} finally {
+			(globalThis as any).self = originalSelf;
+			delete globalAny.__TAURI_INTERNALS__;
+			setHostBridge(null as any);
+		}
+	});
+
+	it("childProcess.spawn calls lh_spawn_daemon and kill calls lh_kill_process", async () => {
+		const globalAny = globalThis as any;
+		const invoked: [string, any][] = [];
+		globalAny.__TAURI_INTERNALS__ = {
+			invoke: async (cmd: string, args: any) => {
+				invoked.push([cmd, args]);
+				if (cmd === "lh_spawn_daemon") return 12345;
+				if (cmd === "lh_kill_process") return undefined;
+				throw new Error(`Unexpected command: ${cmd}`);
+			},
+		};
+
+		try {
+			const { childProcess } = await import("../src/worker/shims/node-stubs.ts");
+			const proc = childProcess.spawn("test-daemon", ["--flag"]);
+			assert.ok(proc);
+
+			await new Promise((r) => setTimeout(r, 10));
+			assert.equal(proc.pid, 12345);
+			assert.deepEqual(invoked[0], ["lh_spawn_daemon", { cmd: "test-daemon", args: ["--flag"] }]);
+
+			proc.kill("SIGTERM");
+			assert.deepEqual(invoked[1], ["lh_kill_process", { pid: 12345 }]);
+		} finally {
+			delete globalAny.__TAURI_INTERNALS__;
 		}
 	});
 });

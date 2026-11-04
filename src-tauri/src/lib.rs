@@ -43,6 +43,8 @@ pub fn run() {
             oauth::lh_oauth_listen_close,
             oauth::lh_oauth_respond,
             exec::lh_exec_command,
+            exec::lh_spawn_daemon,
+            exec::lh_kill_process,
             window::lh_expand_window,
             window::lh_set_zoom,
             updater::lh_update_get,
@@ -154,7 +156,10 @@ pub fn run() {
                     let _ = main_win.set_focus();
                 }
                 let _ = app_h.emit("lh://open-settings", "general");
-                let _ = tauri::async_runtime::block_on(updater::lh_update_check(app_h.clone()));
+                let handle = app_h.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = updater::lh_update_check(handle).await;
+                });
             }
             "zoom_actual" => {
                 zoom_idx_clone.store(2, Ordering::SeqCst);

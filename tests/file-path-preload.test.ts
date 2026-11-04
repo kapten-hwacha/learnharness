@@ -97,4 +97,73 @@ describe("Tauri file-path preload bridge", () => {
 		assert.equal(target.lh.getPathForFile(file), "/path/to/doc.pdf");
 		assert.equal(reads, 0);
 	});
+
+	it("resolves file path even when a child component calls stopPropagation", () => {
+		let dropCallback: ((event: { payload: { paths: string[] } }) => void) | undefined;
+		const captureListeners: ((event: any) => void)[] = [];
+		const bubbleListeners: ((event: any) => void)[] = [];
+
+		const target = {
+			addEventListener(type: string, fn: (event: any) => void, options?: boolean | { capture?: boolean }) {
+				const isCapture = typeof options === "boolean" ? options : Boolean(options?.capture);
+				if (type === "drop") {
+					if (isCapture) {
+						captureListeners.push(fn);
+					} else {
+						bubbleListeners.push(fn);
+					}
+				}
+			},
+			removeEventListener() {},
+		} as any;
+
+		installTauriPreload({
+			invoke: async <T>() => undefined as unknown as T,
+			listen: async (event, cb) => {
+				if (event === "tauri://drag-drop") {
+					dropCallback = cb as any;
+				}
+				return () => {};
+			},
+			platform: "darwin",
+			target,
+		});
+
+		assert.equal(captureListeners.length, 1, "drop listener must be registered in capture phase");
+
+		const fullPath = "/users/test/notes.pdf";
+		const file = new File(["test data"], "notes.pdf", { type: "application/pdf" });
+
+		dropCallback!({ payload: { paths: [fullPath] } });
+
+		let stopped = false;
+		const event = {
+			dataTransfer: { files: [file] },
+			stopPropagation: () => {
+				stopped = true;
+			},
+		};
+
+		// 1. Capture listeners run first
+		for (const listener of captureListeners) {
+			listener(event);
+		}
+
+		// 2. Child component handler runs next and calls stopPropagation()
+		const childHandler = (e: typeof event) => {
+			e.stopPropagation();
+		};
+		childHandler(event);
+		assert.ok(stopped, "stopPropagation was called by child component");
+
+		// Verify target.lh.getPathForFile resolves correctly
+		assert.equal(target.lh.getPathForFile(file), fullPath);
+
+		// Verify lastDroppedPaths is cleared after use
+		const nextFile = new File(["other"], "other.pdf");
+		for (const listener of captureListeners) {
+			listener({ dataTransfer: { files: [nextFile] } });
+		}
+		assert.equal(target.lh.getPathForFile(nextFile), "");
+	});
 });

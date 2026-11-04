@@ -65,6 +65,13 @@ pub fn resolve_allowed(
         }
     }
 
+    if !data_dir.exists() {
+        let _ = std::fs::create_dir_all(data_dir);
+    }
+    if !user_data_dir.exists() {
+        let _ = std::fs::create_dir_all(user_data_dir);
+    }
+
     let canonical_data_dir = data_dir
         .canonicalize()
         .map_err(|e| format!("Invalid data_dir: {e}"))?;
@@ -314,6 +321,9 @@ pub fn resolve_app_dirs(app: &tauri::AppHandle) -> (PathBuf, PathBuf, PathBuf) {
     } else {
         user_data_dir.join("auth.json")
     };
+
+    let _ = std::fs::create_dir_all(&user_data_dir);
+    let _ = std::fs::create_dir_all(&data_dir);
 
     (data_dir, auth_file, user_data_dir)
 }
@@ -617,5 +627,38 @@ mod tests {
 
         assert!(!file1.exists());
         assert_eq!(fs::read_to_string(&file2).unwrap(), "file1");
+    }
+
+    #[test]
+    fn nonexistent_initial_directories_created_and_canonicalized() {
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "lh_nonexistent_{}_{}_{}",
+            std::process::id(),
+            id,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = base.join("nonexistent_data");
+        let user_data_dir = base.join("nonexistent_user_data");
+        let auth_file = user_data_dir.join("auth.json");
+
+        assert!(!data_dir.exists());
+        assert!(!user_data_dir.exists());
+
+        let target = data_dir.join("file.txt");
+        let resolved = resolve_allowed(
+            target.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            &user_data_dir,
+        );
+        assert!(resolved.is_ok());
+        assert!(data_dir.exists());
+        assert!(user_data_dir.exists());
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

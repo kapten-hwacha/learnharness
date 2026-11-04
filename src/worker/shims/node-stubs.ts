@@ -1,5 +1,7 @@
 // Browser-safe node:* shims for worker execution
 
+import { getTauriInvoke } from "../host-bridge.ts";
+
 export const os = {
 	tmpdir: () => "/tmp",
 	homedir: () => "/home",
@@ -133,12 +135,6 @@ export const workerThreads = {
 	workerData: undefined,
 };
 
-function getTauriInvoke(): (<T>(cmd: string, args?: Record<string, unknown>) => Promise<T>) | null {
-	const tauri = (globalThis as any).__TAURI_INTERNALS__;
-	if (typeof tauri?.invoke === "function") return tauri.invoke;
-	return null;
-}
-
 export const childProcess = {
 	spawn(file: string, ...argsAndOptions: any[]) {
 		const invoke = getTauriInvoke();
@@ -151,6 +147,8 @@ export const childProcess = {
 			if (Array.isArray(item)) args = item;
 			else if (typeof item === "object" && item !== null) options = item;
 		}
+
+		let pid: number | undefined;
 
 		const listeners = new Map<string, ((...args: any[]) => void)[]>();
 		const stdoutListeners = new Map<string, ((...args: any[]) => void)[]>();
@@ -187,29 +185,30 @@ export const childProcess = {
 
 		const stdout = createEmitter(stdoutListeners);
 		const stderr = createEmitter(stderrListeners);
-		const proc = {
+		const proc: any = {
 			...createEmitter(listeners),
 			stdout,
 			stderr,
 			stdin: { write() {}, end() {} },
-			kill() {},
+			pid: undefined,
+			kill(signal?: string | number) {
+				if (pid !== undefined) {
+					invoke("lh_kill_process", { pid }).catch(() => {});
+				}
+				proc.emit("exit", null, signal ?? "SIGTERM");
+				proc.emit("close", null);
+				return true;
+			},
 		};
 
-		const envList: [string, string][] = options.env
-			? Object.entries(options.env).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)])
-			: [];
-
-		invoke<{ code: number | null; stdout: string; stderr: string }>("lh_exec_command", {
+		invoke<number>("lh_spawn_daemon", {
 			cmd: file,
 			args,
-			env: envList.length > 0 ? envList : undefined,
-			timeoutMs: options.timeout,
 		})
-			.then((res) => {
-				if (res.stdout) stdout.emit("data", Buffer.from(res.stdout));
-				if (res.stderr) stderr.emit("data", Buffer.from(res.stderr));
-				proc.emit("exit", res.code, null);
-				proc.emit("close", res.code);
+			.then((spawnedPid) => {
+				pid = spawnedPid;
+				proc.pid = spawnedPid;
+				proc.emit("spawn");
 			})
 			.catch((err) => {
 				proc.emit("error", err);

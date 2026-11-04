@@ -57,18 +57,23 @@ export function installTauriPreload(deps: {
 
 	// Listen for DOM drop events to map Files to paths
 	if (target?.addEventListener) {
-		target.addEventListener("drop", (event: any) => {
-			const files = event?.dataTransfer?.files;
-			if (files && lastDroppedPaths.length > 0) {
-				for (let i = 0; i < files.length; i++) {
-					const dropped = lastDroppedPaths[i];
-					const file = files[i];
-					if (dropped && file) {
-						dropPathMap.set(file, dropped);
+		target.addEventListener(
+			"drop",
+			(event: any) => {
+				const files = event?.dataTransfer?.files;
+				if (files && lastDroppedPaths.length > 0) {
+					for (let i = 0; i < files.length; i++) {
+						const dropped = lastDroppedPaths[i];
+						const file = files[i];
+						if (dropped && file) {
+							dropPathMap.set(file, dropped);
+						}
 					}
 				}
-			}
-		});
+				lastDroppedPaths = [];
+			},
+			true,
+		);
 	}
 
 	// Listen for zoom events from host

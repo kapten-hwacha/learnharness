@@ -32,9 +32,15 @@ pub fn validate_external_url(url_str: &str) -> Result<(), String> {
     Ok(())
 }
 
+static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn get_client() -> &'static reqwest::Client {
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 #[tauri::command]
 pub async fn lh_http_fetch(req: HttpRequest) -> Result<HttpResponse, String> {
-    let client = reqwest::Client::new();
+    let client = get_client();
     let method = reqwest::Method::from_bytes(req.method.as_bytes())
         .map_err(|e| format!("Invalid HTTP method: {e}"))?;
     let mut builder = client.request(method, &req.url);

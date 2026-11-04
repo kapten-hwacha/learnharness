@@ -1,7 +1,9 @@
 #![cfg(not(target_os = "ios"))]
 
 use serde::{Deserialize, Serialize};
-use std::process::Stdio;
+use std::collections::HashMap;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,6 +11,40 @@ pub struct ExecResult {
     pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+}
+
+static DAEMON_REGISTRY: OnceLock<Mutex<HashMap<u32, Child>>> = OnceLock::new();
+
+fn get_daemon_registry() -> &'static Mutex<HashMap<u32, Child>> {
+    DAEMON_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+pub async fn lh_spawn_daemon(cmd: String, args: Vec<String>) -> Result<u32, String> {
+    let mut command = Command::new(cmd);
+    command.args(args);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let child = command.spawn().map_err(|e| e.to_string())?;
+    let pid = child.id();
+
+    let registry = get_daemon_registry();
+    let mut map = registry.lock().map_err(|e| e.to_string())?;
+    map.insert(pid, child);
+
+    Ok(pid)
+}
+
+#[tauri::command]
+pub async fn lh_kill_process(pid: u32) -> Result<(), String> {
+    let registry = get_daemon_registry();
+    let mut map = registry.lock().map_err(|e| e.to_string())?;
+    if let Some(mut child) = map.remove(&pid) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -40,5 +76,21 @@ pub async fn lh_exec_command(
         }),
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("Command execution timed out".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn daemon_spawn_and_kill() {
+        let pid = lh_spawn_daemon("sleep".to_string(), vec!["10".to_string()])
+            .await
+            .expect("spawn daemon succeeds");
+        assert!(pid > 0);
+
+        let kill_res = lh_kill_process(pid).await;
+        assert!(kill_res.is_ok(), "kill process succeeds");
     }
 }

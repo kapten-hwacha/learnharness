@@ -135,8 +135,47 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 		return { worker: activeWorker, portFetch: workerFetch };
 	}
 
-	const worker = new Worker(new URL("../worker/entry.ts", import.meta.url), { type: "module" });
+	const isTauri = typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__?.invoke);
+	const workerUrl = new URL("../worker/entry.ts", import.meta.url);
+	if (isTauri) {
+		workerUrl.searchParams.set("tauri", "1");
+	}
+
+	const worker = new Worker(workerUrl, { type: "module" });
 	activeWorker = worker;
+
+	if (isTauri) {
+		const tauri = (window as any).__TAURI_INTERNALS__;
+		worker.postMessage({ type: "lh:tauri-init" });
+
+		worker.addEventListener("message", async (event: MessageEvent) => {
+			if (event.data?.type === "lh:tauri-invoke") {
+				const { id, cmd, args } = event.data;
+				try {
+					const result = await tauri.invoke(cmd, args);
+					worker.postMessage({ type: "lh:tauri-invoke-result", id, result });
+				} catch (err) {
+					worker.postMessage({
+						type: "lh:tauri-invoke-result",
+						id,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			}
+		});
+
+		if (typeof tauri.listen === "function") {
+			void Promise.resolve(
+				tauri.listen("lh://oauth-request", (event: any) => {
+					worker.postMessage({
+						type: "lh:tauri-event",
+						event: "lh://oauth-request",
+						payload: event?.payload,
+					});
+				})
+			);
+		}
+	}
 
 	const portFetch = createPortFetch((msg, transfer) => {
 		worker.postMessage(msg, transfer);
