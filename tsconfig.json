@@ -45,6 +45,7 @@
     "node_modules",
     "dist",
     "dist-web",
-    ".next"
+    ".next",
+    "src-tauri"
   ]
 }

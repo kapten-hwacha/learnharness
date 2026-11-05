@@ -23,11 +23,12 @@
         "trafficLightPosition": {
           "x": 16,
           "y": 22.5
-        }
+        },
+        "devtools": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' asset: https: data: blob:"
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' tauri: asset: https: data: blob:; worker-src 'self' blob: tauri:; font-src 'self' data: tauri:;"
     }
   },
   "bundle": {

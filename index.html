@@ -14,6 +14,30 @@
 					r.style.colorScheme = m ? "dark" : "light";
 				} catch (e) {}
 			})();
+			window.addEventListener("error", function (e) {
+				var msg = e.error ? (e.error.stack || e.error.message) : (e.message || String(e));
+				console.error("[LH Boot Error]", msg);
+				var el = document.getElementById("lh-boot-error-overlay");
+				if (!el) {
+					el = document.createElement("div");
+					el.id = "lh-boot-error-overlay";
+					el.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:#1e1e1e;color:#ff5555;z-index:999999;padding:24px;font-family:monospace;white-space:pre-wrap;overflow:auto;font-size:14px;line-height:1.4;";
+					(document.body || document.documentElement).appendChild(el);
+				}
+				el.textContent = "LearnHarness Boot Error:\n\n" + msg;
+			});
+			window.addEventListener("unhandledrejection", function (e) {
+				var msg = e.reason ? (e.reason.stack || e.reason.message || String(e.reason)) : String(e);
+				console.error("[LH Boot Unhandled Rejection]", msg);
+				var el = document.getElementById("lh-boot-error-overlay");
+				if (!el) {
+					el = document.createElement("div");
+					el.id = "lh-boot-error-overlay";
+					el.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:#1e1e1e;color:#ff5555;z-index:999999;padding:24px;font-family:monospace;white-space:pre-wrap;overflow:auto;font-size:14px;line-height:1.4;";
+					(document.body || document.documentElement).appendChild(el);
+				}
+				el.textContent = "LearnHarness Boot Unhandled Rejection:\n\n" + msg;
+			});
 		</script>
 	</head>
 	<body class="min-h-dvh antialiased">

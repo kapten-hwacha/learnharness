@@ -39,6 +39,13 @@ export function isTauriEnvironment(): boolean {
 	if (typeof (globalThis as any).__TAURI_INTERNALS__?.invoke === "function") return true;
 	if (typeof (globalThis as any).__TAURI_INVOKE__ === "function") return true;
 	if (typeof location !== "undefined") {
+		if (
+			location.protocol === "tauri:" ||
+			location.protocol === "asset:" ||
+			location.hostname === "tauri.localhost"
+		) {
+			return true;
+		}
 		try {
 			if (new URL(location.href).searchParams.get("tauri") === "1") return true;
 		} catch {}
