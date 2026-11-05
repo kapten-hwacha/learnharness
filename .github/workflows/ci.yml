@@ -31,6 +31,15 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run lint
+      - name: Validate iOS configuration
+        run: |
+          node -e '
+            const fs = require("fs");
+            const conf = JSON.parse(fs.readFileSync("src-tauri/tauri.ios.conf.json", "utf8"));
+            if (!conf.bundle?.iOS) throw new Error("Missing bundle.iOS config");
+            if (!conf.app?.windows?.[0]?.fullscreen) throw new Error("iOS window must be fullscreen");
+            console.log("tauri.ios.conf.json configuration valid");
+          '
 
   standalone:
     name: Standalone (${{ matrix.platform }})

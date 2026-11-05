@@ -32,6 +32,11 @@
 :root {
 	color-scheme: light;
 	--radius: 8px;
+	/* Safe-area insets (iOS / iPadOS viewport-fit=cover) */
+	--lh-sat: env(safe-area-inset-top, 0px);
+	--lh-sab: env(safe-area-inset-bottom, 0px);
+	--lh-sal: env(safe-area-inset-left, 0px);
+	--lh-sar: env(safe-area-inset-right, 0px);
 	--background: #fafafa;
 	--foreground: #18181b;
 	--card: #f2f2f3;
@@ -607,6 +612,54 @@ body {
 .lh-electron .lh-wco-floating {
 	right: calc(0.5rem + var(--lh-wco-right, 0px));
 	max-width: max(0px, calc(100% - 5.5rem - var(--lh-wco-right, 0px)));
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   iPadOS / iOS shell styles (Wave 3):
+   - Touch response & overscroll bounce elimination
+   - Fullscreen viewport safe areas (--lh-sat, --lh-sab)
+   - Suppressed traffic-light offsets and window dragging
+   ───────────────────────────────────────────────────────────────────────── */
+.lh-ios body {
+	overscroll-behavior-y: none;
+	-webkit-touch-callout: none;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.lh-ios {
+	--lh-wco-right: 0px !important;
+}
+
+.lh-ios .lh-wco-gutter {
+	--lh-wco-right: 0px !important;
+	padding-right: 0.75rem !important;
+}
+
+.lh-ios .lh-lights-gutter {
+	padding-left: 1rem !important;
+}
+
+.lh-ios .lh-closed-toggle {
+	margin-left: 0px !important;
+}
+
+.lh-ios .lh-top-bar {
+	padding-top: var(--lh-sat);
+	height: calc(3.75rem + var(--lh-sat));
+}
+
+.lh-ios .lh-sidebar-header {
+	padding-top: calc(0.75rem + var(--lh-sat));
+	height: calc(3.75rem + var(--lh-sat));
+}
+
+.lh-ios .lh-bottom-safe {
+	padding-bottom: calc(0.75rem + var(--lh-sab));
+}
+
+.lh-ios .lh-drag {
+	-webkit-app-region: no-drag;
+	app-region: no-drag;
 }
 
 /* --font-title deliberately NOT @theme inline (see comment above): the

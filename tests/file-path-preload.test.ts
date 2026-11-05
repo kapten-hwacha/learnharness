@@ -248,5 +248,40 @@ describe("Tauri file-path preload bridge", () => {
 			assert.equal(calledWith?.name, "override.pdf");
 			assert.deepEqual(calledWith?.data, bytes);
 		});
+
+		it("importFile handles multiple files in sequence producing valid imported paths", async () => {
+			const target = {} as any;
+			installTauriPreload({
+				invoke: async <T>() => undefined as unknown as T,
+				listen: async () => () => {},
+				platform: "ios",
+				target,
+			});
+
+			const file1 = new File(["content1"], "doc1.pdf", { type: "application/pdf" });
+			const file2 = new File(["content2"], "doc2.txt", { type: "text/plain" });
+
+			const path1 = await target.lh.importFile(file1);
+			const path2 = await target.lh.importFile(file2);
+
+			assert.equal(path1, "/imported/doc1.pdf");
+			assert.equal(path2, "/imported/doc2.txt");
+		});
+
+		it("importFile strips leading slashes and existing /imported/ prefixes", async () => {
+			const target = {} as any;
+			installTauriPreload({
+				invoke: async <T>() => undefined as unknown as T,
+				listen: async () => () => {},
+				platform: "ios",
+				target,
+			});
+
+			const path1 = await target.lh.importFile("///deep/path.pdf", new Uint8Array([1]));
+			assert.equal(path1, "/imported/deep/path.pdf");
+
+			const path2 = await target.lh.importFile("/imported/existing.pdf", new Uint8Array([2]));
+			assert.equal(path2, "/imported/existing.pdf");
+		});
 	});
 });

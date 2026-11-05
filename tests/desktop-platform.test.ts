@@ -195,4 +195,50 @@ describe("Tauri desktop platform preload", () => {
 			Object.defineProperty(globalThis, "window", { value: origWindow, configurable: true });
 		});
 	});
+
+	describe("Touch, Viewport & Safe-Area UX (Wave 3 Task 3)", () => {
+		it("index.html specifies viewport-fit=cover and user-scalable=no", () => {
+			const indexHtmlPath = fileURLToPath(new URL("../index.html", import.meta.url));
+			const indexHtml = readFileSync(indexHtmlPath, "utf8");
+			assert.ok(
+				indexHtml.includes(
+					'name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no"',
+				),
+				"index.html must have cover viewport and disable user-scaling",
+			);
+		});
+
+		it("app/globals.css specifies safe area custom properties and .lh-ios rules", () => {
+			const cssPath = fileURLToPath(new URL("../app/globals.css", import.meta.url));
+			const css = readFileSync(cssPath, "utf8");
+
+			assert.ok(css.includes("--lh-sat: env(safe-area-inset-top, 0px);"), "CSS must declare --lh-sat");
+			assert.ok(css.includes("--lh-sab: env(safe-area-inset-bottom, 0px);"), "CSS must declare --lh-sab");
+			assert.ok(css.includes("--lh-sal: env(safe-area-inset-left, 0px);"), "CSS must declare --lh-sal");
+			assert.ok(css.includes("--lh-sar: env(safe-area-inset-right, 0px);"), "CSS must declare --lh-sar");
+
+			assert.ok(css.includes(".lh-ios body"), ".lh-ios body rule must exist");
+			assert.ok(css.includes("overscroll-behavior-y: none;"), "overscroll-behavior-y must be none");
+			assert.ok(css.includes("-webkit-touch-callout: none;"), "-webkit-touch-callout must be none");
+			assert.ok(
+				css.includes("-webkit-tap-highlight-color: transparent;"),
+				"-webkit-tap-highlight-color must be transparent",
+			);
+
+			assert.ok(css.includes(".lh-ios .lh-wco-gutter"), ".lh-ios .lh-wco-gutter must exist");
+			assert.ok(css.includes("--lh-wco-right: 0px !important;"), "WCO gutter must be 0px on iOS");
+
+			assert.ok(css.includes(".lh-ios .lh-top-bar"), ".lh-ios .lh-top-bar rule must exist");
+			assert.ok(css.includes("padding-top: var(--lh-sat);"), ".lh-top-bar must have padding-top: var(--lh-sat)");
+
+			assert.ok(css.includes(".lh-ios .lh-drag"), ".lh-ios .lh-drag rule must exist");
+			assert.ok(css.includes("app-region: no-drag;"), "app-region must be no-drag on iOS");
+		});
+
+		it("components/top-bar.tsx includes lh-top-bar class for iOS safe areas", () => {
+			const topBarPath = fileURLToPath(new URL("../components/top-bar.tsx", import.meta.url));
+			const topBar = readFileSync(topBarPath, "utf8");
+			assert.ok(topBar.includes("lh-top-bar"), "TopBar header must include lh-top-bar class");
+		});
+	});
 });

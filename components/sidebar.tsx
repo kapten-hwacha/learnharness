@@ -52,7 +52,7 @@ const STORAGE_KEY = "lh:sidebar-open";
 import type { ChatGPTControlBridge, NativeSubscriptionControlBridge } from "@/src/core";
 import type { UpdateState } from "@/components/settings/update-settings.tsx";
 import { FilePathDropZone } from "@/components/file-path-drop-zone";
-import { isDesktop } from "@/src/core";
+import { isDesktop, isIos } from "@/src/core";
 const SIDEBAR_AUTOCLOSE = 928;
 
 declare global {
@@ -115,7 +115,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 		// into the window's drag surface. Post-mount only — server HTML
 		// and first client render must agree (no hydration mismatch),
 		// and in the plain browser the class never appears.
-		if (isDesktop()) {
+		if (isIos()) {
+			document.documentElement.classList.add("lh-ios");
+			document.documentElement.dataset.lhPlatform = "ios";
+		} else if (isDesktop()) {
 			document.documentElement.classList.add("lh-desktop", "lh-electron");
 			document.documentElement.dataset.lhPlatform = window.lh?.platform ?? "";
 		}
@@ -657,7 +660,7 @@ function SessionsSidebar() {
 				    Merged chrome (2026-09-17): in Electron this band is the
 				    window's drag surface and starts after the traffic lights
 				    (.lh-lights-gutter); in the browser those classes are inert. */}
-				<div className="lh-drag lh-lights-gutter flex items-center justify-between px-4 py-3">
+				<div className="lh-sidebar-header lh-drag lh-lights-gutter flex items-center justify-between px-4 py-3">
 					{/* The owner's mark (2026-09-17) replaces the "LH" text — still the
 					    home link, still vertically centered by the band's items-center.
 					    The 92px .lh-lights-gutter keeps it clear of the traffic lights
@@ -853,7 +856,7 @@ function SessionsSidebar() {
 					{/* Settings entry (settings-app wave): same row language as
 					    New session — quiet, bottom-pinned, opens the centered
 					    dialog (also mod+, in the keyboard registry). */}
-					<div className="px-3 pb-3 pt-1">
+					<div className="lh-bottom-safe px-3 pb-3 pt-1">
 						<Hint label="Settings" action="open-settings" side="right">
 							<button
 								type="button"
