@@ -2,35 +2,39 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Repository root (this file is at <root>/config.ts). */
-export const ROOT = path.dirname(fileURLToPath(import.meta.url));
+export let ROOT = path.dirname(fileURLToPath(import.meta.url));
 
-/**
- * THE data-location seam (the Electron contract, 2026-09-17): LH_DATA_DIR
- * relocates every MUTABLE record — chat sessions, graph ledgers, the
- * embedding model cache — when set. The desktop shell points it at
- * userData so nothing is written inside the read-only .app bundle
- * (macOS translocation guarantees the bundle is read-only anyway).
- * Unset (plain web dev / repo work) it resolves to the repo's data/,
- * byte-for-byte as before. Read-only assets (prompts) stay ROOT-anchored
- * on purpose: they ship inside the app bundle by design.
- */
-const DATA_ROOT = process.env.LH_DATA_DIR
+let DATA_ROOT = process.env.LH_DATA_DIR
 	? path.resolve(process.env.LH_DATA_DIR)
 	: path.join(ROOT, "data");
 
 export const PATHS = {
-	root: ROOT,
+	get root() {
+		return ROOT;
+	},
 	/** Teacher system prompt — the agent's instructions (src/agent/). */
-	teacherPrompt: path.join(ROOT, "src", "agent", "system-prompt.md"),
-	data: DATA_ROOT,
+	get teacherPrompt() {
+		return path.join(ROOT, "src", "agent", "system-prompt.md");
+	},
+	get data() {
+		return DATA_ROOT;
+	},
 	/** Chat sessions (AI SDK UIMessage transcripts, one JSON file per chat). */
-	chats: path.join(DATA_ROOT, "chats"),
-	graph: path.join(DATA_ROOT, "graph"),
+	get chats() {
+		return path.join(DATA_ROOT, "chats");
+	},
+	get graph() {
+		return path.join(DATA_ROOT, "graph");
+	},
 	/** Study time (src/store/study.ts): intervals.jsonl history + open.json timers. */
-	study: path.join(DATA_ROOT, "study"),
+	get study() {
+		return path.join(DATA_ROOT, "study");
+	},
 	/** Debug artifacts (env-gated): data/debug/provider-events/<chatId>.jsonl
 	 * raw provider stream recordings (src/agent/provider-events.ts). */
-	debug: path.join(DATA_ROOT, "debug"),
+	get debug() {
+		return path.join(DATA_ROOT, "debug");
+	},
 } as const;
 
 // ─── Models ────────────────────────────────────────────────────────────────
@@ -61,8 +65,12 @@ export type ModelRole =
 
 /** Study-time files: the append-only history and the open-timer working state. */
 export const STUDY_FILES = {
-	intervals: path.join(PATHS.study, "intervals.jsonl"),
-	open: path.join(PATHS.study, "open.json"),
+	get intervals() {
+		return path.join(PATHS.study, "intervals.jsonl");
+	},
+	get open() {
+		return path.join(PATHS.study, "open.json");
+	},
 } as const;
 
 /**
@@ -71,14 +79,24 @@ export const STUDY_FILES = {
  * TRUTH (owner, 2026-09-30): edges are a derived view, never stored.
  */
 export const LEDGER_FILES = {
-	nodes: path.join(PATHS.graph, "nodes.jsonl"),
-	chains: path.join(PATHS.graph, "chains.jsonl"),
-	sessions: path.join(PATHS.graph, "sessions.jsonl"),
+	get nodes() {
+		return path.join(PATHS.graph, "nodes.jsonl");
+	},
+	get chains() {
+		return path.join(PATHS.graph, "chains.jsonl");
+	},
+	get sessions() {
+		return path.join(PATHS.graph, "sessions.jsonl");
+	},
 	/** Per-message extraction coverage (contracts/graph.ts CoverageEntry;
 	 *  the checkpoint's replacement for chat extractions — notes keep
 	 *  sessions.jsonl, whole-file as they are). */
-	coverage: path.join(PATHS.graph, "coverage.jsonl"),
-	regroups: path.join(PATHS.graph, "regroups.jsonl"),
+	get coverage() {
+		return path.join(PATHS.graph, "coverage.jsonl");
+	},
+	get regroups() {
+		return path.join(PATHS.graph, "regroups.jsonl");
+	},
 } as const;
 
 /**
@@ -86,26 +104,26 @@ export const LEDGER_FILES = {
  * record (contracts/graph.ts) — the file path + import time + the run's usage
  * log. Read-modify-write like a chat file, not append-only like the ledgers.
  */
-export const SOURCES_FILE = path.join(PATHS.graph, "sources.json");
+export let SOURCES_FILE = path.join(PATHS.graph, "sources.json");
 /** Presentation-only source names/folder placement; never extraction identity. */
-export const SOURCE_ORGANIZATION_FILE = path.join(PATHS.graph, "source-organization.json");
+export let SOURCE_ORGANIZATION_FILE = path.join(PATHS.graph, "source-organization.json");
 /** The layout ledger (read-modify-write like sources.json): nodeId →
  *  {x,y} resting positions from the incremental settle (core/layout.ts).
  *  Carries an updatedAt stamp for future live-physics conflict handling. */
-export const POSITIONS_FILE = path.join(PATHS.graph, "positions.json");
+export let POSITIONS_FILE = path.join(PATHS.graph, "positions.json");
 
 /**
  * Graph render settings (the settings-panel controls): one small JSON blob,
  * read-modify-write. Shared shape/sanitizer: src/core/render-settings.ts.
  */
-export const RENDER_SETTINGS_FILE = path.join(PATHS.graph, "render-settings.json");
+export let RENDER_SETTINGS_FILE = path.join(PATHS.graph, "render-settings.json");
 
 /** The graph-family FORMAT STAMP sidecar (schema-versioning wave,
  *  2026-10-10): one version for the whole family — the four JSONL ledgers,
  *  sources.json, render-settings.json. LAZY v1: absent = v1; the first
  *  graph-family write creates it. positions.json is REBUILDABLE and rides
  *  along unversioned by design (owner ruling). */
-export const GRAPH_FORMAT_FILE = path.join(PATHS.graph, "format.json");
+export let GRAPH_FORMAT_FILE = path.join(PATHS.graph, "format.json");
 
 /**
  * THE USER SETTINGS RECORD (settings-storage wave, 2026-09-19): one
@@ -123,7 +141,7 @@ export const GRAPH_FORMAT_FILE = path.join(PATHS.graph, "format.json");
  * with per-session models, owner 2026-09-28 — sessions own their model
  * from birth, stamped from the strong slot.)
  */
-export const SETTINGS_FILE = path.join(DATA_ROOT, "settings.json");
+export let SETTINGS_FILE = path.join(DATA_ROOT, "settings.json");
 
 /**
  * User prompt-override files (settings-storage wave, 2026-09-19): the
@@ -138,7 +156,7 @@ export const SETTINGS_FILE = path.join(DATA_ROOT, "settings.json");
  * remove, or reorder fragments adapt automatically; an override keyed to
  * a vanished segment stops composing but stays on disk.
  */
-export const PROMPTS_OVERRIDE_DIR = path.join(DATA_ROOT, "prompts");
+export let PROMPTS_OVERRIDE_DIR = path.join(DATA_ROOT, "prompts");
 
 /**
  * THE AUTH/KEY STORE (auth-keys wave, 2026-09-19): BYOK provider keys in a
@@ -154,6 +172,31 @@ export const PROMPTS_OVERRIDE_DIR = path.join(DATA_ROOT, "prompts");
  * re-read from disk on every API access. Secrets NEVER go in settings.json
  * — this file keeps that role, alongside .env.local.
  */
-export const AUTH_FILE = process.env.LH_AUTH_FILE
+export let AUTH_FILE = process.env.LH_AUTH_FILE
 	? path.resolve(process.env.LH_AUTH_FILE)
 	: path.join(ROOT, "auth.json");
+
+export function configurePaths(cfg: { root?: string; dataDir?: string; authFile?: string }): void {
+	if (cfg.root) {
+		ROOT = cfg.root;
+	}
+	if (cfg.dataDir) {
+		DATA_ROOT = path.resolve(cfg.dataDir);
+		if (typeof process !== "undefined" && process?.env) {
+			process.env.LH_DATA_DIR = DATA_ROOT;
+		}
+	}
+	if (cfg.authFile) {
+		AUTH_FILE = path.resolve(cfg.authFile);
+		if (typeof process !== "undefined" && process?.env) {
+			process.env.LH_AUTH_FILE = AUTH_FILE;
+		}
+	}
+	SOURCES_FILE = path.join(PATHS.graph, "sources.json");
+	SOURCE_ORGANIZATION_FILE = path.join(PATHS.graph, "source-organization.json");
+	POSITIONS_FILE = path.join(PATHS.graph, "positions.json");
+	RENDER_SETTINGS_FILE = path.join(PATHS.graph, "render-settings.json");
+	GRAPH_FORMAT_FILE = path.join(PATHS.graph, "format.json");
+	SETTINGS_FILE = path.join(DATA_ROOT, "settings.json");
+	PROMPTS_OVERRIDE_DIR = path.join(DATA_ROOT, "prompts");
+}
