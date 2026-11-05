@@ -24,3 +24,4 @@ xai-credentials.json*
 # Tauri v2 build artifacts
 src-tauri/target/
 src-tauri/gen/
+src-tauri/*.key*
