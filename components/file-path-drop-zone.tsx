@@ -10,7 +10,7 @@ const BROWSER_NOTICE = "Local file paths can only be attached in the desktop app
 
 /** The content area only: the sidebar is deliberately outside this zone.
  * Existing files stay where they are; only quoted path strings enter drafts.
- * On iPadOS, tapping the drop zone or dropping files imports them into memfs
+ * On iPadOS, dropping files or triggering the file picker imports them into memfs
  * via window.lh.importFile and attaches the synthetic paths. */
 export function FilePathDropZone({
 	children,
@@ -33,13 +33,17 @@ export function FilePathDropZone({
 		setDragging(false);
 	};
 
-	const deliverPaths = (paths: string[], container: HTMLElement | null) => {
+	const deliverPaths = (paths: string[], container: HTMLElement | null): boolean => {
 		const focused = document.activeElement?.closest<HTMLElement>("[data-file-path-input]");
 		if (focused && container?.contains(focused)) {
 			focused.dispatchEvent(new CustomEvent(INSERT_FILE_PATHS_EVENT, { detail: paths }));
-		} else if (!appendToPrimaryInput(paths.map(quoteFilePath).join(" "))) {
-			setNotice("Open a chat to attach file paths.");
+			return true;
 		}
+		if (appendToPrimaryInput(paths.map(quoteFilePath).join(" "))) {
+			return true;
+		}
+		setNotice("Open a chat to attach file paths.");
+		return false;
 	};
 
 	const handleFileInputChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -67,19 +71,6 @@ export function FilePathDropZone({
 		}
 	};
 
-	const handleZoneClick = (event: React.MouseEvent<HTMLElement>) => {
-		if (!isIos()) return;
-		const target = event.target as HTMLElement | null;
-		if (target?.closest("button, input, textarea, a, select, [contenteditable='true'], [role='button']")) {
-			return;
-		}
-		const selection = typeof window !== "undefined" ? window.getSelection() : null;
-		if (selection && selection.toString().length > 0) {
-			return;
-		}
-		fileInputRef.current?.click();
-	};
-
 	useEffect(() => {
 		// The sidebar remains a non-target, but dropping a file there must not
 		// navigate the app away. No indicator or attachment is produced there.
@@ -92,11 +83,24 @@ export function FilePathDropZone({
 				event.preventDefault();
 			}
 		};
+		const openPicker = () => {
+			fileInputRef.current?.click();
+		};
+		const handleTriggerClick = (event: MouseEvent) => {
+			const target = event.target as HTMLElement | null;
+			if (target?.closest?.("[data-file-picker-trigger]")) {
+				fileInputRef.current?.click();
+			}
+		};
 		window.addEventListener("dragover", preventOutsideNavigation);
 		window.addEventListener("drop", preventOutsideNavigation);
+		window.addEventListener("lh:open-file-picker", openPicker);
+		window.addEventListener("click", handleTriggerClick);
 		return () => {
 			window.removeEventListener("dragover", preventOutsideNavigation);
 			window.removeEventListener("drop", preventOutsideNavigation);
+			window.removeEventListener("lh:open-file-picker", openPicker);
+			window.removeEventListener("click", handleTriggerClick);
 		};
 	}, []);
 
@@ -105,7 +109,6 @@ export function FilePathDropZone({
 			ref={root}
 			className={className}
 			data-testid="file-path-drop-zone"
-			onClick={handleZoneClick}
 			onDragEnter={(event) => {
 				if (!hasFiles(event)) return;
 				event.preventDefault();
@@ -182,8 +185,10 @@ export function FilePathDropZone({
 					);
 					return;
 				}
-				deliverPaths(paths, event.currentTarget);
-				setNotice(skipped ? "Some dropped items had no available file path." : "");
+				const delivered = deliverPaths(paths, event.currentTarget);
+				if (delivered) {
+					setNotice(skipped ? "Some dropped items had no available file path." : "");
+				}
 			}}
 		>
 			<input

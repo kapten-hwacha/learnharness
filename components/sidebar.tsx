@@ -63,7 +63,7 @@ declare global {
 			platform?: string;
 			isIos?: boolean;
 			isMobile?: boolean;
-			importFile?: (name: string, data: Uint8Array | ArrayBuffer) => Promise<string>;
+			importFile?: (nameOrFile: string | File, maybeData?: Uint8Array | ArrayBuffer) => Promise<string>;
 			/** Resolve an OS-backed File without copying/uploading its contents. */
 			getPathForFile?: (file: File) => string;
 			/** External Next desktop-dev uses the server's web connections. */

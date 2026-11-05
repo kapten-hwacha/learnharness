@@ -61,6 +61,7 @@ async function fixture({ desktop = true, claimed = true } = {}) {
 				<form onSubmit={(event) => { event.preventDefault(); submits++; }}>
 					<PathInput data-testid="editor" value={value} onValueChange={(next) => { value = next; draw(); }} onKeyDown={() => { keys++; }} />
 					<button type="button" data-testid="elsewhere">Elsewhere</button>
+					<button type="button" data-file-picker-trigger data-testid="picker-trigger">Trigger</button>
 					<div data-testid="content">Content away from the input</div>
 				</form>
 			</FilePathDropZone>
@@ -230,4 +231,54 @@ test("production AppShell places the sidebar outside its content-only drop zone"
 	const shell = source.slice(source.indexOf("export function AppShell("));
 	assert.match(shell, /<SessionsSidebar\s*\/>\s*<FilePathDropZone\b[^>]*>\{children\}<\/FilePathDropZone>/);
 	assert.doesNotMatch(shell, /<FilePathDropZone\b[^>]*>[\s\S]*<SessionsSidebar/);
+});
+
+test("iPadOS file picker is not triggered by body tap, but by explicit event or data-file-picker-trigger", async () => {
+	const f = await fixture();
+	const input = f.doc.querySelector<HTMLInputElement>('[data-testid="file-path-input-ios"]')!;
+	assert.ok(input);
+	let pickerOpened = 0;
+	input.addEventListener("click", () => { pickerOpened++; });
+
+	// 1. Tapping on content must NOT open file picker
+	const content = f.doc.querySelector('[data-testid="content"]')!;
+	await act(async () => {
+		content.dispatchEvent(new Event("click", { bubbles: true }));
+	});
+	assert.equal(pickerOpened, 0, "regular tap on content must not open file picker");
+
+	// 2. Dispatching lh:open-file-picker opens file picker
+	await act(async () => {
+		window.dispatchEvent(new CustomEvent("lh:open-file-picker"));
+	});
+	assert.equal(pickerOpened, 1, "lh:open-file-picker must trigger hidden file input click");
+
+	// 3. Clicking element with data-file-picker-trigger opens file picker
+	const trigger = f.doc.querySelector('[data-testid="picker-trigger"]')!;
+	await act(async () => {
+		trigger.dispatchEvent(new Event("click", { bubbles: true }));
+	});
+	assert.equal(pickerOpened, 2, "clicking [data-file-picker-trigger] must trigger hidden file input click");
+});
+
+test("file input change imports files and delivers paths", async () => {
+	const f = await fixture();
+	const input = f.doc.querySelector<HTMLInputElement>('[data-testid="file-path-input-ios"]')!;
+	assert.ok(input);
+
+	const testFile = new File(["test data"], "document.pdf", { type: "application/pdf" });
+	testFile.arrayBuffer = async () => new Uint8Array([1, 2, 3]).buffer;
+
+	Object.defineProperty(input, "files", {
+		value: [testFile],
+		writable: true,
+		configurable: true,
+	});
+
+	await act(async () => {
+		input.dispatchEvent(new Event("change", { bubbles: true }));
+		await new Promise((r) => setTimeout(r, 10));
+	});
+
+	assert.deepEqual(f.appends, ["`/imported/document.pdf`"]);
 });
