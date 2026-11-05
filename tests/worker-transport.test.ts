@@ -105,6 +105,48 @@ describe("Worker MessageChannel transport & Vite dev bridge security", () => {
 		assert.deepEqual(receivedDefaultMessages, ["default message"]);
 	});
 
+	it("streams chunked SSE responses over direct worker postMessage without MessageChannel", async () => {
+		let workerSubscribed = false;
+		let replySubscriber: ((ev: MessageEvent) => void) | undefined;
+		const handleWorkerMsg = createWorkerMessageHandler(async () => {
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode("hello direct world"));
+					controller.close();
+				},
+			});
+			return new Response(stream, { status: 200 });
+		});
+
+		// Mock global self.postMessage for worker reply
+		const origSelf = (globalThis as any).self;
+		(globalThis as any).self = {
+			postMessage: (data: unknown) => {
+				replySubscriber?.({ data } as MessageEvent);
+			},
+		};
+
+		try {
+			const directFetch = createPortFetch(
+				(data) => handleWorkerMsg({ data, ports: [] } as unknown as MessageEvent),
+				(handler) => {
+					workerSubscribed = true;
+					replySubscriber = handler;
+					return () => {
+						replySubscriber = undefined;
+					};
+				},
+			);
+
+			assert.equal(workerSubscribed, true);
+			const res = await directFetch("http://localhost/api/test");
+			assert.equal(res.status, 200);
+			assert.equal(await res.text(), "hello direct world");
+		} finally {
+			(globalThis as any).self = origSelf;
+		}
+	});
+
 	it("rejects syncFs paths outside dataDir and authFile, but allows root dataDir and authFile", () => {
 		assert.equal(isAllowedSyncPath("/repo/data/chats/c1.json", "/repo/data", "/repo/auth.json"), true);
 		assert.equal(isAllowedSyncPath("/repo/data", "/repo/data", "/repo/auth.json"), true);

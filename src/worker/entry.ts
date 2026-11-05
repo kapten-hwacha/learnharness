@@ -59,8 +59,14 @@ export function createWorkerMessageHandler(
 
 		if (data.type === "lh:api-request") {
 			const { id, url, method, headers, body } = data;
-			const port = event.ports[0];
-			if (!port) return;
+			const port = event.ports && event.ports.length > 0 ? event.ports[0] : null;
+			const postReply = (msg: unknown, transfer: Transferable[] = []) => {
+				if (port) {
+					port.postMessage(msg, transfer);
+				} else if (typeof self !== "undefined" && typeof (self as unknown as { postMessage?: unknown }).postMessage === "function") {
+					(self as unknown as Worker).postMessage(msg, transfer);
+				}
+			};
 
 			const ac = new AbortController();
 			activeRequests.set(id, ac);
@@ -90,7 +96,7 @@ export function createWorkerMessageHandler(
 					const resHeaders: [string, string][] = [];
 					res.headers.forEach((val, key) => resHeaders.push([key, val]));
 
-					port.postMessage({
+					postReply({
 						type: "lh:api-response",
 						id,
 						status: res.status,
@@ -102,9 +108,15 @@ export function createWorkerMessageHandler(
 					if (hasBody && res.body) {
 						const reader = res.body.getReader();
 						while (true) {
+							if (ac.signal.aborted) {
+								try {
+									await reader.cancel();
+								} catch {}
+								break;
+							}
 							const { done, value } = await reader.read();
 							if (done) break;
-							port.postMessage(
+							postReply(
 								{
 									type: "lh:api-chunk",
 									id,
@@ -113,18 +125,23 @@ export function createWorkerMessageHandler(
 								[value.buffer],
 							);
 						}
-						port.postMessage({
+						postReply({
 							type: "lh:api-end",
 							id,
 						});
 					}
 				} catch (err) {
-					port.postMessage({
+					postReply({
 						type: "lh:api-error",
 						id,
 						message: err instanceof Error ? err.message : String(err),
 					});
 				} finally {
+					if (port) {
+						try {
+							port.close();
+						} catch {}
+					}
 					// Retain controller briefly so caller abort signal after completion still finds it
 					const t = setTimeout(() => {
 						activeRequests.delete(id);

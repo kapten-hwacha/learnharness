@@ -1,6 +1,43 @@
 import { buildDemoVerifySrcDoc } from "../worker/headless-worker.ts";
 
-export function createPortFetch(postToWorker: (msg: unknown, transfer: Transferable[]) => void): typeof fetch {
+export type WorkerMessageSubscriber = (handler: (event: MessageEvent) => void) => () => void;
+
+export function createPortFetch(
+	postToWorker: (msg: unknown, transfer: Transferable[]) => void,
+	subscribeWorkerMessages?: WorkerMessageSubscriber,
+): typeof fetch {
+	const directInflight = new Map<
+		string,
+		{
+			onResponse: (data: { status: number; statusText: string; headers: [string, string][]; hasBody: boolean }) => void;
+			onChunk: (chunk: Uint8Array) => void;
+			onEnd: () => void;
+			onError: (err: Error) => void;
+		}
+	>();
+
+	if (subscribeWorkerMessages) {
+		subscribeWorkerMessages((event: MessageEvent) => {
+			const data = event.data;
+			if (!data || typeof data !== "object" || !("id" in data) || typeof data.id !== "string") return;
+			const entry = directInflight.get(data.id);
+			if (!entry) return;
+
+			if (data.type === "lh:api-response") {
+				entry.onResponse(data);
+			} else if (data.type === "lh:api-chunk") {
+				const uint8 = data.chunk instanceof Uint8Array ? data.chunk : new Uint8Array(data.chunk);
+				entry.onChunk(uint8);
+			} else if (data.type === "lh:api-end") {
+				directInflight.delete(data.id);
+				entry.onEnd();
+			} else if (data.type === "lh:api-error") {
+				directInflight.delete(data.id);
+				entry.onError(new Error(data.message));
+			}
+		});
+	}
+
 	return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 		const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 		const method = (init?.method ?? (typeof input === "object" && "method" in input && input.method ? input.method : "GET")).toUpperCase();
@@ -17,6 +54,95 @@ export function createPortFetch(postToWorker: (msg: unknown, transfer: Transfera
 			} else if (ArrayBuffer.isView(init.body)) {
 				bodyBuffer = init.body.buffer.slice(init.body.byteOffset, init.body.byteOffset + init.body.byteLength);
 			}
+		}
+
+		if (subscribeWorkerMessages) {
+			const transfer: Transferable[] = [];
+			if (bodyBuffer) {
+				transfer.push(bodyBuffer);
+			}
+
+			const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+			if (signal) {
+				if (signal.aborted) {
+					postToWorker({ type: "lh:api-abort", id }, []);
+				} else {
+					signal.addEventListener("abort", () => {
+						directInflight.delete(id);
+						postToWorker({ type: "lh:api-abort", id }, []);
+					});
+				}
+			}
+
+			return new Promise<Response>((resolve, reject) => {
+				let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+
+				directInflight.set(id, {
+					onResponse: (data) => {
+						const responseHeaders = new Headers(data.headers);
+						if (!data.hasBody) {
+							directInflight.delete(id);
+							resolve(
+								new Response(null, {
+									status: data.status,
+									statusText: data.statusText,
+									headers: responseHeaders,
+								}),
+							);
+							return;
+						}
+
+						const stream = new ReadableStream<Uint8Array>({
+							start(controller) {
+								streamController = controller;
+							},
+							cancel() {
+								directInflight.delete(id);
+								postToWorker({ type: "lh:api-abort", id }, []);
+							},
+						});
+
+						resolve(
+							new Response(stream, {
+								status: data.status,
+								statusText: data.statusText,
+								headers: responseHeaders,
+							}),
+						);
+					},
+					onChunk: (chunk) => {
+						try {
+							streamController?.enqueue(chunk);
+						} catch {}
+					},
+					onEnd: () => {
+						try {
+							streamController?.close();
+						} catch {}
+					},
+					onError: (err) => {
+						if (streamController) {
+							try {
+								streamController.error(err);
+							} catch {}
+						} else {
+							reject(err);
+						}
+					},
+				});
+
+				postToWorker(
+					{
+						type: "lh:api-request",
+						id,
+						url,
+						method,
+						headers: Array.from(headers.entries()),
+						body: bodyBuffer,
+					},
+					transfer,
+				);
+			});
 		}
 
 		const channel = new MessageChannel();
@@ -196,9 +322,15 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 		}
 	}
 
-	const portFetch = createPortFetch((msg, transfer) => {
-		worker.postMessage(msg, transfer);
-	});
+	const portFetch = createPortFetch(
+		(msg, transfer) => {
+			worker.postMessage(msg, transfer);
+		},
+		(handler) => {
+			worker.addEventListener("message", handler);
+			return () => worker.removeEventListener("message", handler);
+		},
+	);
 	workerFetch = portFetch;
 
 	if (typeof window !== "undefined") {
