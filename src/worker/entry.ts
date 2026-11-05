@@ -1,6 +1,8 @@
 import "../client/shims.ts";
 import { configurePaths } from "../../config.ts";
 import { headlessOverride } from "../agent/subagents/headless.ts";
+import { initAuthEnv } from "../server/keys.ts";
+import { installCustomProviderSource } from "../server/custom-provider.ts";
 import { getHostBridge } from "./host-bridge.ts";
 import { createWorkerHeadless } from "./headless-worker.ts";
 import { dispatchWorkerRequest } from "./router.ts";
@@ -165,6 +167,9 @@ export function ensureWorkerBooted(): Promise<void> {
 			const snapshot = await bridge.hydrateFs();
 			configurePaths({ root: snapshot.root, dataDir: snapshot.dataDir, authFile: snapshot.authFile });
 			hydrateMemfs(snapshot);
+
+			initAuthEnv();
+			installCustomProviderSource();
 
 			headlessOverride.current = createWorkerHeadless();
 
