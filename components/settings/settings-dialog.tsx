@@ -44,11 +44,11 @@ import {
 import { useAppearance } from "./appearance.tsx";
 import { SettingsSection } from "./controls.tsx";
 import { UpdateSettings } from "./update-settings.tsx";
-import { AgentSection } from "./agent-section.tsx";
+import { AgentSection, prefetchAgent } from "./agent-section.tsx";
 import type { ModelsSettings } from "@/src/core";
 import { MENU_CLOSE_EVENT, MENU_OPEN_EVENT } from "@/components/menu-shell";
 import { notifySettingsSaved } from "@/components/settings-signal";
-import { KeysSection } from "./keys-section.tsx";
+import { KeysSection, prefetchKeys } from "./keys-section.tsx";
 import { Hint } from "@/components/ui/hint";
 import { AppearanceSection, GraphSection } from "./appearance-section.tsx";
 import { StudyTimeSection } from "./study-time-section.tsx";
@@ -94,6 +94,11 @@ export function SettingsDialogProvider({
 		setShow(true);
 	}, []);
 	useEffect(() => window.lh?.onOpenSettings?.((section) => open(section)), [open]);
+	useEffect(() => {
+		void prefetchSettings();
+		void prefetchKeys();
+		void prefetchAgent();
+	}, []);
 	return (
 		<ChatGPTUIProvider><NativeSubscriptionUIProvider><DialogContext.Provider value={{ open }}>
 			{children}
@@ -136,9 +141,44 @@ function SettingsDialog({
 /** The dialog without the portal/backdrop — the SSR-testable frame
  *  (portals render nothing under renderToStaticMarkup). */
 let cachedSettingsRecord: UserSettings | null | undefined = undefined;
+let inflightSettingsPromise: Promise<UserSettings | null> | null = null;
+
+export function getCachedSettingsRecord(): UserSettings | null | undefined {
+	return cachedSettingsRecord;
+}
 
 export function resetSettingsDialogCacheForTests(): void {
 	cachedSettingsRecord = undefined;
+	inflightSettingsPromise = null;
+}
+
+export function prefetchSettings(): Promise<UserSettings | null> {
+	if (cachedSettingsRecord !== undefined) {
+		return Promise.resolve(cachedSettingsRecord);
+	}
+	if (inflightSettingsPromise) {
+		return inflightSettingsPromise;
+	}
+	inflightSettingsPromise = fetch("/api/settings")
+		.then((r) =>
+			r.ok ? r.json() : Promise.reject(new Error(`status ${r.status}`)),
+		)
+		.then((body: { settings: UserSettings | null }) => {
+			const resolved = body.settings ?? { version: CURRENT_SETTINGS_VERSION };
+			cachedSettingsRecord = resolved;
+			return resolved;
+		})
+		.catch(() => {
+			if (cachedSettingsRecord === undefined) {
+				cachedSettingsRecord = null;
+			}
+			return null;
+		})
+		.finally(() => {
+			inflightSettingsPromise = null;
+		});
+
+	return inflightSettingsPromise;
 }
 
 export function SettingsDialogBody({
@@ -216,20 +256,16 @@ export function SettingsDialogBody({
 	// (no record = factory everything), not a failure — the error state is
 	// a non-200 or a network throw only.
 	useEffect(() => {
-		fetch("/api/settings")
-			.then((r) =>
-				r.ok ? r.json() : Promise.reject(new Error(`status ${r.status}`)),
-			)
-			.then((body: { settings: UserSettings | null }) => {
-				const resolved = body.settings ?? { version: CURRENT_SETTINGS_VERSION };
-				cachedSettingsRecord = resolved;
+		if (cachedSettingsRecord !== undefined) {
+			setRecord(cachedSettingsRecord);
+		}
+		void prefetchSettings().then((resolved) => {
+			if (resolved !== null) {
 				setRecord(resolved);
-			})
-			.catch(() => {
-				if (cachedSettingsRecord === undefined) {
-					setRecord(null);
-				}
-			});
+			} else if (cachedSettingsRecord === null) {
+				setRecord(null);
+			}
+		});
 	}, []);
 
 	// Escape closes — the layered-dismiss convention (Esc is dead for the

@@ -370,11 +370,42 @@ function AddProviderRow({
 let cachedStatuses: AuthKeyStatus[] | null = null;
 let cachedProviders: ProviderKeyInfo[] | undefined = undefined;
 let cachedCustom: CustomStatus | null = null;
+let inflightKeysPromise: Promise<void> | null = null;
 
 export function resetKeysCacheForTests(): void {
 	cachedStatuses = null;
 	cachedProviders = undefined;
 	cachedCustom = null;
+	inflightKeysPromise = null;
+}
+
+export function prefetchKeys(): Promise<void> {
+	if (cachedStatuses !== null && cachedCustom !== null) {
+		return Promise.resolve();
+	}
+	if (inflightKeysPromise) {
+		return inflightKeysPromise;
+	}
+
+	inflightKeysPromise = (async () => {
+		const [keysRes, customRes] = await Promise.allSettled([
+			fetch("/api/keys").then((r) =>
+				r.ok ? (r.json() as Promise<KeysResponse>) : Promise.reject(new Error(String(r.status))),
+			),
+			readCustomStatus(),
+		]);
+		if (keysRes.status === "fulfilled" && keysRes.value) {
+			cachedStatuses = keysRes.value.keys ?? [];
+			if (keysRes.value.providers) cachedProviders = keysRes.value.providers;
+		}
+		if (customRes.status === "fulfilled" && customRes.value) {
+			cachedCustom = customRes.value;
+		}
+	})().finally(() => {
+		inflightKeysPromise = null;
+	});
+
+	return inflightKeysPromise;
 }
 
 export function KeysSection({
@@ -426,33 +457,46 @@ export function KeysSection({
 
 	const reload = async () => {
 		try {
-			const body = (await fetch("/api/keys").then((r) => r.json())) as KeysResponse;
-			cachedStatuses = body.keys ?? [];
-			setStatuses(cachedStatuses);
-			if (body.providers) {
-				cachedProviders = body.providers;
-				setProviders(cachedProviders);
-			}
-		} catch {
-			if (cachedStatuses === null) {
+			const [keysRes, customRes] = await Promise.allSettled([
+				fetch("/api/keys").then((r) =>
+					r.ok ? (r.json() as Promise<KeysResponse>) : Promise.reject(new Error(String(r.status))),
+				),
+				readCustomStatus(),
+			]);
+			if (keysRes.status === "fulfilled" && keysRes.value) {
+				cachedStatuses = keysRes.value.keys ?? [];
+				setStatuses(cachedStatuses);
+				if (keysRes.value.providers) {
+					cachedProviders = keysRes.value.providers;
+					setProviders(cachedProviders);
+				}
+			} else if (cachedStatuses === null) {
 				setStatuses([]);
+			}
+			if (customRes.status === "fulfilled" && customRes.value) {
+				cachedCustom = customRes.value;
+				setCustom(cachedCustom);
 			}
 		} finally {
 			setLoading(false);
 		}
-		// Best-effort and independent: the custom endpoint's status must never
-		// blank the provider-key list above if its fetch fails.
-		try {
-			const c = await readCustomStatus();
-			cachedCustom = c;
-			setCustom(c);
-		} catch {
-			/* custom status unavailable — leave it unset */
-		}
 	};
 
 	useEffect(() => {
-		void reload();
+		if (cachedStatuses !== null) {
+			setStatuses(cachedStatuses);
+			if (cachedProviders) setProviders(cachedProviders);
+			if (cachedCustom) setCustom(cachedCustom);
+			setLoading(false);
+		}
+		void prefetchKeys().then(() => {
+			if (cachedStatuses !== null) {
+				setStatuses(cachedStatuses);
+				if (cachedProviders) setProviders(cachedProviders);
+				if (cachedCustom) setCustom(cachedCustom);
+				setLoading(false);
+			}
+		});
 	}, []);
 
 	// The deep-link follow: a retarget while the section is open (the

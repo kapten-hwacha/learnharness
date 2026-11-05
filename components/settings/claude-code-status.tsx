@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CLAUDE_CODE_MINIMUM_VERSION, type ClaudeCodeStatus, type UserSettings } from "@/src/core";
 import { notifySettingsSaved, useSettingsSaved } from "@/components/settings-signal";
+import { getCachedSettingsRecord } from "./settings-dialog";
 import { Button } from "@/components/ui/button";
 import { Toggle } from "./controls";
 
@@ -15,8 +16,9 @@ export function claudeCodeStatusLabel(status: ClaudeCodeStatus | null): string {
 }
 
 export function ClaudeCodeInstallationStatus() {
-	const [enabled, setEnabled] = useState(false);
-	const [loaded, setLoaded] = useState(false);
+	const cached = getCachedSettingsRecord();
+	const [enabled, setEnabled] = useState(() => cached?.claudeCode?.enabled === true);
+	const [loaded, setLoaded] = useState(() => cached !== undefined);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [status, setStatus] = useState<ClaudeCodeStatus | null>(null);

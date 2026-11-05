@@ -291,11 +291,51 @@ function MenuTrigger({
 let cachedSearch: { available: boolean; engine: string | null; reason: string } | null = null;
 let cachedEngineKeys: Partial<Record<(typeof SEARCH_ENGINES)[number], boolean>> = {};
 let cachedPrompts: { prober: SegmentInfo[]; teacher: SegmentInfo[] } | null = null;
+let inflightAgentPromise: Promise<void> | null = null;
 
 export function resetAgentCacheForTests(): void {
 	cachedSearch = null;
 	cachedEngineKeys = {};
 	cachedPrompts = null;
+	inflightAgentPromise = null;
+}
+
+export function prefetchAgent(): Promise<void> {
+	if (cachedPrompts !== null && cachedSearch !== null) {
+		return Promise.resolve();
+	}
+	if (inflightAgentPromise) {
+		return inflightAgentPromise;
+	}
+
+	inflightAgentPromise = Promise.allSettled([
+		fetch("/api/settings/prompts")
+			.then((r) => (r.ok ? r.json() : null))
+			.then((body: { prober: SegmentInfo[]; teacher: SegmentInfo[] } | null) => {
+				if (body) cachedPrompts = body;
+			}),
+		fetch("/api/search")
+			.then((r) => (r.ok ? r.json() : null))
+			.then((body: { available: boolean; engine: string | null; reason: string } | null) => {
+				if (body) cachedSearch = body;
+			}),
+		fetch("/api/keys")
+			.then((r) => (r.ok ? r.json() : null))
+			.then((body: { keys: { id: string; present: boolean }[] } | null) => {
+				if (body) {
+					const present: Partial<Record<(typeof SEARCH_ENGINES)[number], boolean>> = {};
+					for (const id of SEARCH_ENGINES) {
+						const envVar = id === "tavily" ? "TAVILY_API_KEY" : "BRAVE_API_KEY";
+						present[id] = body.keys.some((k) => k.id === envVar && k.present);
+					}
+					cachedEngineKeys = present;
+				}
+			}),
+	]).then(() => {
+		inflightAgentPromise = null;
+	});
+
+	return inflightAgentPromise;
 }
 
 export function AgentSection({

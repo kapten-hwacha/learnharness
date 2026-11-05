@@ -21,6 +21,8 @@ import { installTauriPreload } from "./tauri-preload.ts";
 import { getPlatform, isDesktop, isIos } from "./platform.ts";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { prefetchSettings } from "@/components/settings/settings-dialog";
+import { prefetchKeys } from "@/components/settings/keys-section";
 
 if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
 	const platform = isIos()
@@ -49,6 +51,8 @@ if (typeof document !== "undefined") {
 }
 
 initWorkerClient();
+void prefetchSettings();
+void prefetchKeys();
 
 function RouteSwitch() {
 	const pathname = usePathname();
