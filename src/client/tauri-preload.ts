@@ -157,17 +157,51 @@ export function installTauriPreload(deps: TauriPreloadDeps): void {
 			await deps.invoke("lh_open_external", { url: location });
 		},
 		chatgpt: {
+			async status() {
+				return { available: false, connected: false, pending: false };
+			},
 			async start() {
 				return { error: "unsupported" };
 			},
 			async cancel() {},
+			async login() {
+				return { available: false, connected: false, pending: false };
+			},
+			async select() {
+				return { available: false, connected: false, pending: false };
+			},
+			async disconnect() {
+				return { available: false, connected: false, pending: false };
+			},
+			async logout() {
+				return { available: false, connected: false, pending: false };
+			},
+			async consent() {
+				return { available: false, connected: false, pending: false };
+			},
+			onChange() {
+				return () => {};
+			},
 			on() {
 				return () => {};
 			},
 		},
 		subscriptions: {
+			async status() {
+				return [];
+			},
 			async getStatus() {
 				return { registrations: [], activeId: null };
+			},
+			async login() {},
+			async cancel() {},
+			async respond() {},
+			async open() {},
+			async retry() {},
+			async disconnect() {},
+			async consent() {},
+			onChange() {
+				return () => {};
 			},
 			on() {
 				return () => {};
@@ -176,7 +210,7 @@ export function installTauriPreload(deps: TauriPreloadDeps): void {
 		async expandWindow(): Promise<void> {
 			await deps.invoke("lh_expand_window");
 		},
-		getZoom(): number {
+		async getZoom(): Promise<number> {
 			return currentZoom;
 		},
 		onZoom(callback: (zoom: number) => void): () => void {

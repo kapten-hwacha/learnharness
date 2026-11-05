@@ -98,7 +98,7 @@ export function useSidebar() {
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	useEffect(() => {
 		const bridge = window.lh?.chatgpt;
-		if (!bridge) return;
+		if (!bridge || typeof bridge.onChange !== "function") return;
 		const off = bridge.onChange(() => notifySettingsSaved("keys"));
 		notifySettingsSaved("keys"); // cover changes missed before this root-lifetime subscription
 		return off;

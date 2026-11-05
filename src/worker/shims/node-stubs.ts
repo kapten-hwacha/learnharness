@@ -33,12 +33,19 @@ export const os = {
 export const url = {
 	fileURLToPath(fileUrl: string | URL): string {
 		const str = typeof fileUrl === "string" ? fileUrl : fileUrl.toString();
-		if (!str.startsWith("file://")) {
-			throw new TypeError(`The URL must be of scheme file: ${str}`);
+		if (str.startsWith("file://")) {
+			let path = decodeURIComponent(str.slice(7));
+			if (!path.startsWith("/")) path = "/" + path;
+			return path;
 		}
-		let path = decodeURIComponent(str.slice(7));
-		if (!path.startsWith("/")) path = "/" + path;
-		return path;
+		try {
+			const u = new URL(str);
+			let path = decodeURIComponent(u.pathname);
+			if (!path.startsWith("/")) path = "/" + path;
+			return path;
+		} catch {
+			return str;
+		}
 	},
 	pathToFileURL(filepath: string): URL {
 		const abs = filepath.startsWith("/") ? filepath : "/" + filepath;

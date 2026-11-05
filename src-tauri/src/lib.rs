@@ -35,7 +35,30 @@ fn should_auto_update(data_dir: &std::path::Path) -> bool {
     true
 }
 
+#[tauri::command]
+fn lh_log(msg: String) {
+    eprintln!("[WEBVIEW] {}", msg);
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/lh_webview.log")
+    {
+        let _ = writeln!(f, "[WEBVIEW] {}", msg);
+    }
+}
+
 pub fn run() {
+    let _ = std::fs::remove_file("/tmp/lh_webview.log");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/lh_webview.log")
+    {
+        let _ = writeln!(f, "[RUST] LearnHarness started");
+    }
+
     let mut builder = tauri::Builder::default();
 
     #[cfg(not(target_os = "ios"))]
@@ -44,6 +67,7 @@ pub fn run() {
     }
 
     builder = builder.invoke_handler(tauri::generate_handler![
+        lh_log,
         fs_bridge::lh_fs_hydrate,
         fs_bridge::lh_fs_sync,
         fs_bridge::lh_fs_read_external,

@@ -158,10 +158,17 @@ export function ensureWorkerBooted(): Promise<void> {
 }
 
 // In dedicated worker scope, self-initialize synchronously
-if (typeof self !== "undefined" && typeof (self as unknown as { importScripts?: unknown }).importScripts !== "undefined") {
+const isWorkerScope = typeof window === "undefined" && typeof self !== "undefined";
+if (isWorkerScope) {
 	const handler = createWorkerMessageHandler(dispatchWorkerRequest, ensureWorkerBooted);
 	self.addEventListener("message", handler);
 	ensureWorkerBooted().catch((err) => {
 		console.error("[worker/entry] Failed to initialize backend worker:", err);
+		try {
+			self.postMessage({
+				type: "lh:worker-boot-error",
+				message: err instanceof Error ? (err.stack || err.message) : String(err),
+			});
+		} catch {}
 	});
 }

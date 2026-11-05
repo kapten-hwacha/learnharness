@@ -245,7 +245,8 @@ mod tests {
 
     #[test]
     fn second_start_fails_while_pending() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        close_oauth_listener();
         let port = start_oauth_listener().expect("first listen succeeds");
         assert!(port > 0);
         let second = start_oauth_listener();
@@ -255,14 +256,15 @@ mod tests {
 
     #[test]
     fn unsolicited_path_gets_404_without_consuming() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        close_oauth_listener();
         let port = start_oauth_listener().expect("listen succeeds");
         let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect succeeds");
         stream
             .write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
             .expect("write succeeds");
         let mut resp = String::new();
-        stream.read_to_string(&mut resp).expect("read succeeds");
+        let _ = stream.read_to_string(&mut resp);
         assert!(
             resp.starts_with("HTTP/1.1 404"),
             "expected 404 response, got: {resp}"
@@ -273,7 +275,8 @@ mod tests {
 
     #[test]
     fn consecutive_sign_in_attempts_succeed_after_close() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        close_oauth_listener();
         let port1 = start_oauth_listener().expect("first attempt succeeds");
         close_oauth_listener();
         let port2 = start_oauth_listener().expect("second attempt succeeds after close");

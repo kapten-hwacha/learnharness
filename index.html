@@ -6,17 +6,79 @@
 		<meta name="color-scheme" content="light dark" />
 		<title>Learning Harness</title>
 		<script>
-			if (typeof window !== "undefined" && typeof window.process === "undefined") {
-				window.process = {
-					env: {},
-					platform: navigator.userAgent.includes("Win") ? "win32" : navigator.userAgent.includes("Mac") ? "darwin" : "linux",
-					versions: {},
-					cwd: function () { return "/"; },
-					nextTick: function (fn) { setTimeout(fn, 0); }
-				};
+			if (typeof globalThis !== "undefined") {
+				if (typeof globalThis.global === "undefined") {
+					globalThis.global = globalThis;
+				}
+				(function() {
+					var listeners = {};
+					var p = globalThis.process || {};
+					p.env = p.env || {};
+					p.platform = p.platform || (navigator.userAgent.includes("Win") ? "win32" : navigator.userAgent.includes("Mac") ? "darwin" : "linux");
+					p.versions = p.versions || { node: "20.0.0" };
+					p.cwd = p.cwd || function() { return "/"; };
+					p.nextTick = p.nextTick || function(fn) { setTimeout(fn, 0); };
+					p.on = p.on || function(evt, fn) { (listeners[evt] = listeners[evt] || []).push(fn); return p; };
+					p.addListener = p.addListener || p.on;
+					p.once = p.once || function(evt, fn) {
+						var wrap = function() { p.removeListener(evt, wrap); fn.apply(null, arguments); };
+						return p.on(evt, wrap);
+					};
+					p.removeListener = p.removeListener || function(evt, fn) {
+						var l = listeners[evt];
+						if (l) { var idx = l.indexOf(fn); if (idx !== -1) l.splice(idx, 1); }
+						return p;
+					};
+					p.off = p.off || p.removeListener;
+					p.emit = p.emit || function(evt) {
+						var l = listeners[evt];
+						if (!l) return false;
+						var args = Array.prototype.slice.call(arguments, 1);
+						l.slice().forEach(function(fn) { try { fn.apply(null, args); } catch(e) {} });
+						return true;
+					};
+					p.listeners = p.listeners || function(evt) { return (listeners[evt] || []).slice(); };
+					p.removeAllListeners = p.removeAllListeners || function(evt) { if (evt) delete listeners[evt]; else listeners = {}; return p; };
+					globalThis.process = p;
+				})();
+			}
+			if (typeof window !== "undefined") {
+				window.global = window;
 			}
 			(function () {
 				try {
+					var _logQueue = [];
+					function _flush() {
+						if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+							while (_logQueue.length > 0) {
+								var item = _logQueue.shift();
+								window.__TAURI_INTERNALS__.invoke("lh_log", { msg: item }).catch(function(){});
+							}
+						}
+					}
+					function _forward(level, args) {
+						try {
+							var str = "[" + level + "] " + Array.prototype.slice.call(args).map(function(a) {
+								return typeof a === "object" ? (a && a.stack ? a.stack : JSON.stringify(a)) : String(a);
+							}).join(" ");
+							_logQueue.push(str);
+							_flush();
+							if (!window.__TAURI_INTERNALS__ || !window.__TAURI_INTERNALS__.invoke) {
+								setTimeout(_flush, 100);
+								setTimeout(_flush, 500);
+								setTimeout(_flush, 1500);
+							}
+						} catch(e) {}
+					}
+					var _origLog = console.log;
+					var _origErr = console.error;
+					var _origWarn = console.warn;
+					console.log = function() { _origLog.apply(console, arguments); _forward("LOG", arguments); };
+					console.warn = function() { _origWarn.apply(console, arguments); _forward("WARN", arguments); };
+					console.error = function() { _origErr.apply(console, arguments); _forward("ERROR", arguments); };
+
+					console.log("[LH Main] index.html loaded, waiting for app mount...");
+
 					var m = window.matchMedia("(prefers-color-scheme: dark)").matches;
 					var r = document.documentElement;
 					r.classList.add(m ? "dark" : "light");

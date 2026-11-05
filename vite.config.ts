@@ -6,6 +6,7 @@ import { lhViteDevBridgePlugin } from "./src/worker/vite-dev-bridge.ts";
 export default defineConfig({
 	define: {
 		"process.env": {},
+		global: "globalThis",
 	},
 	plugins: [
 		react(),

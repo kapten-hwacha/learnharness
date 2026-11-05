@@ -142,6 +142,27 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 		(window as any).__LH_WORKER__ = worker;
 	}
 
+	worker.onerror = (err) => {
+		const msg = err.message || "Unknown worker error";
+		console.error("[LH Worker onerror]", msg, err.filename, err.lineno);
+		const el = document.getElementById("lh-boot-error-overlay") || document.createElement("div");
+		el.id = "lh-boot-error-overlay";
+		el.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:#1e1e1e;color:#ff5555;z-index:999999;padding:24px;font-family:monospace;white-space:pre-wrap;overflow:auto;font-size:14px;line-height:1.4;";
+		el.textContent = "LearnHarness Worker Error:\n\n" + msg + (err.filename ? "\n\nAt: " + err.filename + ":" + err.lineno : "");
+		(document.body || document.documentElement).appendChild(el);
+	};
+
+	worker.addEventListener("message", (event: MessageEvent) => {
+		if (event.data?.type === "lh:worker-boot-error") {
+			console.error("[LH Worker Boot Error]", event.data.message);
+			const el = document.getElementById("lh-boot-error-overlay") || document.createElement("div");
+			el.id = "lh-boot-error-overlay";
+			el.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:#1e1e1e;color:#ff5555;z-index:999999;padding:24px;font-family:monospace;white-space:pre-wrap;overflow:auto;font-size:14px;line-height:1.4;";
+			el.textContent = "LearnHarness Backend Worker Failed To Boot:\n\n" + event.data.message;
+			(document.body || document.documentElement).appendChild(el);
+		}
+	});
+
 	if (isTauri) {
 		const tauri = (window as any).__TAURI_INTERNALS__;
 		worker.postMessage({ type: "lh:tauri-init" });
