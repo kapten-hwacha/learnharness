@@ -146,7 +146,7 @@ When running on iPadOS (`.lh-ios`), LearnHarness adapts its interface:
 
 4. **Touch & Document Handling:**
    - On desktop, dragging files from Finder yields OS POSIX paths via `tauri://drag-drop`.
-   - On iPadOS, tapping or dropping files from Files.app triggers an invisible `<input type="file" multiple />`. File contents are read into memory via `file.arrayBuffer()` and imported into `memfs` via `window.lh.importFile`, producing synthetic `/imported/<filename>` paths accessible by the Web Worker.
+   - On iPadOS, dropping files from Files.app or clicking UI elements marked with `[data-file-picker-trigger]` triggers document import. File contents are read into memory via `file.arrayBuffer()` and imported into `memfs` via `window.lh.importFile`, producing synthetic `/imported/<filename>` paths accessible by the Web Worker.
 
 5. **Desktop Feature Stubs:**
    - Subprocess execution (`lh_exec_command`, `lh_spawn_daemon`) is safely rejected on iOS.
