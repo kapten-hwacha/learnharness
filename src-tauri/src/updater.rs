@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+#[cfg(not(target_os = "ios"))]
 use tauri::Emitter;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,6 +87,7 @@ pub fn init_updater_machine(is_packaged: bool) {
     *lock = Some(UpdateMachine::new(is_packaged));
 }
 
+#[cfg_attr(target_os = "ios", allow(dead_code))]
 fn with_machine<F, R>(f: F) -> R
 where
     F: FnOnce(&mut UpdateMachine) -> R,
@@ -99,73 +101,102 @@ where
 
 #[tauri::command]
 pub async fn lh_update_get() -> Result<UpdateState, String> {
-    Ok(with_machine(|m| m.state().clone()))
+    #[cfg(target_os = "ios")]
+    {
+        Ok(UpdateState {
+            status: "idle".to_string(),
+            version: None,
+            revision: 0,
+        })
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        Ok(with_machine(|m| m.state().clone()))
+    }
 }
 
 #[tauri::command]
 pub async fn lh_update_check(app: tauri::AppHandle) -> Result<(), String> {
-    let current_status = with_machine(|m| m.state().status.clone());
-    if current_status == "disabled" {
-        return Ok(());
+    #[cfg(target_os = "ios")]
+    {
+        let _ = app;
+        Ok(())
     }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let current_status = with_machine(|m| m.state().status.clone());
+        if current_status == "disabled" {
+            return Ok(());
+        }
 
-    let next_state = with_machine(|m| m.on_event(UpdateEvent::Checking));
-    let _ = app.emit("lh://update-status", &next_state);
+        let next_state = with_machine(|m| m.on_event(UpdateEvent::Checking));
+        let _ = app.emit("lh://update-status", &next_state);
 
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        use tauri_plugin_updater::UpdaterExt;
-        let updater_res = app_handle.updater();
-        match updater_res {
-            Ok(updater) => match updater.check().await {
-                Ok(Some(update)) => {
-                    let version = Some(update.version.clone());
-                    let downloading_state = with_machine(|m| {
-                        m.on_event(UpdateEvent::Downloading {
-                            version: version.clone(),
-                        })
-                    });
-                    let _ = app_handle.emit("lh://update-status", &downloading_state);
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            use tauri_plugin_updater::UpdaterExt;
+            let updater_res = app_handle.updater();
+            match updater_res {
+                Ok(updater) => match updater.check().await {
+                    Ok(Some(update)) => {
+                        let version = Some(update.version.clone());
+                        let downloading_state = with_machine(|m| {
+                            m.on_event(UpdateEvent::Downloading {
+                                version: version.clone(),
+                            })
+                        });
+                        let _ = app_handle.emit("lh://update-status", &downloading_state);
 
-                    match update.download_and_install(|_, _| {}, || {}).await {
-                        Ok(()) => {
-                            let downloaded_state =
-                                with_machine(|m| m.on_event(UpdateEvent::Downloaded { version }));
-                            let _ = app_handle.emit("lh://update-status", &downloaded_state);
-                        }
-                        Err(e) => {
-                            let err_state =
-                                with_machine(|m| m.on_event(UpdateEvent::Error(e.to_string())));
-                            let _ = app_handle.emit("lh://update-status", &err_state);
+                        match update.download_and_install(|_, _| {}, || {}).await {
+                            Ok(()) => {
+                                let downloaded_state = with_machine(|m| {
+                                    m.on_event(UpdateEvent::Downloaded { version })
+                                });
+                                let _ = app_handle.emit("lh://update-status", &downloaded_state);
+                            }
+                            Err(e) => {
+                                let err_state =
+                                    with_machine(|m| m.on_event(UpdateEvent::Error(e.to_string())));
+                                let _ = app_handle.emit("lh://update-status", &err_state);
+                            }
                         }
                     }
-                }
-                Ok(None) => {
-                    let uptodate_state = with_machine(|m| m.on_event(UpdateEvent::UpToDate));
-                    let _ = app_handle.emit("lh://update-status", &uptodate_state);
-                }
+                    Ok(None) => {
+                        let uptodate_state = with_machine(|m| m.on_event(UpdateEvent::UpToDate));
+                        let _ = app_handle.emit("lh://update-status", &uptodate_state);
+                    }
+                    Err(e) => {
+                        let err_state =
+                            with_machine(|m| m.on_event(UpdateEvent::Error(e.to_string())));
+                        let _ = app_handle.emit("lh://update-status", &err_state);
+                    }
+                },
                 Err(e) => {
                     let err_state = with_machine(|m| m.on_event(UpdateEvent::Error(e.to_string())));
                     let _ = app_handle.emit("lh://update-status", &err_state);
                 }
-            },
-            Err(e) => {
-                let err_state = with_machine(|m| m.on_event(UpdateEvent::Error(e.to_string())));
-                let _ = app_handle.emit("lh://update-status", &err_state);
             }
-        }
-    });
+        });
 
-    Ok(())
+        Ok(())
+    }
 }
 
 #[tauri::command]
 pub async fn lh_update_install(app: tauri::AppHandle) -> Result<(), String> {
-    let current_status = with_machine(|m| m.state().status.clone());
-    if current_status == "downloaded" {
-        app.restart();
+    #[cfg(target_os = "ios")]
+    {
+        let _ = app;
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(target_os = "ios"))]
+    {
+        let current_status = with_machine(|m| m.state().status.clone());
+        if current_status == "downloaded" {
+            app.restart();
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

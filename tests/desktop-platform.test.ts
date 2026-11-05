@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { installTauriPreload, stepZoom, ZOOM_LADDER } from "../src/client/tauri-preload.ts";
+import { getPlatform, isDesktop, isIos, isTauri } from "../src/client/platform.ts";
 
 const EXPECTED_LH_KEYS = [
 	"checkForUpdates",
@@ -11,7 +12,10 @@ const EXPECTED_LH_KEYS = [
 	"getPathForFile",
 	"getUpdateState",
 	"getZoom",
+	"importFile",
 	"installUpdate",
+	"isIos",
+	"isMobile",
 	"onOpenSettings",
 	"onUpdateStatus",
 	"onZoom",
@@ -51,8 +55,8 @@ describe("Tauri desktop platform preload", () => {
 		}
 	});
 
-	it("platform reflects the injected platform", () => {
-		for (const p of ["darwin", "win32", "linux"] as const) {
+	it("platform reflects the injected platform including ios", () => {
+		for (const p of ["darwin", "win32", "linux", "ios"] as const) {
 			const target = {} as any;
 			installTauriPreload({
 				invoke: async <T>() => undefined as unknown as T,
@@ -61,6 +65,13 @@ describe("Tauri desktop platform preload", () => {
 				target,
 			});
 			assert.equal(target.lh.platform, p);
+			if (p === "ios") {
+				assert.equal(target.lh.isIos, true);
+				assert.equal(target.lh.isMobile, true);
+			} else {
+				assert.equal(target.lh.isIos, false);
+				assert.equal(target.lh.isMobile, false);
+			}
 		}
 	});
 
@@ -104,5 +115,84 @@ describe("Tauri desktop platform preload", () => {
 		assert.equal(win.titleBarStyle, "Overlay");
 		assert.equal(win.hiddenTitle, true);
 		assert.deepEqual(win.trafficLightPosition, { x: 16, y: 22.5 });
+	});
+
+	it("tauri.ios.conf.json window and iOS bundle configuration", () => {
+		const iosConfigPath = fileURLToPath(new URL("../src-tauri/tauri.ios.conf.json", import.meta.url));
+		const config = JSON.parse(readFileSync(iosConfigPath, "utf8"));
+
+		assert.equal(config.bundle.iOS.developmentTeam, "");
+		const win = config.app.windows[0];
+		assert.equal(win.title, "LearnHarness");
+		assert.equal(win.fullscreen, true);
+		assert.equal(win.resizable, false);
+	});
+
+	describe("Platform Abstraction helpers", () => {
+		const origNav = globalThis.navigator;
+		const origWindow = (globalThis as any).window;
+
+		it("detects standard iOS user agents", () => {
+			const mockNav = {
+				userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
+				platform: "iPhone",
+				maxTouchPoints: 5,
+			};
+			Object.defineProperty(globalThis, "navigator", { value: mockNav, configurable: true });
+			assert.equal(isIos(), true);
+			assert.equal(getPlatform(), "ios");
+			Object.defineProperty(globalThis, "navigator", { value: origNav, configurable: true });
+		});
+
+		it("detects iPadOS desktop-class Safari user agent (MacIntel + touch points > 1)", () => {
+			const mockNav = {
+				userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+				platform: "MacIntel",
+				maxTouchPoints: 5,
+			};
+			Object.defineProperty(globalThis, "navigator", { value: mockNav, configurable: true });
+			assert.equal(isIos(), true);
+			assert.equal(getPlatform(), "ios");
+			Object.defineProperty(globalThis, "navigator", { value: origNav, configurable: true });
+		});
+
+		it("treats macOS desktop Safari (MacIntel + touch points 0) as desktop darwin", () => {
+			const mockNav = {
+				userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+				platform: "MacIntel",
+				maxTouchPoints: 0,
+			};
+			const mockWin = {
+				__TAURI_INTERNALS__: {},
+			};
+			Object.defineProperty(globalThis, "navigator", { value: mockNav, configurable: true });
+			Object.defineProperty(globalThis, "window", { value: mockWin, configurable: true });
+
+			assert.equal(isIos(), false);
+			assert.equal(isTauri(), true);
+			assert.equal(isDesktop(), true);
+			assert.equal(getPlatform(), "darwin");
+
+			Object.defineProperty(globalThis, "navigator", { value: origNav, configurable: true });
+			Object.defineProperty(globalThis, "window", { value: origWindow, configurable: true });
+		});
+
+		it("distinguishes plain web from desktop Tauri", () => {
+			const mockNav = {
+				userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+				platform: "MacIntel",
+				maxTouchPoints: 0,
+			};
+			Object.defineProperty(globalThis, "navigator", { value: mockNav, configurable: true });
+			// window without __TAURI_INTERNALS__ or lh
+			Object.defineProperty(globalThis, "window", { value: {}, configurable: true });
+
+			assert.equal(isTauri(), false);
+			assert.equal(isDesktop(), false);
+			assert.equal(getPlatform(), "web");
+
+			Object.defineProperty(globalThis, "navigator", { value: origNav, configurable: true });
+			Object.defineProperty(globalThis, "window", { value: origWindow, configurable: true });
+		});
 	});
 });

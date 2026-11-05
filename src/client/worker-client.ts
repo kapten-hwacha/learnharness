@@ -143,6 +143,9 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 
 	const worker = new Worker(workerUrl, { type: "module" });
 	activeWorker = worker;
+	if (typeof window !== "undefined") {
+		(window as any).__LH_WORKER__ = worker;
+	}
 
 	if (isTauri) {
 		const tauri = (window as any).__TAURI_INTERNALS__;

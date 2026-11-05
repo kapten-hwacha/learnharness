@@ -96,6 +96,7 @@ export * from "./study-time.ts";
 export * from "./clarify.ts";
 export * from "./quaderno.ts";
 export * from "./profiler.ts";
+export * from "./platform.ts";
 // session-markdown.ts (2026-09-27 engine; first consumer 2026-10-06): the
 // ONE session→markdown formatter — the extractor's view and the user-facing
 // export share it. Pure, browser-safe.

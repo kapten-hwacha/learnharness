@@ -52,17 +52,18 @@ const STORAGE_KEY = "lh:sidebar-open";
 import type { ChatGPTControlBridge, NativeSubscriptionControlBridge } from "@/src/core";
 import type { UpdateState } from "@/components/settings/update-settings.tsx";
 import { FilePathDropZone } from "@/components/file-path-drop-zone";
+import { isDesktop } from "@/src/core";
 const SIDEBAR_AUTOCLOSE = 928;
-
-// Module scope, guarded for SSR (the server has no navigator).
-const IS_ELECTRON = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
 
 declare global {
 	interface Window {
-		/** Preload bridge (electron/preload.cjs) — Electron only, absent in the browser. */
+		/** Preload bridge (electron/preload.cjs or src/client/tauri-preload.ts) */
 		lh?: {
 			/** Read-only host OS; determines the native-control gutter. */
 			platform?: string;
+			isIos?: boolean;
+			isMobile?: boolean;
+			importFile?: (name: string, data: Uint8Array | ArrayBuffer) => Promise<string>;
 			/** Resolve an OS-backed File without copying/uploading its contents. */
 			getPathForFile?: (file: File) => string;
 			/** External Next desktop-dev uses the server's web connections. */
@@ -114,8 +115,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 		// into the window's drag surface. Post-mount only — server HTML
 		// and first client render must agree (no hydration mismatch),
 		// and in the plain browser the class never appears.
-		if (IS_ELECTRON) {
-			document.documentElement.classList.add("lh-electron");
+		if (isDesktop()) {
+			document.documentElement.classList.add("lh-desktop", "lh-electron");
 			document.documentElement.dataset.lhPlatform = window.lh?.platform ?? "";
 		}
 
@@ -141,7 +142,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	// Both this and the mount effect land before the first paint, so a
 	// narrow window never flashes the open sidebar on load.
 	useEffect(() => {
-		if (!IS_ELECTRON) return; // plain-browser tabs open freely
+		if (!isDesktop()) return; // plain-browser tabs open freely
 		const onResize = () => setNarrow(window.innerWidth < SIDEBAR_AUTOCLOSE);
 		onResize();
 		window.addEventListener("resize", onResize);

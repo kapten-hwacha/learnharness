@@ -166,4 +166,87 @@ describe("Tauri file-path preload bridge", () => {
 		}
 		assert.equal(target.lh.getPathForFile(nextFile), "");
 	});
+
+	describe("importFile iPadOS preload support", () => {
+		it("importFile with Uint8Array returns /imported/<name>", async () => {
+			const target = {} as any;
+			installTauriPreload({
+				invoke: async <T>() => undefined as unknown as T,
+				listen: async () => () => {},
+				platform: "ios",
+				target,
+			});
+
+			const bytes = new Uint8Array([1, 2, 3, 4]);
+			const res = await target.lh.importFile("sample.pdf", bytes);
+			assert.equal(res, "/imported/sample.pdf");
+		});
+
+		it("importFile with File object extracts name and data", async () => {
+			const target = {} as any;
+			installTauriPreload({
+				invoke: async <T>() => undefined as unknown as T,
+				listen: async () => () => {},
+				platform: "ios",
+				target,
+			});
+
+			const file = new File(["document text"], "lecture-notes.txt", { type: "text/plain" });
+			const res = await target.lh.importFile(file);
+			assert.equal(res, "/imported/lecture-notes.txt");
+		});
+
+		it("importFile posts lh:import-file message to worker if active", async () => {
+			const target = {} as any;
+			installTauriPreload({
+				invoke: async <T>() => undefined as unknown as T,
+				listen: async () => () => {},
+				platform: "ios",
+				target,
+			});
+
+			const messages: any[] = [];
+			const mockWorker = {
+				postMessage(msg: any) {
+					messages.push(msg);
+				},
+			};
+
+			const origWin = (globalThis as any).window;
+			(globalThis as any).window = { __LH_WORKER__: mockWorker };
+
+			try {
+				const bytes = new Uint8Array([10, 20, 30]);
+				const path = await target.lh.importFile("photo.png", bytes);
+				assert.equal(path, "/imported/photo.png");
+				assert.equal(messages.length, 1);
+				assert.equal(messages[0].type, "lh:import-file");
+				assert.equal(messages[0].path, "/imported/photo.png");
+				assert.deepEqual(messages[0].data, bytes);
+			} finally {
+				(globalThis as any).window = origWin;
+			}
+		});
+
+		it("uses custom importFile handler from deps when provided", async () => {
+			const target = {} as any;
+			let calledWith: { name: string; data: Uint8Array | ArrayBuffer } | undefined;
+			installTauriPreload({
+				invoke: async <T>() => undefined as unknown as T,
+				listen: async () => () => {},
+				platform: "ios",
+				target,
+				importFile: async (name, data) => {
+					calledWith = { name, data };
+					return `/custom/path/${name}`;
+				},
+			});
+
+			const bytes = new Uint8Array([5, 6, 7]);
+			const result = await target.lh.importFile("override.pdf", bytes);
+			assert.equal(result, "/custom/path/override.pdf");
+			assert.equal(calledWith?.name, "override.pdf");
+			assert.deepEqual(calledWith?.data, bytes);
+		});
+	});
 });

@@ -29,16 +29,12 @@ export type ListenFn = <T>(
 export interface TauriPreloadDeps {
 	invoke: InvokeFn;
 	listen: ListenFn;
-	platform: "darwin" | "win32" | "linux";
+	platform: "darwin" | "win32" | "linux" | "ios";
 	target?: any;
+	importFile?: (name: string, data: Uint8Array | ArrayBuffer) => Promise<string>;
 }
 
-export function installTauriPreload(deps: {
-	invoke: InvokeFn;
-	listen: ListenFn;
-	platform: "darwin" | "win32" | "linux";
-	target?: any;
-}): void {
+export function installTauriPreload(deps: TauriPreloadDeps): void {
 	const target = deps.target ?? (typeof window !== "undefined" ? window : globalThis);
 	const dropPathMap = new WeakMap<object, string>();
 	let lastDroppedPaths: string[] = [];
@@ -90,8 +86,48 @@ export function installTauriPreload(deps: {
 		})
 	);
 
+	const isIos = deps.platform === "ios";
+	const isMobile = isIos;
+
 	target.lh = {
 		platform: deps.platform,
+		isIos,
+		isMobile,
+		async importFile(nameOrFile: string | File, maybeData?: Uint8Array | ArrayBuffer): Promise<string> {
+			let name: string;
+			let bytes: Uint8Array;
+			if (typeof File !== "undefined" && nameOrFile instanceof File) {
+				name = nameOrFile.name;
+				const ab = await nameOrFile.arrayBuffer();
+				bytes = new Uint8Array(ab);
+			} else if (typeof nameOrFile === "string") {
+				name = nameOrFile;
+				if (!maybeData) {
+					throw new TypeError("Expected data for importFile(name, data)");
+				}
+				bytes = maybeData instanceof Uint8Array ? maybeData : new Uint8Array(maybeData);
+			} else {
+				throw new TypeError("Invalid argument for importFile");
+			}
+
+			if (deps.importFile) {
+				return deps.importFile(name, bytes);
+			}
+
+			const cleanName = name.startsWith("/imported/")
+				? name.slice("/imported/".length)
+				: name.replace(/^[/\\]+/, "");
+			const importedPath = `/imported/${cleanName}`;
+
+			if (typeof window !== "undefined" && (window as any).__LH_WORKER__) {
+				(window as any).__LH_WORKER__.postMessage({
+					type: "lh:import-file",
+					path: importedPath,
+					data: bytes,
+				});
+			}
+			return importedPath;
+		},
 		getPathForFile(file: unknown): string {
 			if (typeof File === "undefined" || !(file instanceof File)) {
 				throw new TypeError("Expected a File");

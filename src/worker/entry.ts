@@ -2,7 +2,7 @@ import { headlessOverride } from "../agent/subagents/headless.ts";
 import { getHostBridge } from "./host-bridge.ts";
 import { createWorkerHeadless } from "./headless-worker.ts";
 import { dispatchWorkerRequest } from "./router.ts";
-import { hydrateMemfs } from "./shims/fs.ts";
+import { ensureParentDirs, getInternalFiles, hydrateMemfs, normalizeFsPath } from "./shims/fs.ts";
 
 export interface WorkerApiRequestMessage {
 	type: "lh:api-request";
@@ -18,7 +18,16 @@ export interface WorkerApiAbortMessage {
 	id: string;
 }
 
-export type WorkerInboundMessage = WorkerApiRequestMessage | WorkerApiAbortMessage;
+export interface WorkerImportFileMessage {
+	type: "lh:import-file";
+	path: string;
+	data: ArrayBuffer | Uint8Array;
+}
+
+export type WorkerInboundMessage =
+	| WorkerApiRequestMessage
+	| WorkerApiAbortMessage
+	| WorkerImportFileMessage;
 
 export function createWorkerMessageHandler(
 	dispatch: (req: Request) => Promise<Response>,
@@ -29,6 +38,15 @@ export function createWorkerMessageHandler(
 	return (event: MessageEvent) => {
 		const data = event.data as WorkerInboundMessage | undefined;
 		if (!data) return;
+
+		if (data.type === "lh:import-file") {
+			const { path, data: fileBytes } = data;
+			const uint8 = fileBytes instanceof Uint8Array ? fileBytes : new Uint8Array(fileBytes);
+			const normPath = normalizeFsPath(path);
+			ensureParentDirs(normPath);
+			getInternalFiles().set(normPath, uint8);
+			return;
+		}
 
 		if (data.type === "lh:api-abort") {
 			const ac = activeRequests.get(data.id);

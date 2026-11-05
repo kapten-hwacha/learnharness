@@ -10,15 +10,23 @@ pub fn clamp_zoom(f: f64) -> f64 {
 
 #[tauri::command]
 pub async fn lh_expand_window(window: tauri::Window) -> Result<(), String> {
-    let size = window.inner_size().map_err(|e| e.to_string())?;
-    let scale_factor = window.scale_factor().map_err(|e| e.to_string())?;
-    let logical_width = size.width as f64 / scale_factor;
-    if logical_width < SIDEBAR_AUTOCLOSE {
-        let new_size =
-            tauri::LogicalSize::new(SIDEBAR_AUTOCLOSE, size.height as f64 / scale_factor);
-        window.set_size(new_size).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "ios")]
+    {
+        let _ = window;
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(target_os = "ios"))]
+    {
+        let size = window.inner_size().map_err(|e| e.to_string())?;
+        let scale_factor = window.scale_factor().map_err(|e| e.to_string())?;
+        let logical_width = size.width as f64 / scale_factor;
+        if logical_width < SIDEBAR_AUTOCLOSE {
+            let new_size =
+                tauri::LogicalSize::new(SIDEBAR_AUTOCLOSE, size.height as f64 / scale_factor);
+            window.set_size(new_size).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
