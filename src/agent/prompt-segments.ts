@@ -32,7 +32,9 @@ import path from "node:path";
 import { PATHS, PROMPTS_OVERRIDE_DIR } from "../../config.ts";
 import { FRAGMENT_RE, isValidSegmentPath, type PromptAgent, type PromptSegmentInfo } from "../core/prompt-segments.ts";
 
-const PROMPTS_DIR = path.join(PATHS.root, "src", "agent", "prompts");
+function promptsDir(): string {
+	return path.join(PATHS.root, "src", "agent", "prompts");
+}
 
 /** Shared fragments the PRACTICE agent composes: the VOICE, ACCURACY,
  *  and MENTAL-MODEL chunks joined the formatting guide (owner rounds 13
@@ -74,14 +76,14 @@ export function listSourceSegments(agent: PromptAgent): Array<{ path: string; sh
 	const segments: Array<{ path: string; shared: boolean; file: string }> = agent === "practice" ? [] : [
 		{ path: "system-prompt.md", shared: true, file: PATHS.teacherPrompt },
 	];
-	const dir = path.join(PROMPTS_DIR, agent);
+	const dir = path.join(promptsDir(), agent);
 	if (fs.existsSync(dir)) {
 		const fragments = fs.readdirSync(dir).filter((f) => FRAGMENT_RE.test(f)).sort();
 		for (const f of fragments) {
 			segments.push({ path: `${agent}/${f}`, shared: false, file: path.join(dir, f) });
 		}
 	}
-	const sharedDir = path.join(PROMPTS_DIR, "shared");
+	const sharedDir = path.join(promptsDir(), "shared");
 	if (fs.existsSync(sharedDir)) {
 		// The practice allowlist (owner, 2026-10-04 late): formatting only.
 		const allow = agent === "practice" ? PRACTICE_SHARED_FRAGMENTS : null;

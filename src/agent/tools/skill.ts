@@ -40,18 +40,21 @@ function parseSkillFile(dirName: string, raw: string): DiscoveredSkill {
 	return { name, description, body: body!.trim() };
 }
 
-const SKILLS_DIR = path.join(PATHS.root, "src", "agent", "skills");
+function skillsDir(): string {
+	return path.join(PATHS.root, "src", "agent", "skills");
+}
 
 function discoverSkills(): DiscoveredSkill[] {
-	if (!fs.existsSync(SKILLS_DIR)) return [];
-	const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
+	const dirPath = skillsDir();
+	if (!fs.existsSync(dirPath)) return [];
+	const entries = fs.readdirSync(dirPath, { withFileTypes: true });
 	const dirs = entries
 		.filter((e) => e.isDirectory())
 		.map((e) => e.name)
 		.sort();
 	const skills: DiscoveredSkill[] = [];
 	for (const dir of dirs) {
-		const skillFile = path.join(SKILLS_DIR, dir, "SKILL.md");
+		const skillFile = path.join(dirPath, dir, "SKILL.md");
 		if (fs.existsSync(skillFile)) {
 			const content = fs.readFileSync(skillFile, "utf-8");
 			skills.push(parseSkillFile(dir, content));
