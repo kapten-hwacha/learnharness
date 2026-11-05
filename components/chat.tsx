@@ -1928,9 +1928,16 @@ export function Chat({
 						// check answer is its only carrier.
 						saveQuestionDraft(pending.key, { readingThinking: readingThinkingRef.current });
 						const reading = readingThinkingRef.current.trim() || undefined;
+						const answerPayload = reading ? { ...output, readingThinking: reading } : output;
+						const switchingToPractice = isSwitchToPracticeAnswer(output);
+
 						// The pending-id effect clears this only when the question
 						// actually leaves. An offline preflight keeps the draft visible.
-						submitAnswer(pending.tool, pending.toolCallId, reading ? { ...output, readingThinking: reading } : output, pending.key);
+						void submitAnswer(pending.tool, pending.toolCallId, answerPayload, pending.key);
+
+						if (switchingToPractice) {
+							void onSwitchToPractice();
+						}
 					}}
 				/>
 				</Conversation>
@@ -2114,6 +2121,20 @@ export function TeachSoftCapPill({
 		>
 			{Math.floor((chatMs ?? teachSoftCapMinutes * 60_000) / 60_000)}m · Switch to Practice
 		</button>
+	);
+}
+
+/**
+ * Detects if a question answer explicitly selected a "Switch to Practice" option.
+ * Pure for tests.
+ */
+export function isSwitchToPracticeAnswer(output: QuestionAnswerData): boolean {
+	return (
+		output.answers?.some(
+			(a) =>
+				(typeof a.label === "string" && /switch to practice/i.test(a.label)) ||
+				(typeof a.value === "string" && /switch to practice/i.test(a.value)),
+		) ?? false
 	);
 }
 

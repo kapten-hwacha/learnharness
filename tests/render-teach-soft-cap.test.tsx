@@ -7,7 +7,8 @@ import React from "react";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { shouldShowTeachSoftCapPill, TeachSoftCapPill } from "../components/chat.tsx";
+import { shouldShowTeachSoftCapPill, TeachSoftCapPill, isSwitchToPracticeAnswer } from "../components/chat.tsx";
+import type { QuestionAnswerData } from "../src/core/index.ts";
 
 describe("shouldShowTeachSoftCapPill gate", () => {
 	it("shows when soft cap reached in teach mode with messages", () => {
@@ -61,5 +62,48 @@ describe("TeachSoftCapPill rendering", () => {
 			/>,
 		);
 		assert.ok(html.includes("20m · Switch to Practice"));
+	});
+});
+
+describe("isSwitchToPracticeAnswer", () => {
+	it("returns true when an answer matches 'Switch to Practice'", () => {
+		const base: QuestionAnswerData = {
+			kind: "ask",
+			questionText: "Do you want to practice?",
+			dontKnow: false,
+			answeredAt: "2026-11-02T15:00:00.000Z",
+			answers: [{ label: "Switch to Practice (Recommended)", value: "Switch to Practice (Recommended)", index: 1 }],
+		};
+		assert.equal(isSwitchToPracticeAnswer(base), true);
+
+		const plain: QuestionAnswerData = {
+			kind: "ask",
+			questionText: "Do you want to practice?",
+			dontKnow: false,
+			answeredAt: "2026-11-02T15:00:00.000Z",
+			answers: [{ label: "Switch to practice", value: "Switch to practice", index: 1 }],
+		};
+		assert.equal(isSwitchToPracticeAnswer(plain), true);
+	});
+
+	it("returns false for continue teaching or other answers", () => {
+		const continueAns: QuestionAnswerData = {
+			kind: "ask",
+			questionText: "Do you want to practice?",
+			dontKnow: false,
+			answeredAt: "2026-11-02T15:00:00.000Z",
+			answers: [{ label: "Continue teaching", value: "Continue teaching", index: 2 }],
+		};
+		assert.equal(isSwitchToPracticeAnswer(continueAns), false);
+
+		const emptyAnswers: QuestionAnswerData = {
+			kind: "ask",
+			questionText: "Do you want to practice?",
+			dontKnow: false,
+			answeredAt: "2026-11-02T15:00:00.000Z",
+			answers: [],
+			other: "I want to review one more thing",
+		};
+		assert.equal(isSwitchToPracticeAnswer(emptyAnswers), false);
 	});
 });

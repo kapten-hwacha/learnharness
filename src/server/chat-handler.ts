@@ -537,7 +537,7 @@ export async function handleChatInput(
 		...(softCapReached
 			? {
 					extraInstructions:
-						"The soft study time cap for this session has been reached. Find a natural stopping point or suggest a break soon.",
+						"The soft study time cap for this session has been reached. Complete the current step and check that it landed. Once the active concept is closed, do not introduce new concepts or advance to the next plan node. Instead, call ask_user_question with options (listing 'Switch to Practice (Recommended)' first, followed by 'Continue teaching') to ask the learner if they want to practice now or continue with the next concept.",
 				}
 			: {}),
 	};
