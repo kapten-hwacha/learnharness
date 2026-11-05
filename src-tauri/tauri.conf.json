@@ -28,7 +28,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' tauri: asset: https: data: blob:; worker-src 'self' blob: tauri:; font-src 'self' data: tauri:;"
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' ipc: tauri: asset: https: data: blob:; connect-src 'self' ipc: tauri: asset: https:; worker-src 'self' blob: tauri:; font-src 'self' data: tauri:;"
     }
   },
   "bundle": {

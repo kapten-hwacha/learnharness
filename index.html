@@ -47,38 +47,6 @@
 			}
 			(function () {
 				try {
-					var _logQueue = [];
-					function _flush() {
-						if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
-							while (_logQueue.length > 0) {
-								var item = _logQueue.shift();
-								window.__TAURI_INTERNALS__.invoke("lh_log", { msg: item }).catch(function(){});
-							}
-						}
-					}
-					function _forward(level, args) {
-						try {
-							var str = "[" + level + "] " + Array.prototype.slice.call(args).map(function(a) {
-								return typeof a === "object" ? (a && a.stack ? a.stack : JSON.stringify(a)) : String(a);
-							}).join(" ");
-							_logQueue.push(str);
-							_flush();
-							if (!window.__TAURI_INTERNALS__ || !window.__TAURI_INTERNALS__.invoke) {
-								setTimeout(_flush, 100);
-								setTimeout(_flush, 500);
-								setTimeout(_flush, 1500);
-							}
-						} catch(e) {}
-					}
-					var _origLog = console.log;
-					var _origErr = console.error;
-					var _origWarn = console.warn;
-					console.log = function() { _origLog.apply(console, arguments); _forward("LOG", arguments); };
-					console.warn = function() { _origWarn.apply(console, arguments); _forward("WARN", arguments); };
-					console.error = function() { _origErr.apply(console, arguments); _forward("ERROR", arguments); };
-
-					console.log("[LH Main] index.html loaded, waiting for app mount...");
-
 					var m = window.matchMedia("(prefers-color-scheme: dark)").matches;
 					var r = document.documentElement;
 					r.classList.add(m ? "dark" : "light");
