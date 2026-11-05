@@ -1,3 +1,4 @@
+import "../client/shims.ts";
 import { headlessOverride } from "../agent/subagents/headless.ts";
 import { getHostBridge } from "./host-bridge.ts";
 import { createWorkerHeadless } from "./headless-worker.ts";

@@ -4,6 +4,9 @@ import { defineConfig } from "vite";
 import { lhViteDevBridgePlugin } from "./src/worker/vite-dev-bridge.ts";
 
 export default defineConfig({
+	define: {
+		"process.env": {},
+	},
 	plugins: [
 		react(),
 		lhViteDevBridgePlugin(),

@@ -1,3 +1,4 @@
+import "./shims.ts";
 import "@fontsource-variable/source-sans-3";
 import "@fontsource-variable/jetbrains-mono";
 import "katex/dist/katex.min.css";

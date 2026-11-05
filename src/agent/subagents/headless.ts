@@ -78,11 +78,13 @@ export function getHeadless(): HeadlessApi {
 
 // ─── Chrome resolution ───────────────────────────────────────────────────────
 
+const proc = typeof process !== "undefined" ? process : ({ env: {}, platform: "darwin", versions: {} } as any);
+
 const CHROME_CANDIDATES = [
-	...(process.platform === "win32" ? [
-		path.join(process.env.PROGRAMFILES ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
-		path.join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
-		...(process.env.LOCALAPPDATA ? [path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe")] : []),
+	...(proc.platform === "win32" ? [
+		path.join(proc.env.PROGRAMFILES ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+		path.join(proc.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+		...(proc.env.LOCALAPPDATA ? [path.join(proc.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe")] : []),
 	] : []),
 	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 	"/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -94,7 +96,7 @@ const CHROME_CANDIDATES = [
 ];
 
 export function resolveChromeExecutablePath(): string | null {
-	const candidates = [process.env.CHROME_PATH, ...CHROME_CANDIDATES].filter(
+	const candidates = [proc.env.CHROME_PATH, ...CHROME_CANDIDATES].filter(
 		(p): p is string => typeof p === "string" && p.length > 0,
 	);
 	for (const candidate of candidates) {
@@ -147,7 +149,7 @@ export function browserServiceSpawnEnv(
  *  ELECTRON_RUN_AS_NODE so process.execPath IS the app binary; in dev
  *  (plain node) the electron package resolves to the dev binary path. */
 export function browserServiceBinary(): string | null {
-	if (process.versions.electron) return process.execPath;
+	if (proc.versions?.electron) return proc.execPath;
 	try {
 		const req = createRequire(import.meta.url);
 		const p = req("electron") as unknown as string;
@@ -175,7 +177,7 @@ async function connectBrowserService(): Promise<import("puppeteer-core").Browser
 		// Packaged: execPath runs the bundled app (flag reaches main.cjs).
 		// Dev: the bare electron binary needs the repo root as the app arg —
 		// flagless it would open Electron's default app instead of our shell.
-		const appArgs = process.versions.electron ? ["--browser-service"] : [
+		const appArgs = proc.versions?.electron ? ["--browser-service"] : [
 			// src/agent/subagents → repo root
 			path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", ".."),
 			"--browser-service",
@@ -183,7 +185,7 @@ async function connectBrowserService(): Promise<import("puppeteer-core").Browser
 		const proc = spawn(binary, appArgs, {
 			// Cast: the sanitizer is pure over a loose record; NODE_ENV is
 			// always present in a real process.env.
-			env: browserServiceSpawnEnv(process.env) as NodeJS.ProcessEnv,
+			env: browserServiceSpawnEnv(proc.env) as NodeJS.ProcessEnv,
 			stdio: ["ignore", "pipe", "pipe", "ipc"] as const,
 		});
 		browserServiceProc = proc;

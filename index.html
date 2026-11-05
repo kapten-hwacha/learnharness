@@ -6,6 +6,15 @@
 		<meta name="color-scheme" content="light dark" />
 		<title>Learning Harness</title>
 		<script>
+			if (typeof window !== "undefined" && typeof window.process === "undefined") {
+				window.process = {
+					env: {},
+					platform: navigator.userAgent.includes("Win") ? "win32" : navigator.userAgent.includes("Mac") ? "darwin" : "linux",
+					versions: {},
+					cwd: function () { return "/"; },
+					nextTick: function (fn) { setTimeout(fn, 0); }
+				};
+			}
 			(function () {
 				try {
 					var m = window.matchMedia("(prefers-color-scheme: dark)").matches;
