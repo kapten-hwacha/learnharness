@@ -40,7 +40,7 @@ import { ClaudeCodeInstallationStatus } from "./claude-code-status.tsx";
 import { CliProxyStatus } from "./cliproxy-status.tsx";
 import { ProviderMenuList } from "./model-menu.tsx";
 import { MenuShell } from "@/components/menu-shell";
-import { notifySettingsSaved } from "@/components/settings-signal";
+import { notifySettingsSaved, useSettingsSaved } from "@/components/settings-signal";
 import { DictationLanguageSetting } from "@/components/dictation-language";
 
 /** One pi-ai provider with plain API-key auth (the Platform seam —
@@ -367,6 +367,16 @@ function AddProviderRow({
 	);
 }
 
+let cachedStatuses: AuthKeyStatus[] | null = null;
+let cachedProviders: ProviderKeyInfo[] | undefined = undefined;
+let cachedCustom: CustomStatus | null = null;
+
+export function resetKeysCacheForTests(): void {
+	cachedStatuses = null;
+	cachedProviders = undefined;
+	cachedCustom = null;
+}
+
 export function KeysSection({
 	/** A deep-linked row to unfold on arrival (zero-keys wave): the
 	 *  dictation error's click lands here on DEEPGRAM_API_KEY. Followed
@@ -376,9 +386,9 @@ export function KeysSection({
 }: {
 	initialRow?: string;
 }) {
-	const [statuses, setStatuses] = useState<AuthKeyStatus[] | null>(null);
-	const [providers, setProviders] = useState<ProviderKeyInfo[] | undefined>(undefined);
-	const [loading, setLoading] = useState(true);
+	const [statuses, setStatuses] = useState<AuthKeyStatus[] | null>(cachedStatuses);
+	const [providers, setProviders] = useState<ProviderKeyInfo[] | undefined>(cachedProviders);
+	const [loading, setLoading] = useState(cachedStatuses === null);
 	/** The unfolded row (its id), null = all folded. Seeded by the
 	 *  deep-link (initialRow) and re-followed when it retargets. */
 	const [openRow, setOpenRow] = useState<string | null>(initialRow ?? null);
@@ -386,8 +396,12 @@ export function KeysSection({
 	const [adding, setAdding] = useState<ProviderKeyInfo | null>(null);
 	const [addError, setAddError] = useState<string | null>(null);
 	/** The custom endpoint's status + whether its connect editor is open. */
-	const [custom, setCustom] = useState<CustomStatus | null>(null);
+	const [custom, setCustom] = useState<CustomStatus | null>(cachedCustom);
 	const [addingCustom, setAddingCustom] = useState(false);
+
+	useSettingsSaved((section) => {
+		if (section === "keys") void reload();
+	});
 
 	// Escape folds any open editor (unfolded row or the Add-provider paste)
 	// WITHOUT closing the dialog. Claimed at document CAPTURE phase — the
@@ -413,17 +427,25 @@ export function KeysSection({
 	const reload = async () => {
 		try {
 			const body = (await fetch("/api/keys").then((r) => r.json())) as KeysResponse;
-			setStatuses(body.keys ?? []);
-			if (body.providers) setProviders(body.providers);
+			cachedStatuses = body.keys ?? [];
+			setStatuses(cachedStatuses);
+			if (body.providers) {
+				cachedProviders = body.providers;
+				setProviders(cachedProviders);
+			}
 		} catch {
-			setStatuses([]);
+			if (cachedStatuses === null) {
+				setStatuses([]);
+			}
 		} finally {
 			setLoading(false);
 		}
 		// Best-effort and independent: the custom endpoint's status must never
 		// blank the provider-key list above if its fetch fails.
 		try {
-			setCustom(await readCustomStatus());
+			const c = await readCustomStatus();
+			cachedCustom = c;
+			setCustom(c);
 		} catch {
 			/* custom status unavailable — leave it unset */
 		}

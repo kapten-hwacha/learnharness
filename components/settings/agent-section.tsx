@@ -288,6 +288,16 @@ function MenuTrigger({
  * viewport cap and auto-flip. data-lh-menu rides the shell — the
  * outside-click contract's exemption mark. */
 
+let cachedSearch: { available: boolean; engine: string | null; reason: string } | null = null;
+let cachedEngineKeys: Partial<Record<(typeof SEARCH_ENGINES)[number], boolean>> = {};
+let cachedPrompts: { prober: SegmentInfo[]; teacher: SegmentInfo[] } | null = null;
+
+export function resetAgentCacheForTests(): void {
+	cachedSearch = null;
+	cachedEngineKeys = {};
+	cachedPrompts = null;
+}
+
 export function AgentSection({
 	agent,
 	models,
@@ -318,12 +328,12 @@ export function AgentSection({
 	const catalog = body?.models;
 	const slots = body?.slots;
 	/** The live search state (/api/search) — the row's reason line. */
-	const [search, setSearch] = useState<{ available: boolean; engine: string | null; reason: string } | null>(null);
+	const [search, setSearch] = useState<{ available: boolean; engine: string | null; reason: string } | null>(cachedSearch);
 	const [desiredRetention, setDesiredRetention] = useState(agent?.desiredRetention ?? 0.9);
 	/** Which search engines have a key (/api/keys) — the no-keys-anywhere
 	 *  state grays the row; per-engine marks ride the menu rows. */
-	const [engineKeys, setEngineKeys] = useState<Partial<Record<(typeof SEARCH_ENGINES)[number], boolean>>>({});
-	const [prompts, setPrompts] = useState<{ prober: SegmentInfo[]; teacher: SegmentInfo[] } | null>(null);
+	const [engineKeys, setEngineKeys] = useState<Partial<Record<(typeof SEARCH_ENGINES)[number], boolean>>>(cachedEngineKeys);
+	const [prompts, setPrompts] = useState<{ prober: SegmentInfo[]; teacher: SegmentInfo[] } | null>(cachedPrompts);
 	const [openSegment, setOpenSegment] = useState<string | null>(null);
 	const [segmentDraft, setSegmentDraft] = useState<Record<string, string>>({});
 	const [segmentStatus, setSegmentStatus] = useState<string | null>(null);
@@ -336,8 +346,13 @@ export function AgentSection({
 	const refreshSearch = () =>
 		fetch("/api/search")
 			.then((r) => r.json())
-			.then((body: { available: boolean; engine: string | null; reason: string }) => setSearch(body))
-			.catch(() => setSearch(null));
+			.then((body: { available: boolean; engine: string | null; reason: string }) => {
+				cachedSearch = body;
+				setSearch(body);
+			})
+			.catch(() => {
+				if (cachedSearch === null) setSearch(null);
+			});
 
 	/** Re-read the prompt-segment view — the signal seam for the
 	 *  2026-09-26 state-echo fix: the view's `enabled` flags DERIVE from
@@ -349,7 +364,10 @@ export function AgentSection({
 	const readPrompts = useCallback(() => {
 		fetch("/api/settings/prompts")
 			.then((r) => r.json())
-			.then((body: { prober: SegmentInfo[]; teacher: SegmentInfo[] }) => setPrompts(body))
+			.then((body: { prober: SegmentInfo[]; teacher: SegmentInfo[] }) => {
+				cachedPrompts = body;
+				setPrompts(body);
+			})
 			.catch(() => {});
 	}, []);
 
@@ -361,13 +379,32 @@ export function AgentSection({
 		// the settings-saved law (every reader re-reads) was missing this
 		// one reader.
 		if (section === "agent") readPrompts();
+		if (section === "keys") {
+			fetch("/api/keys")
+				.then((r) => r.json())
+				.then((body: { keys: { id: string; present: boolean }[] }) => {
+					const present: Partial<Record<(typeof SEARCH_ENGINES)[number], boolean>> = {};
+					for (const id of SEARCH_ENGINES) {
+						const envVar = id === "tavily" ? "TAVILY_API_KEY" : "BRAVE_API_KEY";
+						present[id] = body.keys.some((k) => k.id === envVar && k.present);
+					}
+					cachedEngineKeys = present;
+					setEngineKeys(present);
+				})
+				.catch(() => {});
+		}
 	});
 
 	useEffect(() => {
 		fetch("/api/settings/prompts")
 			.then((r) => r.json())
-			.then((body: { prober: SegmentInfo[]; teacher: SegmentInfo[] }) => setPrompts(body))
-			.catch(() => setPrompts(null));
+			.then((body: { prober: SegmentInfo[]; teacher: SegmentInfo[] }) => {
+				cachedPrompts = body;
+				setPrompts(body);
+			})
+			.catch(() => {
+				if (cachedPrompts === null) setPrompts(null);
+			});
 		fetch("/api/keys")
 			.then((r) => r.json())
 			.then((body: { keys: { id: string; present: boolean }[] }) => {
@@ -376,6 +413,7 @@ export function AgentSection({
 					const envVar = id === "tavily" ? "TAVILY_API_KEY" : "BRAVE_API_KEY";
 					present[id] = body.keys.some((k) => k.id === envVar && k.present);
 				}
+				cachedEngineKeys = present;
 				setEngineKeys(present);
 			})
 			.catch(() => {});

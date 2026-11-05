@@ -135,6 +135,12 @@ function SettingsDialog({
 
 /** The dialog without the portal/backdrop — the SSR-testable frame
  *  (portals render nothing under renderToStaticMarkup). */
+let cachedSettingsRecord: UserSettings | null | undefined = undefined;
+
+export function resetSettingsDialogCacheForTests(): void {
+	cachedSettingsRecord = undefined;
+}
+
 export function SettingsDialogBody({
 	onClose,
 	initialSection = "keys",
@@ -148,7 +154,7 @@ export function SettingsDialogBody({
 }) {
 	const { onAppearanceChange } = useAppearance();
 	const [record, setRecord] = useState<UserSettings | null | undefined>(
-		undefined,
+		cachedSettingsRecord,
 	);
 	const [error, setError] = useState<string | null>(null);
 	// MenuShell open-count — drives the content column's scroll lock.
@@ -184,6 +190,8 @@ export function SettingsDialogBody({
 		};
 	}, []);
 	const [active, setActive] = useState<SectionId>(initialSection);
+	const [visited, setVisited] = useState<Set<SectionId>>(() => new Set([initialSection]));
+
 	// A deep-link fired while the dialog is ALREADY open (first exercised by
 	// the wave-6 embedding picker's "Add a provider key first…" link — the
 	// picker itself died with wave 7, the mechanism is general) changes
@@ -193,6 +201,17 @@ export function SettingsDialogBody({
 		setActive(initialSection);
 	}, [initialSection]);
 
+	useEffect(() => {
+		setVisited((prev) => {
+			if (prev.has(active)) return prev;
+			const next = new Set(prev);
+			next.add(active);
+			return next;
+		});
+	}, [active]);
+
+	const isVisited = (id: SectionId) => visited.has(id) || active === id;
+
 	// Fetch once per dialog mount. 200 {settings: null} is FIRST BOOT
 	// (no record = factory everything), not a failure — the error state is
 	// a non-200 or a network throw only.
@@ -201,10 +220,16 @@ export function SettingsDialogBody({
 			.then((r) =>
 				r.ok ? r.json() : Promise.reject(new Error(`status ${r.status}`)),
 			)
-			.then((body: { settings: UserSettings | null }) =>
-				setRecord(body.settings ?? { version: CURRENT_SETTINGS_VERSION }),
-			)
-			.catch(() => setRecord(null));
+			.then((body: { settings: UserSettings | null }) => {
+				const resolved = body.settings ?? { version: CURRENT_SETTINGS_VERSION };
+				cachedSettingsRecord = resolved;
+				setRecord(resolved);
+			})
+			.catch(() => {
+				if (cachedSettingsRecord === undefined) {
+					setRecord(null);
+				}
+			});
 	}, []);
 
 	// Escape closes — the layered-dismiss convention (Esc is dead for the
@@ -254,10 +279,11 @@ export function SettingsDialogBody({
 			const stored = (
 				(await res.json().catch(() => null)) as { settings?: UserSettings } | null
 			)?.settings;
-			setRecord(
-				(prev) =>
-					stored ?? ({ ...(prev ?? {}), [section]: body }) as UserSettings,
-			);
+			setRecord((prev) => {
+				const next = (stored ?? ({ ...(prev ?? {}), [section]: body })) as UserSettings;
+				cachedSettingsRecord = next;
+				return next;
+			});
 			notifySettingsSaved(section);
 			if (section === "appearance")
 				onAppearanceChange(body as AppearanceSettings);
@@ -359,94 +385,108 @@ export function SettingsDialogBody({
 						</p>
 					) : (
 						<div>
-							{active === "general" && (
-								<SettingsSection
-									title="General"
-									testid="section-general"
-								>
-									<UpdateSettings
-										autoUpdate={record.general?.autoUpdate ?? true}
-										onAutoUpdateChange={(on) =>
-											void write("general", { ...record.general, autoUpdate: on })
-										}
-									/>
-								</SettingsSection>
+							{isVisited("general") && (
+								<div className={active === "general" ? undefined : "hidden"}>
+									<SettingsSection
+										title="General"
+										testid="section-general"
+									>
+										<UpdateSettings
+											autoUpdate={record.general?.autoUpdate ?? true}
+											onAutoUpdateChange={(on) =>
+												void write("general", { ...record.general, autoUpdate: on })
+											}
+										/>
+									</SettingsSection>
+								</div>
 							)}
-							{active === "keys" && (
-								<SettingsSection title="Providers" testid="section-keys">
-									<KeysSection initialRow={initialRow ?? undefined} />
-								</SettingsSection>
+							{isVisited("keys") && (
+								<div className={active === "keys" ? undefined : "hidden"}>
+									<SettingsSection title="Providers" testid="section-keys">
+										<KeysSection initialRow={initialRow ?? undefined} />
+									</SettingsSection>
+								</div>
 							)}
-							{active === "agent" && (
-								<SettingsSection
-									title="Agent"
-									testid="section-agent"
-								>
-									<AgentSection
-										agent={record.agent}
-										models={record.models}
-										graph={record.graph}
-										compaction={record.compaction}
-										onModelsChange={(next: ModelsSettings) =>
-											void write("models", next)
-										}
-										onSectionChange={(next: AgentSettings) =>
-											void write("agent", next)
-										}
-										onCompactionChange={(next: CompactionSettings) =>
-											void write("compaction", next)
-										}
-									/>
-								</SettingsSection>
+							{isVisited("agent") && (
+								<div className={active === "agent" ? undefined : "hidden"}>
+									<SettingsSection
+										title="Agent"
+										testid="section-agent"
+									>
+										<AgentSection
+											agent={record.agent}
+											models={record.models}
+											graph={record.graph}
+											compaction={record.compaction}
+											onModelsChange={(next: ModelsSettings) =>
+												void write("models", next)
+											}
+											onSectionChange={(next: AgentSettings) =>
+												void write("agent", next)
+											}
+											onCompactionChange={(next: CompactionSettings) =>
+												void write("compaction", next)
+											}
+										/>
+									</SettingsSection>
+								</div>
 							)}
-							{active === "appearance" && (
-								<SettingsSection
-									title="Appearance"
-									testid="section-appearance"
-								>
-									<AppearanceSection
-										appearance={record.appearance}
-										onSectionChange={(next: AppearanceSettings) =>
-											void write("appearance", next)
-										}
-									/>
-								</SettingsSection>
+							{isVisited("appearance") && (
+								<div className={active === "appearance" ? undefined : "hidden"}>
+									<SettingsSection
+										title="Appearance"
+										testid="section-appearance"
+									>
+										<AppearanceSection
+											appearance={record.appearance}
+											onSectionChange={(next: AppearanceSettings) =>
+												void write("appearance", next)
+											}
+										/>
+									</SettingsSection>
+								</div>
 							)}
-							{active === "graph" && (
-								<SettingsSection
-									title="Graph"
-									testid="section-graph"
-								>
-									<GraphSection
-										graph={record.graph}
-										onSectionChange={(next: GraphSettings) =>
-											void write("graph", next)
-										}
-									/>
-								</SettingsSection>
+							{isVisited("graph") && (
+								<div className={active === "graph" ? undefined : "hidden"}>
+									<SettingsSection
+										title="Graph"
+										testid="section-graph"
+									>
+										<GraphSection
+											graph={record.graph}
+											onSectionChange={(next: GraphSettings) =>
+												void write("graph", next)
+											}
+										/>
+									</SettingsSection>
+								</div>
 							)}
-							{active === "studyTime" && (
-								<SettingsSection
-									title="Study time"
-									testid="section-studyTime"
-								>
-									<StudyTimeSection
-										studyTime={record.studyTime}
-										resolved={resolveSettings(record).studyTime}
-										onSectionChange={(next: StudyTimeSettings) =>
-											void write("studyTime", next)
-										}
-									/>
-								</SettingsSection>
+							{isVisited("studyTime") && (
+								<div className={active === "studyTime" ? undefined : "hidden"}>
+									<SettingsSection
+										title="Study time"
+										testid="section-studyTime"
+									>
+										<StudyTimeSection
+											studyTime={record.studyTime}
+											resolved={resolveSettings(record).studyTime}
+											onSectionChange={(next: StudyTimeSettings) =>
+												void write("studyTime", next)
+											}
+										/>
+									</SettingsSection>
+								</div>
 							)}
-							{active === "keyboard" && (
-								<SettingsSection
-									title="Keyboard"
-									hint="Stored on this device"
-									testid="section-keyboard"
-								>
-									<KeyboardSection />
-								</SettingsSection>
+							{isVisited("keyboard") && (
+								<div className={active === "keyboard" ? undefined : "hidden"}>
+									<SettingsSection
+										title="Keyboard"
+										hint="Stored on this device"
+										testid="section-keyboard"
+									>
+										<KeyboardSection />
+									</SettingsSection>
+								</div>
 							)}
 						</div>
 					)}
