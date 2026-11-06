@@ -408,6 +408,26 @@ export class SessionModel {
 					role?: string;
 					id?: string;
 				};
+				if ((message as { role?: string }).role === "toolResult") {
+					const toolResult = message as unknown as ToolResultMessage & { id?: string };
+					const toolCallId = toolResult.toolCallId;
+					if (!toolCallId) return false;
+					this.mutate(() => {
+						const idx = this.tail.findIndex(
+							(m) =>
+								(m as { role?: string }).role === "toolResult" &&
+								(m as { toolCallId?: string }).toolCallId === toolCallId,
+						);
+						if (idx !== -1) {
+							const existingId = this.tail[idx]!.id;
+							this.tail = this.tail.with(idx, { ...(toolResult as unknown as LhMessage), id: existingId });
+						} else {
+							const id = toolResult.id ?? localId();
+							this.tail = [...this.tail, { ...(toolResult as unknown as LhMessage), id }];
+						}
+					});
+					return true;
+				}
 				if ((message as { role?: string }).role !== "assistant") {
 					// Wave C: markers injected mid-run (pi's follow-up delivery)
 					// arrive as custom-role message_start/message_end events -
@@ -484,12 +504,21 @@ export class SessionModel {
 				// The results batch: append as native messages (client-stamped
 				// ids — the settle sync lands the server canon).
 				this.mutate(() => {
-					this.tail = [
-						...this.tail,
-						...(agent.toolResults as ToolResultMessage[]).map(
-							(r) => ({ ...r, id: localId() }) as unknown as LhMessage,
-						),
-					];
+					let nextTail = [...this.tail];
+					for (const r of ((agent.toolResults as ToolResultMessage[] | undefined) ?? [])) {
+						const idx = nextTail.findIndex(
+							(m) =>
+								(m as { role?: string }).role === "toolResult" &&
+								(m as { toolCallId?: string }).toolCallId === r.toolCallId,
+						);
+						if (idx !== -1) {
+							const existingId = nextTail[idx]!.id;
+							nextTail[idx] = { ...(r as unknown as LhMessage), id: existingId };
+						} else {
+							nextTail.push({ ...(r as unknown as LhMessage), id: localId() });
+						}
+					}
+					this.tail = nextTail;
 				});
 				return true;
 			}

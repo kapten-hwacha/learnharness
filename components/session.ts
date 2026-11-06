@@ -43,8 +43,13 @@ export function useChatSession({ chatId, initialMessages, initialError, initiall
 	// never saw a single model update — no optimistic bubble, no stream, no
 	// error banner. The empty-session bug, 2026-09-26.)
 	const [version, bump] = useReducer((n: number) => n + 1, 0);
+	const localStreamRef = useRef(initiallyInFlight ?? false);
+	localStreamRef.current = model.status === "submitted" || model.status === "streaming";
 	useEffect(() => {
-		model.onChange = bump;
+		model.onChange = () => {
+			localStreamRef.current = model.status === "submitted" || model.status === "streaming";
+			bump();
+		};
 		return () => {
 			model.onChange = undefined;
 		};
@@ -102,12 +107,20 @@ export function useChatSession({ chatId, initialMessages, initialError, initiall
 		[model],
 	);
 
-	const send = useCallback((input: ChatInput, onAccepted?: () => void) => model.send(input, onAccepted), [model]);
+	const send = useCallback(
+		(input: ChatInput, onAccepted?: () => void) => {
+			localStreamRef.current = true;
+			return model.send(input, onAccepted);
+		},
+		[model],
+	);
 	const continueIfOwed = useCallback((record: readonly LhMessage[]) => void model.continueIfOwed(record), [model]);
 	const steer = useCallback((text: string) => void model.steer(text), [model]);
 	const submitAnswer = useCallback(
-		(tool: string, toolCallId: string, output: QuestionAnswerData, questionKey?: string) =>
-			void model.submitAnswer(tool, toolCallId, output, questionKey),
+		(tool: string, toolCallId: string, output: QuestionAnswerData, questionKey?: string) => {
+			localStreamRef.current = true;
+			void model.submitAnswer(tool, toolCallId, output, questionKey);
+		},
 		[model],
 	);
 	const dismissQuestion = useCallback(
@@ -148,5 +161,6 @@ export function useChatSession({ chatId, initialMessages, initialError, initiall
 		clearError,
 		resumeStream,
 		setReattachSettled,
+		localStreamRef,
 	};
 }

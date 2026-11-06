@@ -94,7 +94,15 @@ export class ToolCallIdUniquifier {
 	 *  the repeated partials of message_update). Returns a cloned message
 	 *  when any id changed, else the original object. */
 	private remapMessageContent(message: unknown): unknown {
-		if ((message as { role?: string }).role !== "assistant") return message;
+		const role = (message as { role?: string }).role;
+		if (role === "toolResult") {
+			const orig = (message as { toolCallId?: unknown }).toolCallId;
+			if (typeof orig === "string" && this.epoch?.has(orig)) {
+				return { ...(message as object), toolCallId: this.epoch.get(orig)! };
+			}
+			return message;
+		}
+		if (role !== "assistant") return message;
 		const blocks = callBlocks(message);
 		if (blocks.length === 0) return message;
 

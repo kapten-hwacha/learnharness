@@ -24,10 +24,11 @@ import { afterEach, describe, it } from "node:test";
 import { absorbed, pendingCallTool, SessionModel } from "../components/session-core.ts";
 import type { ChatInput } from "../src/core/input-events.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
-import { newUserMessage, newAnswerResult, newThinkingMessage, needsContinuation, endsInDismissal, pendingQuestionOf } from "../src/core/native-messages.ts";
+import { newUserMessage, newAnswerResult, newThinkingMessage, needsContinuation, endsInDismissal, pendingQuestionOf, activeProblemOf } from "../src/core/native-messages.ts";
 import { endsInFailedTurn, newCompactionMarker, newPlanBlockMessage, projectView } from "../src/core/index.ts";
 import { dismissedAnswer } from "../src/core/question-core.ts";
 import { buildAnswer, type QuestionData } from "../src/core/question-core.ts";
+import { ToolCallIdUniquifier } from "../src/server/pi/call-ids.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -1765,5 +1766,90 @@ describe("absorbed — the custom role (the doubled thinking card)", () => {
 		const customs = m.getState().nativeMessages.filter((x) => (x as { role?: string }).role === "custom");
 		assert.equal(customs.length, 1, "the server copy replaced the optimistic one — no doubling");
 		assert.equal((customs[0] as { id?: string }).id, "srv_1");
+	});
+});
+
+describe("toolResult wire events and honest activeProblemOf activation", () => {
+	it("message_start and message_end for role === toolResult without id append to tail and activate problem", () => {
+		const m = model({ chatId: "chat_pose", initialMessages: [] });
+		// 1. Assistant message with problem tool call streams in
+		const assistantMsg = {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "call-pose-1",
+					name: "problem",
+					arguments: { statement: "Solve 1 + 1", mode: "recall" },
+				},
+			],
+		};
+		m.applyWireEvent({ type: "message_start", message: assistantMsg });
+		m.applyWireEvent({ type: "message_end", message: assistantMsg });
+
+		// Before tool result arrives, activeProblemOf is null (honest activation)
+		assert.equal(activeProblemOf(m.getState().nativeMessages), null, "problem not active until clean result arrives");
+
+		// 2. toolResult message without id arrives via message_start then message_end
+		const toolResultMsg = {
+			role: "toolResult",
+			toolCallId: "call-pose-1",
+			toolName: "problem",
+			content: [{ type: "text", text: "Problem posed" }],
+			details: null,
+			isError: false,
+		};
+		const actedStart = m.applyWireEvent({ type: "message_start", message: toolResultMsg });
+		assert.equal(actedStart, true, "message_start for toolResult must be handled");
+		assert.equal(activeProblemOf(m.getState().nativeMessages)?.toolCallId, "call-pose-1", "problem immediately active after start");
+
+		const actedEnd = m.applyWireEvent({ type: "message_end", message: toolResultMsg });
+		assert.equal(actedEnd, true, "message_end for toolResult must be handled");
+
+		// Deduplication check: should NOT have duplicated in tail
+		const toolResults = m.getState().nativeMessages.filter((msg) => (msg as { role?: string }).role === "toolResult");
+		assert.equal(toolResults.length, 1, "toolResult must not duplicate between start and end");
+		assert.ok((toolResults[0] as { id?: string }).id, "toolResult must have received a valid id");
+
+		// 3. turn_end batch with toolResults does not duplicate either
+		m.applyWireEvent({ type: "turn_end", message: assistantMsg, toolResults: [toolResultMsg] });
+		const afterTurnEnd = m.getState().nativeMessages.filter((msg) => (msg as { role?: string }).role === "toolResult");
+		assert.equal(afterTurnEnd.length, 1, "turn_end must upsert toolResult without duplicating");
+		assert.equal(activeProblemOf(m.getState().nativeMessages)?.toolCallId, "call-pose-1", "problem remains active");
+	});
+
+	it("ToolCallIdUniquifier remaps toolCallId in toolResult message_start and message_end events", () => {
+		const uniquifier = new ToolCallIdUniquifier(["call-dup"]);
+		// Assistant message poses a call with duplicate id "call-dup"
+		const assistantMsg = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "call-dup", name: "problem", arguments: {} }],
+		};
+		const remappedStart = uniquifier.event({ type: "message_start", message: assistantMsg } as never);
+		const mappedCallId = (
+			(remappedStart as { message: { content: Array<{ id: string }> } }).message.content[0]!
+		).id;
+		assert.notEqual(mappedCallId, "call-dup", "assistant call id must be uniquified");
+
+		// Now toolResult arrives via message_start / message_end with original call id
+		const toolResultMsg = {
+			role: "toolResult",
+			toolCallId: "call-dup",
+			toolName: "problem",
+			content: [],
+		};
+		const remappedResultStart = uniquifier.event({ type: "message_start", message: toolResultMsg } as never);
+		assert.equal(
+			(remappedResultStart as { message: { toolCallId: string } }).message.toolCallId,
+			mappedCallId,
+			"toolResult toolCallId in message_start must match the remapped assistant call id",
+		);
+
+		const remappedResultEnd = uniquifier.event({ type: "message_end", message: toolResultMsg } as never);
+		assert.equal(
+			(remappedResultEnd as { message: { toolCallId: string } }).message.toolCallId,
+			mappedCallId,
+			"toolResult toolCallId in message_end must match the remapped assistant call id",
+		);
 	});
 });

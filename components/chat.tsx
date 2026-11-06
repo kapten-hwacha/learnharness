@@ -270,7 +270,7 @@ export function Chat({
 	// (core/view.ts projectView); sends are ONE explicit input event each
 	// ({chatId, input} — the stash indirection died with the SDK), and the
 	// turn stream is the VERBATIM AgentEvent passthrough the server emits.
-	const { messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, setMessages, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
+	const { messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, setMessages, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled, localStreamRef: sessionLocalStreamRef } =
 		useChatSession({ chatId, initialMessages, initialError, initiallyInFlight });
 	const router = useRouter();
 	useStudyTracker(chatId, chatHasStarted(nativeMessages));
@@ -433,7 +433,9 @@ export function Chat({
 	// LOCAL view also detaches first — stop() settles the client instantly
 	// and keeps the partial; the server-side partial persists via the
 	// abort's own onFinish. Inert when nothing runs (busyRef gate).
+	const localStreamRef = sessionLocalStreamRef;
 	const abortInFlightTurn = useCallback(() => {
+		setTurnInFlight(false);
 		if (localStreamRef.current) stop();
 		void fetch("/api/activity/abort", {
 			method: "POST",
@@ -444,7 +446,7 @@ export function Chat({
 		});
 		// 409 not_running is the benign raced-settle: the stream's finish
 			// already settled the view (or the poll fallback adopts) — nothing owed.
-	}, [chatId, stop]);
+	}, [chatId, stop, localStreamRef]);
 	// ESC-abort guard (owner, 2026-10-02): the abort chain opens a confirm
 	// popup EVERYWHERE (streams and pending questions alike). Both window
 	// listeners fire per Esc, so the state gate here — not stopPropagation
@@ -547,6 +549,7 @@ export function Chat({
 	activeProblemRef.current = activeProblem;
 
 	const localStream = status === "submitted" || status === "streaming";
+	localStreamRef.current = localStream || sessionLocalStreamRef.current;
 	const busy = localStream || turnInFlight;
 	const busyRef = useRef(busy);
 	busyRef.current = busy;
@@ -557,7 +560,7 @@ export function Chat({
 	// double-render the shimmer and keep the 1500ms fallback poll fighting
 	// the live stream it was a fallback FOR.
 	useEffect(() => {
-		if (turnInFlight && (status === "submitted" || status === "streaming")) setTurnInFlight(false);
+		if (turnInFlight && (status === "submitted" || status === "streaming" || status === "ready")) setTurnInFlight(false);
 	}, [status, turnInFlight]);
 
 	// Mid-session discovery (jobs poll, handoff watch): a server-side turn
@@ -862,8 +865,9 @@ export function Chat({
 		);
 	const sendNext = useCallback(() => {
 		if (!nextReady) return;
+		localStreamRef.current = true;
 		void send({ type: "next" });
-	}, [nextReady, send]);
+	}, [nextReady, send, localStreamRef]);
 
 	/* ENTER FROM ANYWHERE (owner round 16 refinement, 2026-10-06 —
 	 * keyboard-first): the move-on must not require composer focus. The
@@ -1075,10 +1079,8 @@ export function Chat({
 		// cannot be missed by this sync: the wake fires only after the idle
 		// gates + grace (≥750ms past this flip), so its turn-started event
 		// lands at an idle, already-canonical view and attaches normally.
-		if (settleAnnouncedRef.current) {
-			settleAnnouncedRef.current = false;
-			void syncFromServer();
-		}
+		settleAnnouncedRef.current = false;
+		void syncFromServer();
 		// (The extraction-discovery nudges that lived here died at S5: the
 		// pipeline announces every phase on the events channel.)
 	}, [status, syncTurns, syncFromServer]);
@@ -1129,8 +1131,6 @@ export function Chat({
 	// (duplicate message ids). So: a settle during a busy turn defers the
 	// sync; the next idle fetch adopts the finished record.
 	const [jobs, setJobs] = useState<JobRecord[]>([]);
-	const localStreamRef = useRef(false);
-	localStreamRef.current = localStream;
 	const jobStatusRef = useRef<Map<string, string>>(new Map());
 	// A settle seen during a busy turn — the sync is owed, not dropped.
 	const pendingSyncRef = useRef(false);
@@ -1253,20 +1253,10 @@ export function Chat({
 			settleAnnouncedRef.current = true;
 			return;
 		}
-		if (turnInFlightRef.current) {
-			// The attached stream's terminal frame owns the normal settle —
-			// syncing HERE would swap a stale snapshot mid-stream (the
-			// continuation-coalescing law, see the jobs poll above). Only
-			// the error case heals: the attached stream died, and the settle
-			// says persistTurn has made the record durable truth.
-			if (statusRef.current === "error") {
-				setTurnInFlight(false);
-				clearError();
-				void syncFromServer();
-			}
-			return;
+		setTurnInFlight(false);
+		if (statusRef.current === "error") {
+			clearError();
 		}
-		// Fully idle — a turn we never saw (every window missed): adopt now.
 		void syncFromServer();
 	});
 	useServerEvent("compaction-changed", (p) => {

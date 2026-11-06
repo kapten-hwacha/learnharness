@@ -187,16 +187,22 @@ export function createPortFetch(
 							port1.onmessage = (e: MessageEvent) => {
 								const chunkData = e.data;
 								if (chunkData.type === "lh:api-chunk") {
-									controller.enqueue(
-										chunkData.chunk instanceof Uint8Array
-											? chunkData.chunk
-											: new Uint8Array(chunkData.chunk),
-									);
+									try {
+										controller.enqueue(
+											chunkData.chunk instanceof Uint8Array
+												? chunkData.chunk
+												: new Uint8Array(chunkData.chunk),
+										);
+									} catch {}
 								} else if (chunkData.type === "lh:api-end") {
-									controller.close();
+									try {
+										controller.close();
+									} catch {}
 									port1.close();
 								} else if (chunkData.type === "lh:api-error") {
-									controller.error(new Error(chunkData.message));
+									try {
+										controller.error(new Error(chunkData.message));
+									} catch {}
 									port1.close();
 								}
 							};

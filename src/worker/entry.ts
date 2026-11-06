@@ -82,7 +82,8 @@ export function createWorkerMessageHandler(
 						: new Uint8Array(body)
 					: undefined;
 
-			const req = new Request(url, {
+			const fullUrl = url.startsWith("/") ? `http://localhost${url}` : url;
+			const req = new Request(fullUrl, {
 				method,
 				headers: requestHeaders,
 				body: requestBody as BodyInit | undefined,
