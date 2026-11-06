@@ -42,6 +42,12 @@ import { useServerEvent, useServerResync } from "@/components/server-events";
 import { useChatTitleRename } from "@/components/chat-hooks/use-chat-title-rename";
 import { useChatAbortDialog } from "@/components/chat-hooks/use-chat-abort-dialog";
 import {
+	useChatSoftCap,
+	TeachSoftCapPill,
+	shouldShowTeachSoftCapPill,
+	isSwitchToPracticeAnswer,
+} from "@/components/chat-hooks/use-chat-soft-cap";
+import {
 	isProviderKeyRefusal,
 	chatHasStarted,
 	firstSourceTextParts,
@@ -277,71 +283,17 @@ export function Chat({
 	const router = useRouter();
 	useStudyTracker(chatId, chatHasStarted(nativeMessages));
 
-	const [softCapData, setSoftCapData] = useState<{
-		chatMs?: number;
-		teachSoftCapMinutes?: number;
-		softCapReached?: boolean;
-	} | null>(null);
-
-	const hasMessages = messages.length > 0;
-	const fetchSoftCap = useCallback(async () => {
-		if (kind === "practice" || !hasMessages) return;
-		try {
-			const res = await fetch(`/api/study?chatId=${encodeURIComponent(chatId)}`);
-			if (!res.ok) return;
-			const data = (await res.json()) as {
-				chatMs?: number;
-				teachSoftCapMinutes?: number;
-				softCapReached?: boolean;
-			};
-			setSoftCapData({
-				chatMs: data.chatMs,
-				teachSoftCapMinutes: data.teachSoftCapMinutes,
-				softCapReached: data.softCapReached,
-			});
-		} catch {
-			// silent
-		}
-	}, [chatId, kind, hasMessages]);
-
-	useEffect(() => {
-		void fetchSoftCap();
-		const interval = setInterval(() => {
-			void fetchSoftCap();
-		}, 30_000);
-		return () => clearInterval(interval);
-	}, [fetchSoftCap]);
-
-	useServerEvent("turn-settled", (p) => {
-		if (p.chatId !== chatId) return;
-		void fetchSoftCap();
-	});
-
-	const teachSoftCapMinutes = softCapData?.teachSoftCapMinutes;
-	const softCapChatMs = softCapData?.chatMs;
-	const softCapReached = softCapData?.softCapReached;
-	const showSoftCapPill = shouldShowTeachSoftCapPill(
-		kind,
-		messages.length > 0,
+	const {
 		teachSoftCapMinutes,
 		softCapChatMs,
-		softCapReached,
-	);
-
-	const onSwitchToPractice = useCallback(async () => {
-		try {
-			const res = await fetch("/api/chats", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ title: "Practice session", kind: "practice" }),
-			});
-			if (!res.ok) return;
-			const { id } = (await res.json()) as { id: string };
-			router.push(`/chat/${id}?prompt=${encodeURIComponent("Practice session")}`);
-		} catch {
-			// silent
-		}
-	}, [router]);
+		showSoftCapPill,
+		onSwitchToPractice,
+	} = useChatSoftCap({
+		chatId,
+		kind,
+		hasMessages: messages.length > 0,
+		router,
+	});
 
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
 	const scrollContextRef = useRef<StickToBottomContext | null>(null);
@@ -2018,67 +1970,11 @@ export function probeArrivalExpanded(isAtBottom: boolean): boolean {
 	return isAtBottom;
 }
 
-/**
- * The geometry-mute's growth rule (flicker round, 2026-09-26): a reserve
- * GROWTH while a question is pending is the dock stretching (the dictation
- * flush landing many lines at once) — the spacer lands in that commit, the
- * smooth catch-up lags by exactly the growth, and that lag is our own
- * motion, not the learner leaving, so the fold machine ignores scroll
- * events for the mute window after (reproduced d≈152 > COLLAPSE_DIST).
- * Shrinks never stamp — that path self-muted the at-bottom re-expand and
- * left the box stuck collapsed (resize round, verified live). Pure for
- * tests.
- */
-export function shouldShowTeachSoftCapPill(
-	kind: string,
-	hasMessages: boolean,
-	teachSoftCapMinutes: number | undefined,
-	chatMs: number | undefined,
-	softCapReached: boolean | undefined,
-): boolean {
-	return (
-		kind !== "practice" &&
-		hasMessages &&
-		typeof teachSoftCapMinutes === "number" &&
-		teachSoftCapMinutes > 0 &&
-		(softCapReached === true || (chatMs ?? 0) >= teachSoftCapMinutes * 60_000)
-	);
-}
-
-export function TeachSoftCapPill({
-	chatMs,
-	teachSoftCapMinutes,
-	onClick,
-}: {
-	chatMs?: number;
-	teachSoftCapMinutes: number;
-	onClick: () => void;
-}) {
-	return (
-		<button
-			type="button"
-			data-testid="teach-soft-cap-pill"
-			onClick={onClick}
-			className="lh-no-drag flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
-		>
-			{Math.floor((chatMs ?? teachSoftCapMinutes * 60_000) / 60_000)}m · Switch to Practice
-		</button>
-	);
-}
-
-/**
- * Detects if a question answer explicitly selected a "Switch to Practice" option.
- * Pure for tests.
- */
-export function isSwitchToPracticeAnswer(output: QuestionAnswerData): boolean {
-	return (
-		output.answers?.some(
-			(a) =>
-				(typeof a.label === "string" && /switch to practice/i.test(a.label)) ||
-				(typeof a.value === "string" && /switch to practice/i.test(a.value)),
-		) ?? false
-	);
-}
+export {
+	shouldShowTeachSoftCapPill,
+	TeachSoftCapPill,
+	isSwitchToPracticeAnswer,
+};
 
 /** Where the open question's side chat goes (pure for tests): "split" =
  *  beside the question, sharing the band's width (wide bands only, and only
@@ -2090,6 +1986,17 @@ export function clarifierPlacement(open: boolean, revealPending: boolean, bandWi
 	return revealPending ? null : "split";
 }
 
+/**
+ * The geometry-mute's growth rule (flicker round, 2026-09-26): a reserve
+ * GROWTH while a question is pending is the dock stretching (the dictation
+ * flush landing many lines at once) — the spacer lands in that commit, the
+ * smooth catch-up lags by exactly the growth, and that lag is our own
+ * motion, not the learner leaving, so the fold machine ignores scroll
+ * events for the mute window after (reproduced d≈152 > COLLAPSE_DIST).
+ * Shrinks never stamp — that path self-muted the at-bottom re-expand and
+ * left the box stuck collapsed (resize round, verified live). Pure for
+ * tests.
+ */
 export function shouldStampGeometryMute(nextH: number, prevH: number, pending: boolean): boolean {
 	return pending && nextH > prevH + 1;
 }
