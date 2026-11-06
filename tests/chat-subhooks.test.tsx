@@ -50,29 +50,29 @@ describe("chat sub-hooks", () => {
 			root.render(<TestComponent />);
 		});
 
-		const currentApi = api as unknown as ReturnType<typeof useChatTitleRename>;
-		assert.ok(currentApi);
-		assert.equal(currentApi.titleText, "Initial Title");
-		assert.equal(currentApi.renaming, false);
+		const getApi = () => api!;
+		assert.ok(getApi());
+		assert.equal(getApi().titleText, "Initial Title");
+		assert.equal(getApi().renaming, false);
 
 		// Start rename
 		await act(async () => {
-			currentApi.startRename();
+			getApi().startRename();
 		});
-		assert.equal(currentApi.renaming, true);
-		assert.equal(currentApi.titleDraft, "Initial Title");
+		assert.equal(getApi().renaming, true);
+		assert.equal(getApi().titleDraft, "Initial Title");
 
 		// Change draft
 		await act(async () => {
-			currentApi.setTitleDraft("Brand New Title");
+			getApi().setTitleDraft("Brand New Title");
 		});
-		assert.equal(currentApi.titleDraft, "Brand New Title");
+		assert.equal(getApi().titleDraft, "Brand New Title");
 
 		// Cancel rename
 		await act(async () => {
-			currentApi.cancelRename();
+			getApi().cancelRename();
 		});
-		assert.equal(currentApi.renaming, false);
+		assert.equal(getApi().renaming, false);
 
 		await act(async () => {
 			root.unmount();
@@ -98,32 +98,32 @@ describe("chat sub-hooks", () => {
 			root.render(<TestComponent />);
 		});
 
-		const currentApi = api as unknown as ReturnType<typeof useChatAbortDialog>;
-		assert.ok(currentApi);
-		assert.equal(currentApi.abortAsk, null);
+		const getApi = () => api!;
+		assert.ok(getApi());
+		assert.equal(getApi().abortAsk, null);
 
 		// Open abort dialog for question
 		await act(async () => {
-			currentApi.setAbortAsk("question");
+			getApi().setAbortAsk("question");
 		});
-		assert.equal(currentApi.abortAsk, "question");
+		assert.equal(getApi().abortAsk, "question");
 
 		// Confirm abort
 		await act(async () => {
-			currentApi.confirmAbort("question");
+			getApi().confirmAbort("question");
 		});
 		assert.equal(confirmedMode, "question");
-		assert.equal(currentApi.abortAsk, null);
+		assert.equal(getApi().abortAsk, null);
 
 		// Open and cancel
 		await act(async () => {
-			currentApi.setAbortAsk("turn");
+			getApi().setAbortAsk("turn");
 		});
-		assert.equal(currentApi.abortAsk, "turn");
+		assert.equal(getApi().abortAsk, "turn");
 		await act(async () => {
-			currentApi.cancelAbort();
+			getApi().cancelAbort();
 		});
-		assert.equal(currentApi.abortAsk, null);
+		assert.equal(getApi().abortAsk, null);
 
 		await act(async () => {
 			root.unmount();
