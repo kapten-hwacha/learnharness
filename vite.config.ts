@@ -67,6 +67,9 @@ export default defineConfig({
 			{ find: "@resvg/resvg-js", replacement: path.resolve(__dirname, "src/worker/shims/node-stubs.ts") },
 			{ find: "@napi-rs/canvas", replacement: path.resolve(__dirname, "src/worker/shims/node-stubs.ts") },
 			{ find: "puppeteer-core", replacement: path.resolve(__dirname, "src/worker/shims/node-stubs.ts") },
+			{ find: "decode-named-character-reference", replacement: path.resolve(__dirname, "node_modules/decode-named-character-reference/index.js") },
+			{ find: "@/src/server/web-subscriptions.ts", replacement: path.resolve(__dirname, "src/worker/shims/web-subscriptions-stub.ts") },
+			{ find: "./web-subscriptions.ts", replacement: path.resolve(__dirname, "src/worker/shims/web-subscriptions-stub.ts") },
 		],
 	},
 	worker: {

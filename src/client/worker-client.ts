@@ -275,6 +275,7 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 	}
 
 	worker.onerror = (err) => {
+		err.preventDefault?.();
 		const msg = err.message || "Unknown worker error";
 		console.error("[LH Worker onerror]", msg, err.filename, err.lineno);
 		const el = document.getElementById("lh-boot-error-overlay") || document.createElement("div");

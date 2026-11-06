@@ -560,7 +560,7 @@ export function Chat({
 	// double-render the shimmer and keep the 1500ms fallback poll fighting
 	// the live stream it was a fallback FOR.
 	useEffect(() => {
-		if (turnInFlight && (status === "submitted" || status === "streaming" || status === "ready")) setTurnInFlight(false);
+		if (turnInFlight && (status === "submitted" || status === "streaming" || status === "ready" || status === "error")) setTurnInFlight(false);
 	}, [status, turnInFlight]);
 
 	// Mid-session discovery (jobs poll, handoff watch): a server-side turn

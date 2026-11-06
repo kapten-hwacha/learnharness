@@ -100,3 +100,13 @@ if (typeof globalThis !== "undefined") {
 if (typeof window !== "undefined") {
 	(window as any).global = window;
 }
+
+if (typeof (globalThis as any).document === "undefined") {
+	const dummyElement = { innerHTML: "", textContent: "", setAttribute: () => {}, style: {} };
+	(globalThis as any).document = {
+		createElement: () => ({ ...dummyElement }),
+		getElementById: () => null,
+		querySelector: () => null,
+		querySelectorAll: () => [],
+	};
+}
