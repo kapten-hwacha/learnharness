@@ -2,6 +2,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextPlugin from "@next/eslint-plugin-next";
 import tsParser from "@typescript-eslint/parser";
 import importPlugin from "eslint-plugin-import";
+import reactHooksPlugin from "eslint-plugin-react-hooks";
 
 /**
  * ESLint with one job here: ENFORCE THE IMPORT LAW (the shell/core
@@ -29,12 +30,18 @@ export default defineConfig([
 			parser: tsParser,
 			parserOptions: { ecmaVersion: "latest", sourceType: "module" },
 		},
-		plugins: { "@next/next": nextPlugin, import: importPlugin },
+		plugins: {
+			"@next/next": nextPlugin,
+			import: importPlugin,
+			"react-hooks": reactHooksPlugin,
+		},
 		settings: {
 			"import/resolver": { typescript: { alwaysTryTypes: true } },
 		},
 		rules: {
 			...nextPlugin.configs.recommended.rules,
+			"react-hooks/rules-of-hooks": "error",
+			"react-hooks/exhaustive-deps": "warn",
 			"import/no-restricted-paths": [
 				"error",
 				{
