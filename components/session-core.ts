@@ -100,7 +100,23 @@ async function* sseEvents(reader: ReadableStreamDefaultReader<Uint8Array>): Asyn
 		try { chunk = await reader.read(); }
 		catch (err) { throw new StreamReadError(err); }
 		const { done, value } = chunk;
-		if (done) return false;
+		if (done) {
+			buf += decoder.decode();
+			for (;;) {
+				const end = buf.indexOf("\n\n");
+				if (end === -1) break;
+				const event = buf.slice(0, end);
+				buf = buf.slice(end + 2);
+				const dataLine = event.split("\n").find((l) => l.startsWith("data: "));
+				if (!dataLine) continue;
+				const data = dataLine.slice("data: ".length);
+				if (data === "[DONE]") return true;
+				yield JSON.parse(data) as Record<string, unknown>;
+			}
+			const trimmed = buf.trim();
+			if (trimmed === "data: [DONE]" || trimmed.endsWith("\ndata: [DONE]")) return true;
+			return false;
+		}
 		buf += decoder.decode(value, { stream: true });
 		for (;;) {
 			const end = buf.indexOf("\n\n");

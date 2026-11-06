@@ -1055,6 +1055,7 @@ export function Chat({
 		// branch — the re-fire-on-dep-churn wart, fixed S3).
 		prevStatusRef.current = status;
 		if (!transitioned) return;
+		setTurnInFlight(false);
 		// immediate: turns-only refetch — the stats bar updates even while
 		// the server's persist/endTurn lags the client by milliseconds
 		void syncTurns();

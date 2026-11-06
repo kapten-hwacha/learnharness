@@ -119,14 +119,11 @@ export function createWorkerMessageHandler(
 							}
 							const { done, value } = await reader.read();
 							if (done) break;
-							postReply(
-								{
-									type: "lh:api-chunk",
-									id,
-									chunk: value,
-								},
-								[value.buffer],
-							);
+							postReply({
+								type: "lh:api-chunk",
+								id,
+								chunk: value,
+							});
 						}
 						postReply({
 							type: "lh:api-end",
