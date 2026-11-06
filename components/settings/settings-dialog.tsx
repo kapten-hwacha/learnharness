@@ -141,6 +141,7 @@ function SettingsDialog({
 /** The dialog without the portal/backdrop — the SSR-testable frame
  *  (portals render nothing under renderToStaticMarkup). */
 let cachedSettingsRecord: UserSettings | null | undefined = undefined;
+let cachedFileAccessError: string | null = null;
 let inflightSettingsPromise: Promise<UserSettings | null> | null = null;
 
 export function getCachedSettingsRecord(): UserSettings | null | undefined {
@@ -149,6 +150,7 @@ export function getCachedSettingsRecord(): UserSettings | null | undefined {
 
 export function resetSettingsDialogCacheForTests(): void {
 	cachedSettingsRecord = undefined;
+	cachedFileAccessError = null;
 	inflightSettingsPromise = null;
 }
 
@@ -163,9 +165,10 @@ export function prefetchSettings(): Promise<UserSettings | null> {
 		.then((r) =>
 			r.ok ? r.json() : Promise.reject(new Error(`status ${r.status}`)),
 		)
-		.then((body: { settings: UserSettings | null }) => {
+		.then((body: { settings: UserSettings | null; fileAccessError?: string }) => {
 			const resolved = body.settings ?? { version: CURRENT_SETTINGS_VERSION };
 			cachedSettingsRecord = resolved;
+			cachedFileAccessError = body.fileAccessError ?? null;
 			return resolved;
 		})
 		.catch(() => {
@@ -197,6 +200,7 @@ export function SettingsDialogBody({
 		cachedSettingsRecord,
 	);
 	const [error, setError] = useState<string | null>(null);
+	const [fileAccessError, setFileAccessError] = useState<string | null>(cachedFileAccessError);
 	// MenuShell open-count — drives the content column's scroll lock.
 	const [openMenus, setOpenMenus] = useState(0);
 	const contentRef = useRef<HTMLDivElement | null>(null);
@@ -258,10 +262,12 @@ export function SettingsDialogBody({
 	useEffect(() => {
 		if (cachedSettingsRecord !== undefined) {
 			setRecord(cachedSettingsRecord);
+			setFileAccessError(cachedFileAccessError);
 		}
 		void prefetchSettings().then((resolved) => {
 			if (resolved !== null) {
 				setRecord(resolved);
+				setFileAccessError(cachedFileAccessError);
 			} else if (cachedSettingsRecord === null) {
 				setRecord(null);
 			}
@@ -312,9 +318,10 @@ export function SettingsDialogBody({
 			// (bd68486) — a swap that rides an unsupported level lands
 			// CLAMPED in the record, and the writing surface must show the
 			// stored value in this same interaction, not the optimistic one.
-			const stored = (
-				(await res.json().catch(() => null)) as { settings?: UserSettings } | null
-			)?.settings;
+			const reply = (await res.json().catch(() => null)) as { settings?: UserSettings; fileAccessError?: string } | null;
+			const stored = reply?.settings;
+			setFileAccessError(reply?.fileAccessError ?? null);
+			cachedFileAccessError = reply?.fileAccessError ?? null;
 			setRecord((prev) => {
 				const next = (stored ?? ({ ...(prev ?? {}), [section]: body })) as UserSettings;
 				cachedSettingsRecord = next;
@@ -451,6 +458,7 @@ export function SettingsDialogBody({
 									>
 										<AgentSection
 											agent={record.agent}
+											fileAccessError={fileAccessError}
 											models={record.models}
 											graph={record.graph}
 											compaction={record.compaction}

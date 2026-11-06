@@ -10,7 +10,7 @@ const STATUS_BADGES: Record<ProbeStrandStatus, { label: string; className: strin
 };
 
 /**
- * The probe conclusion card (docs/probe-teach-split.md §2): renders the
+ * The probe conclusion card (docs/archive/probe-teach-split.md §2): renders the
  * prober's probe_done call. The INPUT is the learner assessment — strand by
  * strand, where his edge sits — and it belongs to the learner as much as to
  * the transcript: it streams live while the prober writes it and stays as
