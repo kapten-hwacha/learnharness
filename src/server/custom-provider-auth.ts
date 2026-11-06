@@ -1,7 +1,7 @@
 /** Custom-only credential composition. File credentials and their authorization
  * are read from the same atomic record, never a stale fill-gapped env copy. */
 import { CUSTOM_PROVIDER } from "../core/auth-keys.ts";
-import { authEnvRecord } from "../core/auth-env.ts";
+import { authEnvRecord, getRuntimeEnv } from "../core/auth-env.ts";
 import { customBindingMatches, type CustomAuthBinding } from "../core/custom-provider-auth.ts";
 import type { CustomProviderSettings } from "../core/settings.ts";
 import { readCustomAuth, writeCustomAuth } from "../store/auth.ts";
@@ -22,7 +22,8 @@ export function customAuthState(inspectKey = false, requiredConfig?: CustomProvi
 		if (!inspectKey || (requiredConfig && !customBindingMatches(requiredConfig, snapshot.binding))) return result;
 		result.fileKey = snapshot.fileKey();
 		const record = authEnvRecord();
-		const envKey = process.env.LH_IGNORE_ENV_KEYS !== "1" && record.realEnv.has(CUSTOM_PROVIDER.envVar) ? process.env[CUSTOM_PROVIDER.envVar] : undefined;
+		const env = getRuntimeEnv();
+		const envKey = env.LH_IGNORE_ENV_KEYS !== "1" && record.realEnv.has(CUSTOM_PROVIDER.envVar) ? env[CUSTOM_PROVIDER.envVar] : undefined;
 		result.source = envKey !== undefined ? "env" : result.fileKey !== undefined ? "file" : "none";
 		result.key = (envKey ?? result.fileKey)?.trim() || undefined;
 		return result;
@@ -37,7 +38,8 @@ export function persistCustomAuth(binding: CustomAuthBinding | undefined, fileKe
 	writeCustomAuth(binding, fileKey);
 	const record = authEnvRecord();
 	if (!record.realEnv.has(CUSTOM_PROVIDER.envVar)) {
-		if (fileKey === undefined) { delete process.env[CUSTOM_PROVIDER.envVar]; record.fillGap.delete(CUSTOM_PROVIDER.envVar); }
-		else { process.env[CUSTOM_PROVIDER.envVar] = fileKey; record.fillGap.add(CUSTOM_PROVIDER.envVar); }
+		const env = getRuntimeEnv();
+		if (fileKey === undefined) { delete env[CUSTOM_PROVIDER.envVar]; record.fillGap.delete(CUSTOM_PROVIDER.envVar); }
+		else { env[CUSTOM_PROVIDER.envVar] = fileKey; record.fillGap.add(CUSTOM_PROVIDER.envVar); }
 	}
 }

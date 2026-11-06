@@ -106,9 +106,11 @@ export function piModels() {
 	return collection;
 }
 
+import { getRuntimeEnv } from "../core/auth-env.ts";
+
 /** OpenRouter API key (BYOK); tests never read this — they inject engines. */
 export function openRouterApiKey(): string | undefined {
-	return process.env.OPENROUTER_API_KEY || undefined;
+	return getRuntimeEnv().OPENROUTER_API_KEY || undefined;
 }
 
 /** A fully-resolved model pin — the shape every engine now comes from:

@@ -63,7 +63,7 @@ import { CUSTOM_AUTH_BINDING } from "../core/custom-provider-auth.ts";
 
 // Shared HMR-stable provenance lets external CLIs exclude file-only injections
 // without importing this store-backed module into the agent layer.
-import { authEnvRecord as boot } from "../core/auth-env.ts";
+import { authEnvRecord as boot, getRuntimeEnv } from "../core/auth-env.ts";
 
 /** Ordinary writable key names. Custom auth writes must use the atomic
  * endpoint-binding seam, never the generic single-key API. */
@@ -83,7 +83,7 @@ export function providerKeyList() {
  *  invisible app-wide — deleted from the process at boot, file keys only.
  *  Read live per call (the launcher exports it before boot). */
 export function envKeysIgnored(): boolean {
-	return process.env.LH_IGNORE_ENV_KEYS === "1";
+	return getRuntimeEnv().LH_IGNORE_ENV_KEYS === "1";
 }
 
 /**
@@ -94,6 +94,7 @@ export function envKeysIgnored(): boolean {
  */
 export function initAuthEnv(): void {
 	const record = boot();
+	const env = getRuntimeEnv();
 	const fileVars = Object.fromEntries(Object.entries(authStore.authVars()).filter(([name]) => name !== CUSTOM_AUTH_BINDING));
 	const managed = new Set<string>([
 		...Object.keys(fileVars),
@@ -110,18 +111,18 @@ export function initAuthEnv(): void {
 		// EMPTY (nothing counts as env); the fill-gap below then reflects
 		// auth.json keys so engines still see mid-session additions.
 		for (const name of managed) {
-			delete process.env[name];
+			delete env[name];
 		}
 	} else if (record.realEnv.size === 0 && record.fillGap.size === 0) {
 		// First init in this process: what's already in the env is REAL env.
 		for (const name of managed) {
-			if (process.env[name] !== undefined) record.realEnv.add(name);
+			if (env[name] !== undefined) record.realEnv.add(name);
 		}
 	}
 	for (const [name, value] of Object.entries(fileVars)) {
 		if (!isManagedName(name)) continue;
-		if (process.env[name] === undefined) {
-			process.env[name] = value;
+		if (env[name] === undefined) {
+			env[name] = value;
 			record.fillGap.add(name);
 		}
 	}
@@ -176,7 +177,7 @@ export function resolveKeyStatuses(
 
 /** The GET view: every curated key (present or not) + unknown file vars. */
 export function keyStatuses(): AuthKeyStatus[] {
-	return resolveKeyStatuses(authStore.authVars(), process.env, boot().realEnv, new Set([...AUTH_PROVIDER_ENV_VARS, CUSTOM_PROVIDER.envVar]));
+	return resolveKeyStatuses(authStore.authVars(), getRuntimeEnv(), boot().realEnv, new Set([...AUTH_PROVIDER_ENV_VARS, CUSTOM_PROVIDER.envVar]));
 }
 
 /** The live value for one var, env-first (the env-wins rule) — the canonical
@@ -188,8 +189,9 @@ export function keyValue(id: string): string | undefined {
 	// The fresh-user switch: ONLY the file store counts (belt-and-
 	// suspenders — the boot deletion already emptied the env; this guards
 	// any env key reintroduced after boot).
+	const env = getRuntimeEnv();
 	if (envKeysIgnored()) return authStore.authVars()[id];
-	return process.env[id] ?? authStore.authVars()[id];
+	return env[id] ?? authStore.authVars()[id];
 }
 
 /** The key-presence truth for one model provider (provider-key interlude,
@@ -223,7 +225,7 @@ export function saveKey(id: string, value: string): { ok: true; status: AuthKeyS
 	authStore.setAuthVar(id, trimmed);
 	const record = boot();
 	if (!record.realEnv.has(id)) {
-		process.env[id] = trimmed;
+		getRuntimeEnv()[id] = trimmed;
 		record.fillGap.add(id);
 	}
 	// validateKeyShape guarantees catalog membership, so the row exists.
@@ -240,7 +242,7 @@ export function deleteKey(id: string): AuthKeyStatus {
 	authStore.deleteAuthVar(id);
 	const record = boot();
 	if (record.fillGap.has(id) && !record.realEnv.has(id)) {
-		delete process.env[id];
+		delete getRuntimeEnv()[id];
 		record.fillGap.delete(id);
 	}
 	return keyStatuses().find((s) => s.id === id)!;

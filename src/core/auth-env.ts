@@ -13,8 +13,16 @@ export function authEnvRecord(): AuthBoot {
 	return g[BOOT_KEY];
 }
 
+export function getRuntimeEnv(): Record<string, string | undefined> {
+	const g = typeof globalThis !== "undefined" ? (globalThis as Record<string, unknown>) : undefined;
+	const globalProc = g?.process as { env?: Record<string, string | undefined> } | undefined;
+	if (globalProc?.env) return globalProc.env;
+	if (typeof process !== "undefined" && process?.env) return process.env;
+	return {};
+}
+
 /** External CLIs own their authentication. Never pass LearnHarness-only injections. */
-export function externalCliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function externalCliEnv(env: NodeJS.ProcessEnv = getRuntimeEnv() as NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const result = { ...env };
 	const { realEnv, fillGap } = authEnvRecord();
 	for (const name of fillGap) {
