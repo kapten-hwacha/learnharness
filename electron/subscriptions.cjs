@@ -1,7 +1,7 @@
 "use strict";
 const { randomUUID } = require("node:crypto");
 const path = require("node:path");
-const { createRequire, registerHooks } = require("node:module");
+const { createRequire } = require("node:module");
 const { pathToFileURL } = require("node:url");
 const { PROVIDERS, fileStore, validateCredential, safeHttps, failure } = require("./subscription-store.cjs");
 
@@ -21,17 +21,21 @@ const MESSAGES = {
 function publicError(error) { return MESSAGES[error?.code] ?? MESSAGES.unavailable; }
 /** Resolve the SAME SDK installation as the standalone server, through public exports. */
 async function loadSubscriptionSDK(baseDirectory) {
-	const resolve = createRequire(path.join(baseDirectory, "package.json"));
-	const load = (id) => {
-		// Pi exports are import-only. Resolve the public export with ESM
-		// conditions, then remove this synchronous, exact-specifier hook
-		// BEFORE evaluation; no private package path or global hook remains.
-		const hook = registerHooks({ resolve(specifier, context, next) {
-			return next(specifier, specifier === id ? { ...context, conditions: [...context.conditions, "import"] } : context);
-		} });
-		let file;
-		try { file = resolve.resolve(id); } finally { hook.deregister(); }
-		return import(/* @vite-ignore */ pathToFileURL(file).href);
+	const load = async (id) => {
+		try {
+			if (baseDirectory) {
+				const resolve = createRequire(path.join(baseDirectory, "package.json"));
+				try {
+					const file = resolve.resolve(id);
+					return await import(/* @vite-ignore */ pathToFileURL(file).href);
+				} catch {
+					// Fall through to dynamic import of id
+				}
+			}
+		} catch {
+			// Fall through
+		}
+		return import(/* @vite-ignore */ id);
 	};
 	const [sdk, copilot, xai] = await Promise.all([load("@earendil-works/pi-ai"), load("@earendil-works/pi-ai/providers/github-copilot"), load("@earendil-works/pi-ai/providers/xai")]);
 	return { ...sdk, ...copilot, ...xai };

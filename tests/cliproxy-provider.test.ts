@@ -85,41 +85,62 @@ describe("CLIProxyAPI first-class provider", () => {
 
 	it("streams a completion using piEngineForSpec with cliproxy provider", async () => {
 		settingsStore.writeSettings({ version: 1, cliproxy: { enabled: true } });
-		const running = await ensureCliProxyRunning();
-		if (!running.ok || !(await isPortListening())) {
-			console.warn("Skipping live stream test: CLIProxyAPI service is not listening on port 8317");
-			return;
-		}
 
-		const engine = piEngineForSpec({
-			provider: CLIPROXY_PROVIDER,
-			id: "gemini-3.8-flash",
-			thinkingLevel: "high",
-		});
-
-		const messages: Message[] = [
-			{ role: "user", content: "What is 15 + 27? Answer with only the number.", timestamp: Date.now() },
-		];
-		const context = normalizeContext({ messages });
-
-		const stream = engine.streamFn(engine.model, context, {});
-		let responseText = "";
-		let thinkingText = "";
-
-		for await (const event of stream) {
-			if (event.type === "thinking_delta") {
-				thinkingText += (event as { delta?: string }).delta ?? "";
-			} else if (event.type === "text_delta") {
-				responseText += (event as { delta?: string }).delta ?? "";
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes("/chat/completions")) {
+				const chunks = [
+					"data: " + JSON.stringify({ id: "chunk-1", choices: [{ delta: { reasoning_content: "Thinking..." }, finish_reason: null }] }) + "\n\n",
+					"data: " + JSON.stringify({ id: "chunk-2", choices: [{ delta: { content: "42" }, finish_reason: null }] }) + "\n\n",
+					"data: " + JSON.stringify({ id: "chunk-3", choices: [{ delta: {}, finish_reason: "stop" }] }) + "\n\n",
+					"data: [DONE]\n\n",
+				];
+				const encoder = new TextEncoder();
+				const stream = new ReadableStream({
+					start(controller) {
+						for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+						controller.close();
+					},
+				});
+				return new Response(stream, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
 			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const engine = piEngineForSpec({
+				provider: CLIPROXY_PROVIDER,
+				id: "gemini-3.8-flash",
+				thinkingLevel: "high",
+			});
+
+			const messages: Message[] = [
+				{ role: "user", content: "What is 15 + 27? Answer with only the number.", timestamp: Date.now() },
+			];
+			const context = normalizeContext({ messages });
+
+			const stream = engine.streamFn(engine.model, context, {});
+			let responseText = "";
+			let thinkingText = "";
+
+			for await (const event of stream) {
+				if (event.type === "thinking_delta") {
+					thinkingText += (event as { delta?: string }).delta ?? "";
+				} else if (event.type === "text_delta") {
+					responseText += (event as { delta?: string }).delta ?? "";
+				}
+			}
+
+			const result = await stream.result();
+			assert.equal(result.stopReason, "stop");
+			assert.match(responseText, /42/);
+			assert.match(thinkingText, /Thinking/);
+		} finally {
+			globalThis.fetch = originalFetch;
 		}
-
-		const result = await stream.result();
-		console.log("Stop reason:", result.stopReason);
-		console.log("Response text:", responseText);
-		console.log("Thinking text:", thinkingText);
-
-		assert.equal(result.stopReason, "stop");
-		assert.match(responseText, /42/);
 	});
 });

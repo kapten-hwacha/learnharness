@@ -9,10 +9,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { createRequire, registerHooks } from "node:module";
+import * as nodeModule from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+const { createRequire, register, registerHooks } = nodeModule;
 
 /** @param {Record<string, string | undefined>} env @param {string} home @returns {Record<string, string | undefined>} */
 export function probeEnv(env, home) {
@@ -75,18 +77,43 @@ async function importPayload(standalone) {
 	const entry = require.resolve("puppeteer-core");
 	inside(entry); // require.resolve must not silently fall back to checkout node_modules.
 	const loaded = new Set();
-	const hooks = registerHooks({
-		resolve(specifier, context, nextResolve) {
-			const result = nextResolve(specifier, context);
-			if (result.url.startsWith("file:")) {
-				inside(fileURLToPath(result.url));
-				loaded.add(result.url);
-			} else {
-				assert.ok(result.url.startsWith("node:"), `unexpected dependency URL: ${result.url}`);
+	let hooks = { deregister() {} };
+	if (typeof registerHooks === "function") {
+		hooks = registerHooks({
+			resolve(specifier, context, nextResolve) {
+				const result = nextResolve(specifier, context);
+				if (result.url.startsWith("file:")) {
+					inside(fileURLToPath(result.url));
+					loaded.add(result.url);
+				} else {
+					assert.ok(result.url.startsWith("node:"), `unexpected dependency URL: ${result.url}`);
+				}
+				return result;
+			},
+		});
+	} else if (typeof register === "function") {
+		const loaderCode = `
+			import { fileURLToPath } from "node:url";
+			import path from "node:path";
+			import fs from "node:fs";
+			let r;
+			export function initialize(data) { r = data.root; }
+			export async function resolve(spec, ctx, next) {
+				const res = await next(spec, ctx);
+				if (res.url.startsWith("file:")) {
+					const f = fileURLToPath(res.url);
+					const rel = path.relative(r, fs.realpathSync(f));
+					if (rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
+						throw new Error("dependency escaped standalone payload: " + f);
+					}
+				}
+				return res;
 			}
-			return result;
-		},
-	});
+		`;
+		register("data:text/javascript," + encodeURIComponent(loaderCode), import.meta.url, {
+			data: { root },
+		});
+	}
 	try {
 		const { default: puppeteer } = await import(pathToFileURL(entry).href);
 		assert.equal(typeof puppeteer.connect, "function");

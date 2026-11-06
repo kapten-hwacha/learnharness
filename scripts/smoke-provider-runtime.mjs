@@ -9,12 +9,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { createRequire, registerHooks, syncBuiltinESMExports } from "node:module";
+import * as nodeModule from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { MessageChannel } from "node:worker_threads";
 import { formatProbeError, probeEnv } from "./smoke-demo-runtime.mjs";
+
+const { createRequire, register, registerHooks, syncBuiltinESMExports } = nodeModule;
 
 export function verifyProviderRuntime(standalone, runtime = process.execPath) {
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), "lh-provider-runtime-"));
@@ -65,16 +68,63 @@ async function probe(standalone) {
 			`dependency escaped standalone payload: ${file}`);
 	};
 	const loaded = new Set();
-	const hooks = registerHooks({
-		resolve(specifier, context, nextResolve) {
-			const result = nextResolve(specifier, context);
-			if (result.url.startsWith("file:")) {
-				inside(fileURLToPath(result.url));
-				loaded.add(fileURLToPath(result.url));
-			} else assert.ok(result.url.startsWith("node:"), `unexpected dependency URL: ${result.url}`);
-			return result;
-		},
-	});
+	const reqHelper = createRequire(import.meta.url);
+	const Module = reqHelper("node:module");
+	const origLoad = Module._load;
+	Module._load = function (request, parent, isMain) {
+		try {
+			const filename = Module._resolveFilename(request, parent, isMain);
+			if (typeof filename === "string" && filename.startsWith("/")) {
+				inside(filename);
+				loaded.add(filename);
+			}
+		} catch (err) {
+			if (String(err?.message).includes("dependency escaped standalone payload")) throw err;
+		}
+		return origLoad.apply(this, arguments);
+	};
+	let hooks = { deregister() {} };
+	let channel;
+	if (typeof registerHooks === "function") {
+		hooks = registerHooks({
+			resolve(specifier, context, nextResolve) {
+				const result = nextResolve(specifier, context);
+				if (result.url.startsWith("file:")) {
+					inside(fileURLToPath(result.url));
+					loaded.add(fileURLToPath(result.url));
+				} else assert.ok(result.url.startsWith("node:"), `unexpected dependency URL: ${result.url}`);
+				return result;
+			},
+		});
+	} else if (typeof register === "function") {
+		channel = new MessageChannel();
+		channel.port2.on("message", (msg) => {
+			if (msg.file) loaded.add(msg.file);
+		});
+		const loaderCode = `
+			import { fileURLToPath } from "node:url";
+			import path from "node:path";
+			import fs from "node:fs";
+			let r, p;
+			export function initialize(data) { r = data.root; p = data.port; }
+			export async function resolve(spec, ctx, next) {
+				const res = await next(spec, ctx);
+				if (res.url.startsWith("file:")) {
+					const f = fileURLToPath(res.url);
+					const rel = path.relative(r, fs.realpathSync(f));
+					if (rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
+						throw new Error("dependency escaped standalone payload: " + f);
+					}
+					p.postMessage({ file: f });
+				}
+				return res;
+			}
+		`;
+		register("data:text/javascript," + encodeURIComponent(loaderCode), import.meta.url, {
+			data: { root, port: channel.port1 },
+			transferList: [channel.port1],
+		});
+	}
 	try {
 		// Pi is an explicit server external. Import its shipped public entry and
 		// factories, never the checkout's module or a direct/fake Google adapter.
@@ -141,12 +191,17 @@ async function probe(standalone) {
 		}
 		// Resolution/evaluation, not folder-exists checks. This also covers the
 		// previously missing transitive edge and permits legitimate nested deps.
+		await new Promise((r) => setTimeout(r, 20));
 		for (const name of ["@google/genai", "google-auth-library", "gcp-metadata", "json-bigint", "bignumber.js"]) {
 			assert.ok([...loaded].some((file) => file.includes(`${path.sep}node_modules${path.sep}${name.replaceAll("/", path.sep)}${path.sep}`)),
 				`Google runtime chain was not loaded: ${name}`);
 		}
 		console.log(`[smoke-provider-runtime] native Pi Google initialization passed; ${loaded.size} modules confined to ${root}; zero network attempts`);
-	} finally { hooks.deregister(); }
+	} finally {
+		hooks.deregister();
+		channel?.port2.close();
+		Module._load = origLoad;
+	}
 }
 
 async function main() {

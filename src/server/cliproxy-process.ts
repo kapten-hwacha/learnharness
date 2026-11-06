@@ -1,4 +1,4 @@
-import { execSync, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -20,21 +20,19 @@ export function getCliproxyBinary(): string | null {
 	if (process.env.CLIPROXY_PATH && isExecutable(process.env.CLIPROXY_PATH)) {
 		return process.env.CLIPROXY_PATH;
 	}
-	const homebrewPath = "/opt/homebrew/bin/cliproxyapi";
-	if (isExecutable(homebrewPath)) {
-		return homebrewPath;
-	}
-	const localPath = "/usr/local/bin/cliproxyapi";
-	if (isExecutable(localPath)) {
-		return localPath;
-	}
-	try {
-		const out = execSync("which cliproxyapi", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-		if (out && isExecutable(out)) {
-			return out;
+	const binaryName = process.platform === "win32" ? "cliproxyapi.exe" : "cliproxyapi";
+	const knownDirs = [
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		path.join(os.homedir(), ".local", "bin"),
+		path.join(os.homedir(), "bin"),
+	];
+	const pathDirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+	for (const dir of [...knownDirs, ...pathDirs]) {
+		const candidate = path.resolve(dir, binaryName);
+		if (isExecutable(candidate)) {
+			return candidate;
 		}
-	} catch {
-		// Ignore which failure
 	}
 	return null;
 }

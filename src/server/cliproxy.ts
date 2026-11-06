@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import {
 	CLIPROXY_DEFAULT_KEY,
 	CLIPROXY_DEFAULT_URL,
@@ -8,21 +8,18 @@ import { cliproxyEnabled } from "./cliproxy-config.ts";
 import { ensureCliProxyRunning, getCliproxyBinary } from "./cliproxy-process.ts";
 import { subscriptionRequestOrigin } from "./web-subscription-http.ts";
 
-function getCliproxyVersion(binary: string): string | null {
-	try {
-		const out = execSync(`"${binary}" -help`, {
+export function readCliproxyVersion(binary: string): Promise<string | null> {
+	return new Promise((resolve) => {
+		execFile(binary, ["-help"], {
 			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
 			timeout: 2000,
+			windowsHide: true,
+		}, (err, stdout, stderr) => {
+			const text = String(stdout ?? "") + String(stderr ?? "");
+			const match = /CLIProxyAPI Version:\s*([^\s,]+)/i.exec(text);
+			resolve(match && match[1] ? match[1] : null);
 		});
-		const match = /CLIProxyAPI Version:\s*([^\s,]+)/i.exec(out);
-		return match && match[1] ? match[1] : null;
-	} catch (err: unknown) {
-		const stderr = (err as { stderr?: string })?.stderr ?? "";
-		const stdout = (err as { stdout?: string })?.stdout ?? "";
-		const match = /CLIProxyAPI Version:\s*([^\s,]+)/i.exec(stdout + stderr);
-		return match && match[1] ? match[1] : null;
-	}
+	});
 }
 
 export async function cliproxyInstallationStatus(): Promise<CliProxyStatus> {
@@ -35,7 +32,7 @@ export async function cliproxyInstallationStatus(): Promise<CliProxyStatus> {
 		return { state: "not-found", version: null, models: [] };
 	}
 
-	const version = getCliproxyVersion(binary);
+	const version = await readCliproxyVersion(binary);
 
 	const running = await ensureCliProxyRunning();
 	if (!running.ok) {

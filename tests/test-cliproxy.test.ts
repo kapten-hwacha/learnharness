@@ -16,15 +16,57 @@ import { normalizeContext, type Message } from "@earendil-works/pi-ai";
 describe("CLIProxyAPI integration", () => {
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "lh-cliproxy-test-"));
 	const originalEnv = { ...process.env };
+	const originalFetch = globalThis.fetch;
 
 	before(() => {
 		process.env.LH_DATA_DIR = scratch;
 		process.env.LH_AUTH_FILE = path.join(scratch, "auth.json");
 		fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
 		installCustomProviderSource();
+
+		globalThis.fetch = async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes("/models")) {
+				return new Response(JSON.stringify({
+					object: "list",
+					data: [
+						{ id: "gemini-3.8-flash", object: "model" },
+						{ id: "gemini-4-argon", object: "model" },
+					],
+				}), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			if (url.includes("/chat/completions")) {
+				const chunks = [
+					"data: " + JSON.stringify({ id: "chunk-1", choices: [{ delta: { reasoning_content: "Calculating 17 * 4..." }, finish_reason: null }] }) + "\n\n",
+					"data: " + JSON.stringify({ id: "chunk-2", choices: [{ delta: { content: "68" }, finish_reason: null }] }) + "\n\n",
+					"data: " + JSON.stringify({
+						id: "chunk-3",
+						choices: [{ delta: {}, finish_reason: "stop" }],
+						usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, completion_tokens_details: { reasoning_tokens: 3 } },
+					}) + "\n\n",
+					"data: [DONE]\n\n",
+				];
+				const encoder = new TextEncoder();
+				const stream = new ReadableStream({
+					start(controller) {
+						for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+						controller.close();
+					},
+				});
+				return new Response(stream, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}
+			return originalFetch(input, init);
+		};
 	});
 
 	after(() => {
+		globalThis.fetch = originalFetch;
 		piModels().deleteProvider(CUSTOM_PROVIDER.id);
 		fs.rmSync(scratch, { recursive: true, force: true });
 		for (const key of Object.keys(process.env)) {
