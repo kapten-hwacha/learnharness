@@ -182,17 +182,17 @@ async function connectBrowserService(): Promise<import("puppeteer-core").Browser
 			path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", ".."),
 			"--browser-service",
 		];
-		const proc = spawn(binary, appArgs, {
+		const childProc = spawn(binary, appArgs, {
 			// Cast: the sanitizer is pure over a loose record; NODE_ENV is
 			// always present in a real process.env.
 			env: browserServiceSpawnEnv(proc.env) as NodeJS.ProcessEnv,
 			stdio: ["ignore", "pipe", "pipe", "ipc"] as const,
 		});
-		browserServiceProc = proc;
+		browserServiceProc = childProc;
 		port = await new Promise<number | null>((resolve) => {
 			let buf = "";
 			const timer = setTimeout(() => {
-				proc.kill();
+				childProc.kill();
 				resolve(null);
 			}, BROWSER_SERVICE_TIMEOUT_MS);
 			const onData = (chunk: Buffer) => {
@@ -203,8 +203,8 @@ async function connectBrowserService(): Promise<import("puppeteer-core").Browser
 					resolve(parseBrowserServiceLine(line));
 				}
 			};
-			proc.stdout!.on("data", onData);
-			proc.once("exit", () => {
+			childProc.stdout!.on("data", onData);
+			childProc.once("exit", () => {
 				clearTimeout(timer);
 				resolve(null);
 			});
@@ -213,7 +213,7 @@ async function connectBrowserService(): Promise<import("puppeteer-core").Browser
 			browserServiceProc = null;
 			return null;
 		}
-		(proc as { __cdpPort?: number }).__cdpPort = port;
+		(childProc as { __cdpPort?: number }).__cdpPort = port;
 	}
 
 	try {
