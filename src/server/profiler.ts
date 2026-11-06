@@ -78,9 +78,6 @@ function readAllChats(): ChatRecord[] {
 }
 
 export function readReviewLedger(): ReviewCard[] {
-	if (typeof (reviewModule as unknown as { readReviewLedger?: () => ReviewCard[] }).readReviewLedger === "function") {
-		return (reviewModule as unknown as { readReviewLedger: () => ReviewCard[] }).readReviewLedger();
-	}
 	try {
 		if (typeof reviewModule.readPracticeHistory === "function") {
 			const history = reviewModule.readPracticeHistory();

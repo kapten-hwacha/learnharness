@@ -152,7 +152,7 @@ export function browserServiceBinary(): string | null {
 	if (proc.versions?.electron) return proc.execPath;
 	try {
 		const req = createRequire(import.meta.url);
-		const p = req("electron") as unknown as string;
+		const p = req(/*turbopackIgnore: true*/ "electron") as unknown as string;
 		return typeof p === "string" && p.length > 0 ? p : null;
 	} catch {
 		return null;
