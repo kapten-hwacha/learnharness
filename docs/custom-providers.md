@@ -143,6 +143,7 @@ for how context measurements and unpriced usage are displayed.
   [HTTP mutations/revisions](../src/server/custom-provider-http.ts), and
   [canonical URLs and budgets](../src/core/settings.ts).
 - [Private authorization resolution](../src/server/custom-provider-auth.ts),
+  [runtime environment routing (`getRuntimeEnv()`)](../src/core/auth-env.ts) ensuring reflected credentials directly mutate `globalThis.process.env` in bundled Vite/Worker environments without bundler variable isolation,
   [durable binding contract](../src/core/custom-provider-auth.ts),
   [request-boundary tests](../tests/custom-provider-boundaries.test.ts), and
   [crash/restart tests](../tests/custom-provider-restart.test.ts).
