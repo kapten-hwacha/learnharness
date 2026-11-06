@@ -12,12 +12,15 @@ export function useChatAbortDialog(options: UseChatAbortDialogOptions) {
 	const abortAskRef = useRef<AbortMode | null>(null);
 	abortAskRef.current = abortAsk;
 
+	const onConfirmAbortRef = useRef(options.onConfirmAbort);
+	onConfirmAbortRef.current = options.onConfirmAbort;
+
 	const confirmAbort = useCallback(
 		(mode: AbortMode) => {
 			setAbortAsk(null);
-			options.onConfirmAbort(mode);
+			onConfirmAbortRef.current(mode);
 		},
-		[options],
+		[],
 	);
 
 	const cancelAbort = useCallback(() => {

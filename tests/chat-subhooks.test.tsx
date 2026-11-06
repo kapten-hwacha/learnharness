@@ -68,8 +68,31 @@ describe("chat sub-hooks", () => {
 		});
 		assert.equal(getApi().titleDraft, "Brand New Title");
 
+		// Commit rename with fetch mock
+		const originalFetch = globalThis.fetch;
+		let fetchCalled = false;
+		globalThis.fetch = (async (url: string, init?: RequestInit) => {
+			if (url === "/api/chats/chat-123" && init?.method === "PUT") {
+				fetchCalled = true;
+				return { ok: true, json: async () => ({}) } as Response;
+			}
+			return { ok: false } as Response;
+		}) as unknown as typeof fetch;
+
+		try {
+			await act(async () => {
+				await getApi().commitRename("Brand New Title");
+			});
+			assert.equal(fetchCalled, true);
+			assert.equal(committedTitle, "Brand New Title");
+			assert.equal(getApi().titleText, "Brand New Title");
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+
 		// Cancel rename
 		await act(async () => {
+			getApi().startRename();
 			getApi().cancelRename();
 		});
 		assert.equal(getApi().renaming, false);
