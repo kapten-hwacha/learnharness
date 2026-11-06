@@ -342,15 +342,16 @@ function writeSourceMap(map: Record<string, NotesSource>): void {
 	fs.writeFileSync(SOURCES_FILE, JSON.stringify(map, null, "\t"), "utf-8");
 }
 
-// ─── one-way purges at adapter load: dead ledgers are exactly the confusion
+// ─── one-way purges: dead ledgers are exactly the confusion
 // the cleanup removes (owner doctrine — nothing reads them, nothing writes
-// them, a stale file lying around is a lie). ────────────────────────────────
-{
+// them, a stale file lying around is a lie). Encapsulated in a function
+// to avoid dynamic filesystem access during Turbopack module evaluation. ──
+export function purgeLegacyLedgers(): void {
 	const graphDir = path.dirname(LEDGER_FILES.nodes);
 	for (const legacy of ["edges.jsonl", "events.jsonl"]) {
-		const file = path.join(graphDir, legacy);
+		const file = path.join(/*turbopackIgnore: true*/ graphDir, legacy);
 		try {
-			if (fs.existsSync(file)) {
+			if (fs.existsSync(/*turbopackIgnore: true*/ file)) {
 				fs.rmSync(file);
 				console.info(`[graph-store] purged legacy ledger: ${file}`);
 			}

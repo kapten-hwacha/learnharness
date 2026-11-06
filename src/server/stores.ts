@@ -7,7 +7,7 @@
  */
 
 import { chatStore } from "../store/chats.ts";
-import { graphStore } from "../store/graph.ts";
+import { graphStore, purgeLegacyLedgers } from "../store/graph.ts";
 import { sourceOrganizationStore } from "../store/source-organization.ts";
 import { jobStore } from "../store/jobs.ts";
 import { settingsStore } from "../store/settings.ts";
@@ -41,3 +41,4 @@ export function effectiveSettings(): EffectiveSettings {
 // Boot: register the custom endpoint (when configured) into piModels(); the
 // POST /api/custom-provider route re-syncs after every connect.
 syncCustomProvider();
+purgeLegacyLedgers();

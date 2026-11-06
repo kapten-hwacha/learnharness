@@ -18,6 +18,7 @@
 
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { after, describe, it } from "node:test";
 import type { AuditVerdicts, GraphChain, GraphNode, SessionFindings } from "../src/core/contracts.ts";
 import type { QuestionAnswerData } from "../src/core/question-core.ts";
@@ -1144,5 +1145,27 @@ describe("deriveView (the argument's geometry)", () => {
 			chains: [chain("arg_ab", ["a", "b"], "c"), chain("arg_ac", ["a"], "c")],
 		});
 		assert.deepEqual(view.impLinks, [{ id: "arg_ab", premises: ["a", "b"], conclusion: "c" }]);
+	});
+});
+
+describe("purgeLegacyLedgers", () => {
+	it("deletes legacy edges.jsonl and events.jsonl files when called", async () => {
+		const { purgeLegacyLedgers } = await import("../src/store/graph.ts");
+		const graphDir = path.dirname(LEDGER_FILES.nodes);
+		fs.mkdirSync(graphDir, { recursive: true });
+		const legacy1 = path.join(graphDir, "edges.jsonl");
+		const legacy2 = path.join(graphDir, "events.jsonl");
+		fs.writeFileSync(legacy1, "{}\n");
+		fs.writeFileSync(legacy2, "{}\n");
+		assert.ok(fs.existsSync(legacy1));
+		assert.ok(fs.existsSync(legacy2));
+
+		purgeLegacyLedgers();
+
+		assert.ok(!fs.existsSync(legacy1), "edges.jsonl should be purged");
+		assert.ok(!fs.existsSync(legacy2), "events.jsonl should be purged");
+
+		// Subsequent call does not throw on absent files
+		assert.doesNotThrow(() => purgeLegacyLedgers());
 	});
 });
