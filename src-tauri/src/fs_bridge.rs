@@ -48,6 +48,8 @@ pub struct HydratedFsSnapshot {
     pub root: String,
     pub data_dir: String,
     pub auth_file: String,
+    #[serde(rename = "homeDir")]
+    pub home_dir: String,
     pub files: HashMap<String, String>,
     pub dirs: Vec<String>,
 }
@@ -388,13 +390,293 @@ pub async fn lh_fs_hydrate(app: tauri::AppHandle) -> Result<HydratedFsSnapshot, 
         }
     }
 
+    let home_dir = dirs_home()
+        .map(|p| to_posix(&p))
+        .unwrap_or_else(|| "/home".to_string());
+
     Ok(HydratedFsSnapshot {
         root,
         data_dir: data_dir.to_string_lossy().to_string(),
         auth_file: auth_file.to_string_lossy().to_string(),
+        home_dir,
         files,
         dirs,
     })
+}
+
+pub fn dirs_home() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+pub fn to_posix(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+pub const SENSITIVE_HOME_PATHS: &[&str] = &[
+    ".claude",
+    ".codex",
+    ".cursor",
+    ".gemini",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".kube",
+    ".docker",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    ".config/gh",
+    ".config/hub",
+    ".config/glab-cli",
+    ".config/op",
+    ".config/stripe",
+    ".config/vercel",
+    ".config/supabase",
+    ".config/firebase",
+    ".config/heroku",
+    ".pgpass",
+    ".my.cnf",
+    ".zsh_history",
+    ".bash_history",
+    ".python_history",
+    ".node_repl_history",
+    "Library/Keychains",
+    "Library/Cookies",
+    "Library/Safari",
+    "Library/Messages",
+    "Library/Mail",
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/BraveSoftware",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Firefox",
+    ".mozilla",
+    ".config/google-chrome",
+    ".config/chromium",
+    ".config/BraveSoftware",
+    ".config/microsoft-edge",
+    "AppData/Local/Google/Chrome",
+    "AppData/Local/BraveSoftware",
+    "AppData/Local/Microsoft/Edge",
+    "AppData/Roaming/Mozilla",
+];
+
+fn is_env_file_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == ".env" || lower.starts_with(".env.")
+}
+
+fn is_credential_or_temp_file(file_path: &Path, auth_file: &Path, canonical_auth: &Path) -> bool {
+    if file_path == auth_file || file_path == canonical_auth {
+        return true;
+    }
+
+    let auth_parent = auth_file.parent();
+    let canonical_auth_parent = canonical_auth.parent();
+
+    let parent_matches = file_path
+        .parent()
+        .is_some_and(|p| auth_parent == Some(p) || canonical_auth_parent == Some(p));
+
+    if parent_matches {
+        if let Some(file_name) = file_path.file_name().and_then(|n| n.to_str()) {
+            let lower = file_name.to_ascii_lowercase();
+            if lower == "auth.json"
+                || lower == "chatgpt-credentials.json"
+                || lower == "github-copilot-credentials.json"
+                || lower == "xai-credentials.json"
+            {
+                return true;
+            }
+            if lower.contains(".tmp")
+                && (lower.contains("auth.json")
+                    || lower.contains("-credentials.json")
+                    || lower.starts_with(".auth")
+                    || lower.starts_with("auth")
+                    || lower.ends_with(".tmp"))
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn is_sensitive_home_subpath(path: &Path, home: &Path) -> bool {
+    let p_posix = to_posix(path).to_ascii_lowercase();
+    let h_posix = to_posix(home).to_ascii_lowercase();
+    let h_trimmed = h_posix.trim_end_matches('/');
+
+    let rel = if p_posix == h_trimmed {
+        ""
+    } else if p_posix.starts_with(&(h_trimmed.to_string() + "/")) {
+        &p_posix[h_trimmed.len() + 1..]
+    } else {
+        return false;
+    };
+
+    if rel.is_empty() {
+        return false;
+    }
+
+    for &sens in SENSITIVE_HOME_PATHS {
+        let s_lower = sens.to_ascii_lowercase();
+        if rel == s_lower || rel.starts_with(&(s_lower.clone() + "/")) {
+            return true;
+        }
+    }
+
+    false
+}
+
+pub fn validate_external_read_path(
+    raw: &str,
+    data_dir: &Path,
+    auth_file: &Path,
+    home_dir: Option<&Path>,
+) -> Result<PathBuf, String> {
+    if raw.is_empty() || raw.contains('\0') {
+        return Err("Invalid path".to_string());
+    }
+
+    let raw_path = Path::new(raw);
+    if !raw_path.is_absolute() {
+        return Err(format!("Path must be absolute: {raw}"));
+    }
+
+    let canonical = fs::canonicalize(raw).map_err(|e| format!("Failed to resolve {raw}: {e}"))?;
+
+    if !canonical.is_file() {
+        return Err(format!("Path is not a file: {raw}"));
+    }
+
+    if let Some(name) = raw_path.file_name().and_then(|n| n.to_str()) {
+        if is_env_file_name(name) {
+            return Err("Access denied: protected location".to_string());
+        }
+    }
+    if let Some(name) = canonical.file_name().and_then(|n| n.to_str()) {
+        if is_env_file_name(name) {
+            return Err("Access denied: protected location".to_string());
+        }
+    }
+
+    let canonical_auth = fs::canonicalize(auth_file).unwrap_or_else(|_| auth_file.to_path_buf());
+    if is_credential_or_temp_file(raw_path, auth_file, &canonical_auth)
+        || is_credential_or_temp_file(&canonical, auth_file, &canonical_auth)
+    {
+        return Err("Access denied: protected location".to_string());
+    }
+
+    if let Some(home) = home_dir {
+        let canonical_home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+        if is_sensitive_home_subpath(raw_path, home)
+            || is_sensitive_home_subpath(raw_path, &canonical_home)
+            || is_sensitive_home_subpath(&canonical, &canonical_home)
+            || is_sensitive_home_subpath(&canonical, home)
+        {
+            return Err("Access denied: protected location".to_string());
+        }
+    }
+
+    let settings_path = data_dir.join("settings.json");
+    if settings_path.exists() {
+        if let Ok(content) = fs::read_to_string(&settings_path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                let is_restricted = val
+                    .get("agent")
+                    .and_then(|a| a.get("restrictFileAccess"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    || val
+                        .get("agent")
+                        .and_then(|a| a.get("fileAccess"))
+                        .and_then(|f| f.get("restricted"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                if is_restricted {
+                    let folders_val = val
+                        .get("agent")
+                        .and_then(|a| a.get("allowedFolders"))
+                        .or_else(|| {
+                            val.get("agent")
+                                .and_then(|a| a.get("fileAccess"))
+                                .and_then(|f| f.get("folders"))
+                        });
+
+                    let allowed_folders = folders_val
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let mut is_inside_allowed = false;
+                    for folder_val in allowed_folders {
+                        if let Some(folder_str) = folder_val.as_str() {
+                            let folder_path = if folder_str == "~" {
+                                home_dir.map(|h| h.to_path_buf())
+                            } else if folder_str.starts_with("~/") || folder_str.starts_with("~\\")
+                            {
+                                home_dir.map(|h| h.join(&folder_str[2..]))
+                            } else {
+                                Some(PathBuf::from(folder_str))
+                            };
+
+                            if let Some(fp) = folder_path {
+                                if let Ok(canon_folder) = fs::canonicalize(&fp) {
+                                    let mut folder_is_sensitive = false;
+                                    if let Some(home) = home_dir {
+                                        let canonical_home = fs::canonicalize(home)
+                                            .unwrap_or_else(|_| home.to_path_buf());
+                                        if is_sensitive_home_subpath(&canon_folder, home)
+                                            || is_sensitive_home_subpath(
+                                                &canon_folder,
+                                                &canonical_home,
+                                            )
+                                            || is_sensitive_home_subpath(&fp, home)
+                                            || is_sensitive_home_subpath(&fp, &canonical_home)
+                                        {
+                                            folder_is_sensitive = true;
+                                        }
+                                    }
+                                    if is_credential_or_temp_file(
+                                        &canon_folder,
+                                        auth_file,
+                                        &canonical_auth,
+                                    ) || is_credential_or_temp_file(
+                                        &fp,
+                                        auth_file,
+                                        &canonical_auth,
+                                    ) {
+                                        folder_is_sensitive = true;
+                                    }
+
+                                    if !folder_is_sensitive && canonical.starts_with(&canon_folder)
+                                    {
+                                        is_inside_allowed = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !is_inside_allowed {
+                        return Err("Access denied: outside allowed folders".into());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(canonical)
 }
 
 #[tauri::command]
@@ -404,9 +686,11 @@ pub async fn lh_fs_sync(app: tauri::AppHandle, op: FsMutationOp) -> Result<(), S
 }
 
 #[tauri::command]
-pub async fn lh_fs_read_external(path: String) -> Result<Vec<u8>, String> {
-    let p = Path::new(&path);
-    fs::read(p).map_err(|e| format!("Failed to read {path}: {e}"))
+pub async fn lh_fs_read_external(app: tauri::AppHandle, path: String) -> Result<Vec<u8>, String> {
+    let (data_dir, auth_file, _) = resolve_app_dirs(&app);
+    let home = dirs_home();
+    let safe_path = validate_external_read_path(&path, &data_dir, &auth_file, home.as_deref())?;
+    fs::read(&safe_path).map_err(|e| format!("Failed to read {path}: {e}"))
 }
 
 #[cfg(test)]
@@ -660,5 +944,157 @@ mod tests {
         assert!(user_data_dir.exists());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn validate_rejects_ssh_and_env() {
+        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
+        let home = user_data_dir.join("fake_home");
+        let ssh_dir = home.join(".ssh");
+        fs::create_dir_all(&ssh_dir).unwrap();
+        let id_rsa = ssh_dir.join("id_rsa");
+        fs::write(&id_rsa, "private key").unwrap();
+
+        let res = validate_external_read_path(
+            id_rsa.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            Some(&home),
+        );
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .contains("Access denied: protected location"));
+
+        let env_file = home.join(".env");
+        fs::write(&env_file, "SECRET=1").unwrap();
+        let res_env = validate_external_read_path(
+            env_file.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            Some(&home),
+        );
+        assert!(res_env.is_err());
+        assert!(res_env
+            .unwrap_err()
+            .contains("Access denied: protected location"));
+
+        let env_local = home.join(".env.local");
+        fs::write(&env_local, "SECRET=2").unwrap();
+        let res_local = validate_external_read_path(
+            env_local.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            Some(&home),
+        );
+        assert!(res_local.is_err());
+        assert!(res_local
+            .unwrap_err()
+            .contains("Access denied: protected location"));
+    }
+
+    #[test]
+    fn validate_rejects_auth_and_sibling_credentials() {
+        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
+        fs::write(&auth_file, "{}").unwrap();
+        let res_auth =
+            validate_external_read_path(auth_file.to_str().unwrap(), &data_dir, &auth_file, None);
+        assert!(res_auth.is_err());
+        assert!(res_auth
+            .unwrap_err()
+            .contains("Access denied: protected location"));
+
+        let chatgpt = user_data_dir.join("chatgpt-credentials.json");
+        fs::write(&chatgpt, "{}").unwrap();
+        let res_chatgpt =
+            validate_external_read_path(chatgpt.to_str().unwrap(), &data_dir, &auth_file, None);
+        assert!(res_chatgpt.is_err());
+        assert!(res_chatgpt
+            .unwrap_err()
+            .contains("Access denied: protected location"));
+
+        let temp_cred = user_data_dir.join("auth.json.tmp-1234");
+        fs::write(&temp_cred, "{}").unwrap();
+        let res_temp =
+            validate_external_read_path(temp_cred.to_str().unwrap(), &data_dir, &auth_file, None);
+        assert!(res_temp.is_err());
+        assert!(res_temp
+            .unwrap_err()
+            .contains("Access denied: protected location"));
+    }
+
+    #[test]
+    fn validate_rejects_symlink_escaping_into_ssh() {
+        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
+        let home = user_data_dir.join("fake_home");
+        let ssh_dir = home.join(".ssh");
+        fs::create_dir_all(&ssh_dir).unwrap();
+        let id_rsa = ssh_dir.join("id_rsa");
+        fs::write(&id_rsa, "private key").unwrap();
+
+        let docs_dir = home.join("documents");
+        fs::create_dir_all(&docs_dir).unwrap();
+        let symlink_file = docs_dir.join("my_key.txt");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&id_rsa, &symlink_file).unwrap();
+            let res = validate_external_read_path(
+                symlink_file.to_str().unwrap(),
+                &data_dir,
+                &auth_file,
+                Some(&home),
+            );
+            assert!(res.is_err());
+            assert!(res
+                .unwrap_err()
+                .contains("Access denied: protected location"));
+        }
+    }
+
+    #[test]
+    fn validate_enforces_restricted_file_access_in_settings() {
+        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
+        let home = user_data_dir.join("fake_home");
+        let allowed = home.join("allowed_dir");
+        let forbidden = home.join("forbidden_dir");
+        fs::create_dir_all(&allowed).unwrap();
+        fs::create_dir_all(&forbidden).unwrap();
+
+        let allowed_file = allowed.join("file.txt");
+        let forbidden_file = forbidden.join("file.txt");
+        fs::write(&allowed_file, "hello").unwrap();
+        fs::write(&forbidden_file, "secret").unwrap();
+
+        let settings = serde_json::json!({
+            "agent": {
+                "restrictFileAccess": true,
+                "allowedFolders": [allowed.to_str().unwrap()]
+            }
+        });
+        fs::write(data_dir.join("settings.json"), settings.to_string()).unwrap();
+
+        let res_forbidden = validate_external_read_path(
+            forbidden_file.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            Some(&home),
+        );
+        assert!(res_forbidden.is_err());
+        assert_eq!(
+            res_forbidden.unwrap_err(),
+            "Access denied: outside allowed folders"
+        );
+
+        let res_allowed = validate_external_read_path(
+            allowed_file.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            Some(&home),
+        );
+        assert!(res_allowed.is_ok());
+        assert_eq!(
+            res_allowed.unwrap(),
+            fs::canonicalize(&allowed_file).unwrap()
+        );
     }
 }

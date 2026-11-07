@@ -1,6 +1,7 @@
 import { getHostBridge, type FsMutationOp, type HydratedFsSnapshot } from "../host-bridge.ts";
 import { ShimBuffer, toBuffer } from "./crypto.ts";
 import { dirname, normalize } from "./path.ts";
+import { setWorkerHomeDir } from "./node-stubs.ts";
 
 export interface MemfsOptions {
 	encoding?: BufferEncoding | string | null;
@@ -88,12 +89,19 @@ export async function flushFsQueue(): Promise<void> {
 	await syncChain;
 }
 
-export function hydrateMemfs(snapshot: HydratedFsSnapshot): void {
+export function hydrateMemfs(snapshot: HydratedFsSnapshot & { homeDir?: string }): void {
 	files.clear();
 	dirs.clear();
 	fileModes.clear();
 	fileMtimes.clear();
 	dirs.add("/");
+
+	if (typeof snapshot.homeDir === "string" && snapshot.homeDir.startsWith("/")) {
+		setWorkerHomeDir(snapshot.homeDir);
+		const normHome = normalizeFsPath(snapshot.homeDir);
+		dirs.add(normHome);
+		ensureParentDirs(normHome);
+	}
 
 	for (const d of snapshot.dirs) {
 		const normDir = normalizeFsPath(d);
@@ -595,6 +603,8 @@ export function realpathSync(path: PathLike): string {
 	}
 	return norm;
 }
+
+(realpathSync as typeof realpathSync & { native: typeof realpathSync }).native = realpathSync;
 
 export function accessSync(path: PathLike, _mode?: number): void {
 	const norm = normalizeFsPath(path);

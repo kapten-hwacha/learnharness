@@ -22,7 +22,9 @@ import {
 	buildMinimalPdfBytes,
 	getQuadernoStatus,
 	executeQuadernoAction,
+	isSafePdfUnderSyncRoot,
 } from "../src/server/quaderno.ts";
+import { sameOriginAuthorized } from "../src/server/desktop-access.ts";
 
 describe("Quaderno Core Helpers", () => {
 	it("parseQuadernoDotEnv parses host, port, apiKey, syncDir, and folder", () => {
@@ -671,5 +673,157 @@ describe("Quaderno Server Implementation", () => {
 		} finally {
 			await fs.rm(tmpDir, { recursive: true, force: true });
 		}
+	});
+
+	it("rejects symlink inside syncDir pointing outside syncDir in isSafePdfUnderSyncRoot and pullPdf", async () => {
+		const syncDir = await fs.mkdtemp(path.join(os.tmpdir(), "lh-quaderno-sync-"));
+		const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "lh-quaderno-outside-"));
+		try {
+			const outsidePdf = path.join(outsideDir, "secret.pdf");
+			await fs.writeFile(outsidePdf, "%PDF-1.4\nSecret Content\n%%EOF");
+
+			// Create symlink inside syncDir pointing to outsidePdf
+			const symlinkPath = path.join(syncDir, "symlink-outside.pdf");
+			await fs.symlink(outsidePdf, symlinkPath);
+
+			// isSafePdfUnderSyncRoot directly returns false
+			assert.equal(isSafePdfUnderSyncRoot(symlinkPath, syncDir), false);
+
+			// pullPdf with filePath pointing to the symlink is rejected
+			const result = await executeQuadernoAction(
+				{
+					action: "pullPdf",
+					filePath: symlinkPath,
+				},
+				{
+					config: {
+						baseUrl: "http://127.0.0.1:5000",
+						apiKey: null,
+						syncDir,
+						folder: "learn-harness",
+					},
+					fetchImpl: async () => new Response(null, { status: 500 }),
+				},
+			);
+
+			assert.equal(result.ok, false);
+			assert.match(result.message, /Invalid filePath/);
+		} finally {
+			await fs.rm(syncDir, { recursive: true, force: true });
+			await fs.rm(outsideDir, { recursive: true, force: true });
+		}
+	});
+
+	it("resolveQuadernoConfig sanitizes root or home syncDir and metadata/invalid baseUrls", async () => {
+		const home = "/Users/testuser";
+
+		// Root fallback
+		const configRoot = await resolveQuadernoConfig({
+			homeDir: home,
+			env: { QUADERNO_SYNC_DIR: "/" } as unknown as NodeJS.ProcessEnv,
+		});
+		assert.equal(configRoot.syncDir, path.join(home, "Quaderno"));
+
+		// Home dir fallback
+		const configHome = await resolveQuadernoConfig({
+			homeDir: home,
+			env: { QUADERNO_SYNC_DIR: "~" } as unknown as NodeJS.ProcessEnv,
+		});
+		assert.equal(configHome.syncDir, path.join(home, "Quaderno"));
+
+		// 169.254.169.254 SSRF block
+		const configMetadataIp = await resolveQuadernoConfig({
+			homeDir: home,
+			env: { QUADERNO_BASE_URL: "http://169.254.169.254:5000" } as unknown as NodeJS.ProcessEnv,
+		});
+		assert.equal(configMetadataIp.baseUrl, "http://127.0.0.1:5000");
+
+		// metadata.google.internal SSRF block
+		const configMetadataHost = await resolveQuadernoConfig({
+			homeDir: home,
+			env: { QUADERNO_BASE_URL: "http://metadata.google.internal:5000" } as unknown as NodeJS.ProcessEnv,
+		});
+		assert.equal(configMetadataHost.baseUrl, "http://127.0.0.1:5000");
+
+		// non-http protocol block
+		const configFtp = await resolveQuadernoConfig({
+			homeDir: home,
+			env: { QUADERNO_BASE_URL: "ftp://127.0.0.1:5000" } as unknown as NodeJS.ProcessEnv,
+		});
+		assert.equal(configFtp.baseUrl, "http://127.0.0.1:5000");
+	});
+});
+
+describe("sameOriginAuthorized Unified CSRF Guard", () => {
+	it("rejects cross-site, evil origins, and origin: null, but allows same-origin and requests without origin", () => {
+		// Rejects evil origin
+		assert.equal(
+			sameOriginAuthorized(new Headers({ origin: "https://evil.example", host: "localhost:3000" })),
+			false,
+		);
+		assert.equal(
+			sameOriginAuthorized(new Headers({ origin: "https://evil.example" }), "http://localhost:3000/api/endpoint"),
+			false,
+		);
+
+		// Rejects Sec-Fetch-Site: cross-site and same-site
+		assert.equal(
+			sameOriginAuthorized(new Headers({ "sec-fetch-site": "cross-site" })),
+			false,
+		);
+		assert.equal(
+			sameOriginAuthorized(new Headers({ "sec-fetch-site": "same-site" })),
+			false,
+		);
+
+		// Rejects sandboxed iframe Origin: null
+		assert.equal(
+			sameOriginAuthorized(new Headers({ origin: "null", host: "localhost:3000" })),
+			false,
+		);
+
+		// Rejects mismatched host
+		assert.equal(
+			sameOriginAuthorized(new Headers({ origin: "http://attacker.com", host: "localhost:3000" })),
+			false,
+		);
+
+		// Allows matching same-origin with Host header
+		assert.equal(
+			sameOriginAuthorized(new Headers({ origin: "http://localhost:3000", host: "localhost:3000" })),
+			true,
+		);
+
+		// Allows matching same-origin with x-forwarded-host
+		assert.equal(
+			sameOriginAuthorized(new Headers({ origin: "http://learnharness.test", "x-forwarded-host": "learnharness.test" })),
+			true,
+		);
+
+		// Allows matching same-origin with request URL
+		assert.equal(
+			sameOriginAuthorized(new Headers({ origin: "http://localhost:3000" }), "http://localhost:3000/api/test"),
+			true,
+		);
+
+		// Allows requests without Origin or Sec-Fetch-Site (e.g. non-browser API clients, unit tests)
+		assert.equal(
+			sameOriginAuthorized(new Headers({})),
+			true,
+		);
+		assert.equal(
+			sameOriginAuthorized(new Headers({ "content-type": "application/json" })),
+			true,
+		);
+
+		// Allows Sec-Fetch-Site: same-origin and none
+		assert.equal(
+			sameOriginAuthorized(new Headers({ "sec-fetch-site": "same-origin" })),
+			true,
+		);
+		assert.equal(
+			sameOriginAuthorized(new Headers({ "sec-fetch-site": "none" })),
+			true,
+		);
 	});
 });

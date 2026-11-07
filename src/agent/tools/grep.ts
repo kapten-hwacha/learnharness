@@ -30,6 +30,21 @@ import { resolvePolicy } from "./file-access.ts";
 
 const DEFAULT_LIMIT = 100;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
+export const MAX_PATTERN_LENGTH = 1_000;
+export const MAX_REGEX_LINE_SCAN_CHARS = 8_192;
+
+const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*?]|\{\d+)/;
+
+export function validateGrepPattern(pattern: string, literal?: boolean): void {
+	if (pattern.length > MAX_PATTERN_LENGTH) {
+		throw new Error(`Invalid regex pattern: pattern exceeds maximum length of ${MAX_PATTERN_LENGTH} characters`);
+	}
+	if (!literal) {
+		if (NESTED_QUANTIFIER.test(pattern)) {
+			throw new Error("Invalid regex pattern: nested quantifiers are not allowed");
+		}
+	}
+}
 
 const grepInput = Type.Object({
 	pattern: Type.String({ minLength: 1, description: "Search pattern (regex or literal string)" }),
@@ -54,6 +69,7 @@ export const grepTool: AgentTool<typeof grepInput> = {
 	parameters: grepInput,
 	execute: serverExecute("grep", grepInput, async (input, ctx) => {
 		if (ctx?.signal?.aborted) return "Operation aborted";
+		validateGrepPattern(input.pattern, input.literal);
 		const policy = resolvePolicy();
 		const { roots, notices, multiRoot } = sourceSearchRoots(input.path, policy);
 
@@ -132,7 +148,9 @@ export const grepTool: AgentTool<typeof grepInput> = {
 				: path.basename(filePath);
 
 			for (let i = 0; i < lines.length; i++) {
-				if (regex.test(lines[i]!)) {
+				const line = lines[i]!;
+				const scanLine = line.length > MAX_REGEX_LINE_SCAN_CHARS ? line.slice(0, MAX_REGEX_LINE_SCAN_CHARS) : line;
+				if (regex.test(scanLine)) {
 					if (matchCount >= effectiveLimit) {
 						limitReached = true;
 						break;

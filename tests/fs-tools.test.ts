@@ -232,6 +232,11 @@ describe("sensitive locations under home are off-limits", () => {
 		assert.equal(isSensitivePath(path.join(home, ".config", "nvim", "init.lua"), home), false);
 		assert.equal(isSensitivePath(path.join(home, "notes", "environment.md"), home), false);
 		assert.equal(isSensitivePath(path.join(os.tmpdir(), ".ssh", "id_rsa"), home), false);
+		assert.equal(isSensitivePath(path.join(home, ".config", "gh", "hosts.yml"), home), true);
+		assert.equal(isSensitivePath(path.join(home, ".zsh_history"), home), true);
+		assert.equal(isSensitivePath(path.join(home, ".pgpass"), home), true);
+		assert.equal(isSensitivePath(path.join(home, "Library", "Messages", "chat.db"), home), true);
+		assert.equal(isSensitivePath(path.join(home, "Library", "Mail", "V10"), home), true);
 	});
 
 	it("walkFiles never enters them", async () => {
@@ -375,6 +380,17 @@ describe("grep (pi port)", () => {
 	it("no-match message matches pi", async () => {
 		const out = await runText(grepTool, { pattern: "zzzz", path: FIXTURE });
 		assert.equal(out, "No matches found");
+	});
+
+	it("rejects catastrophic nested-quantifier patterns like (a+)+b", async () => {
+		await assert.rejects(
+			runText(grepTool, { pattern: "(a+)+b", path: FIXTURE }),
+			/Invalid regex pattern: nested quantifiers are not allowed/,
+		);
+		await assert.rejects(
+			runText(grepTool, { pattern: "a".repeat(1001), path: FIXTURE }),
+			/Invalid regex pattern: pattern exceeds maximum length of 1000 characters/,
+		);
 	});
 });
 

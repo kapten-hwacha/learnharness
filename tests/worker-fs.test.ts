@@ -210,4 +210,33 @@ describe("Worker write-through memfs & node:* shims", () => {
 		const defaultBridge = getHostBridge();
 		assert.equal(typeof defaultBridge.hydrateFs, "function");
 	});
+
+	it("exposes fs.realpathSync.native and updates os.homedir() upon hydrateMemfs", () => {
+		assert.equal(typeof (memfs.realpathSync as any).native, "function");
+		assert.equal((memfs.realpathSync as any).native, memfs.realpathSync);
+
+		try {
+			memfs.hydrateMemfs({
+				root: "/app",
+				dataDir: "/app/data",
+				authFile: "/app/auth.json",
+				homeDir: "/Users/alice",
+				files: {},
+				dirs: ["/app"],
+			});
+			assert.equal(os.homedir(), "/Users/alice");
+			assert.equal(os.userInfo().homedir, "/Users/alice");
+			assert.equal(memfs.existsSync("/Users/alice"), true);
+		} finally {
+			memfs.hydrateMemfs({
+				root: "/app",
+				dataDir: "/app/data",
+				authFile: "/app/auth.json",
+				homeDir: "/home",
+				files: {},
+				dirs: ["/app"],
+			});
+			assert.equal(os.homedir(), "/home");
+		}
+	});
 });

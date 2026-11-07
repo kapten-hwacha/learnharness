@@ -2,9 +2,17 @@
 
 import { getTauriInvoke } from "../host-bridge.ts";
 
+let currentHomeDir = "/home";
+
+export function setWorkerHomeDir(dir: string): void {
+	if (typeof dir === "string" && dir.trim().startsWith("/")) {
+		currentHomeDir = dir.trim();
+	}
+}
+
 export const os = {
 	tmpdir: () => "/tmp",
-	homedir: () => "/home",
+	homedir: () => currentHomeDir,
 	platform: () => "browser" as NodeJS.Platform,
 	arch: () => "x64",
 	type: () => "Browser",
@@ -25,7 +33,7 @@ export const os = {
 		username: "user",
 		uid: 1000,
 		gid: 1000,
-		homedir: "/home",
+		homedir: currentHomeDir,
 		shell: "/bin/sh",
 	}),
 };

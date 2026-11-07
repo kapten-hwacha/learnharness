@@ -1,17 +1,67 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import type { FsMutationOp, HydratedFsSnapshot } from "./host-bridge.ts";
+import { realSourcePath, resolvePolicy } from "../agent/tools/file-access.ts";
+import { resolveSourcePath } from "../agent/tools/fs-shared.ts";
+import { fileAccessPolicy } from "../server/file-access.ts";
+
+export function isAuthorizedDevBridgeRequest(req: IncomingMessage): boolean {
+	if (req.headers["x-lh-dev-bridge"] !== "1") {
+		return false;
+	}
+	const secFetchSite = req.headers["sec-fetch-site"];
+	if (typeof secFetchSite === "string") {
+		if (secFetchSite !== "same-origin" && secFetchSite !== "none") {
+			return false;
+		}
+	}
+	const origin = req.headers["origin"];
+	const host = req.headers["host"];
+	if (typeof origin === "string" && typeof host === "string") {
+		try {
+			const parsed = new URL(origin);
+			if (parsed.host !== host) {
+				return false;
+			}
+		} catch {
+			return false;
+		}
+	}
+	if (req.method === "POST") {
+		const contentType = req.headers["content-type"];
+		if (typeof contentType !== "string" || !contentType.toLowerCase().startsWith("application/json")) {
+			return false;
+		}
+	}
+	return true;
+}
 
 export function isAllowedSyncPath(targetPath: string, dataDir: string, authFile: string): boolean {
+	if (!targetPath || !targetPath.startsWith("/")) return false;
 	const normTarget = path.posix.normalize(targetPath);
 	const normDataDir = path.posix.normalize(dataDir);
 	const normAuth = path.posix.normalize(authFile);
 
-	if (normTarget === normAuth || normTarget === normDataDir) return true;
 	const dataDirPrefix = normDataDir.endsWith("/") ? normDataDir : normDataDir + "/";
-	return normTarget.startsWith(dataDirPrefix);
+	const lexicalAllowed = normTarget === normAuth || normTarget === normDataDir || normTarget.startsWith(dataDirPrefix);
+	if (!lexicalAllowed) return false;
+
+	if (fs.existsSync(dataDir) || fs.existsSync(path.dirname(authFile))) {
+		try {
+			const realTarget = realSourcePath(targetPath);
+			const realDataDir = realSourcePath(dataDir);
+			const realAuthFile = realSourcePath(authFile);
+			const dataDirRealPrefix = realDataDir.endsWith(path.sep) ? realDataDir : realDataDir + path.sep;
+			return realTarget === realAuthFile || realTarget === realDataDir || realTarget.startsWith(dataDirRealPrefix);
+		} catch {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -56,6 +106,15 @@ export function lhViteDevBridgePlugin(): Plugin {
 			server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
 				const url = req.url?.split("?")[0];
 
+				if (url?.startsWith("/__lh_dev/")) {
+					if (!isAuthorizedDevBridgeRequest(req)) {
+						res.statusCode = 403;
+						res.setHeader("Content-Type", "application/json");
+						res.end(JSON.stringify({ error: "Forbidden dev bridge request" }));
+						return;
+					}
+				}
+
 				if (url === "/__lh_dev/fs-hydrate" && req.method === "GET") {
 					try {
 						const files: Record<string, string> = {};
@@ -89,6 +148,7 @@ export function lhViteDevBridgePlugin(): Plugin {
 							root,
 							dataDir,
 							authFile,
+							homeDir: os.homedir(),
 							files,
 							dirs,
 						};
@@ -166,18 +226,30 @@ export function lhViteDevBridgePlugin(): Plugin {
 					try {
 						const bodyStr = await readBody(req);
 						const { path: filePath } = JSON.parse(bodyStr) as { path: string };
-						if (!fs.existsSync(filePath)) {
-							res.statusCode = 404;
-							res.end("Not Found");
+						let resolved: string;
+						try {
+							resolved = resolveSourcePath(filePath, resolvePolicy(fileAccessPolicy()));
+							if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+								res.statusCode = 403;
+								res.setHeader("Content-Type", "application/json");
+								res.end(JSON.stringify({ error: `Path is not a valid file: ${filePath}` }));
+								return;
+							}
+						} catch (valErr) {
+							res.statusCode = 403;
+							res.setHeader("Content-Type", "application/json");
+							res.end(JSON.stringify({ error: String(valErr) }));
 							return;
 						}
-						const data = fs.readFileSync(filePath);
+
+						const data = fs.readFileSync(resolved);
 						res.setHeader("Content-Type", "application/octet-stream");
 						res.statusCode = 200;
 						res.end(data);
 					} catch (err) {
 						res.statusCode = 500;
-						res.end(String(err));
+						res.setHeader("Content-Type", "application/json");
+						res.end(JSON.stringify({ error: String(err) }));
 					}
 					return;
 				}
@@ -191,6 +263,38 @@ export function lhViteDevBridgePlugin(): Plugin {
 							headers?: Record<string, string>;
 							body?: string;
 						};
+
+						let parsed: URL;
+						try {
+							parsed = new URL(targetUrl);
+						} catch {
+							res.statusCode = 400;
+							res.setHeader("Content-Type", "application/json");
+							res.end(JSON.stringify({ error: "Invalid URL" }));
+							return;
+						}
+
+						if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+							res.statusCode = 403;
+							res.setHeader("Content-Type", "application/json");
+							res.end(JSON.stringify({ error: `Forbidden protocol: ${parsed.protocol}` }));
+							return;
+						}
+
+						const hostname = parsed.hostname.toLowerCase();
+						if (
+							hostname === "169.254.169.254" ||
+							hostname === "metadata.google.internal" ||
+							hostname === "0.0.0.0" ||
+							hostname.startsWith("169.254.") ||
+							hostname === "[::]" ||
+							hostname.startsWith("[fe80:")
+						) {
+							res.statusCode = 403;
+							res.setHeader("Content-Type", "application/json");
+							res.end(JSON.stringify({ error: `Forbidden host: ${hostname}` }));
+							return;
+						}
 
 						const response = await fetch(targetUrl, {
 							method: method || "GET",
@@ -227,3 +331,5 @@ export function lhViteDevBridgePlugin(): Plugin {
 		},
 	};
 }
+
+export const viteDevBridge = lhViteDevBridgePlugin;

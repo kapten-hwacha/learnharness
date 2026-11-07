@@ -8,6 +8,35 @@ import { cliproxyEnabled } from "./cliproxy-config.ts";
 import { ensureCliProxyRunning, getCliproxyBinary } from "./cliproxy-process.ts";
 import { subscriptionRequestOrigin } from "./web-subscription-http.ts";
 
+export function isLoopbackCliProxyEndpoint(endpoint: string): boolean {
+	try {
+		const parsed = new URL(endpoint);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+			return false;
+		}
+		if (parsed.username || parsed.password) {
+			return false;
+		}
+		const hostname = parsed.hostname.toLowerCase();
+		return (
+			hostname === "127.0.0.1" ||
+			hostname === "localhost" ||
+			hostname === "[::1]" ||
+			hostname === "::1"
+		);
+	} catch {
+		return false;
+	}
+}
+
+export function resolveEndpoint(endpoint?: string): string {
+	const candidate = endpoint ?? process.env.CLIPROXY_URL ?? CLIPROXY_DEFAULT_URL;
+	if (!isLoopbackCliProxyEndpoint(candidate)) {
+		throw new Error("CLIProxyAPI endpoint must be a loopback URL (127.0.0.1 or localhost)");
+	}
+	return candidate;
+}
+
 export function readCliproxyVersion(binary: string): Promise<string | null> {
 	return new Promise((resolve) => {
 		execFile(binary, ["-help"], {
@@ -22,7 +51,9 @@ export function readCliproxyVersion(binary: string): Promise<string | null> {
 	});
 }
 
-export async function cliproxyInstallationStatus(): Promise<CliProxyStatus> {
+export async function getCliProxyStatus(endpoint?: string): Promise<CliProxyStatus> {
+	const resolvedUrl = resolveEndpoint(endpoint);
+
 	if (!cliproxyEnabled()) {
 		return { state: "disabled", version: null, models: [] };
 	}
@@ -42,7 +73,10 @@ export async function cliproxyInstallationStatus(): Promise<CliProxyStatus> {
 	try {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 2000);
-		const res = await fetch(`${CLIPROXY_DEFAULT_URL}/models`, {
+		const targetUrl = resolvedUrl.endsWith("/models")
+			? resolvedUrl
+			: `${resolvedUrl.replace(/\/$/, "")}/models`;
+		const res = await fetch(targetUrl, {
 			headers: { Authorization: `Bearer ${CLIPROXY_DEFAULT_KEY}` },
 			signal: controller.signal,
 		});
@@ -63,6 +97,10 @@ export async function cliproxyInstallationStatus(): Promise<CliProxyStatus> {
 	} catch {
 		return { state: "offline", version, models: [] };
 	}
+}
+
+export async function cliproxyInstallationStatus(endpoint?: string): Promise<CliProxyStatus> {
+	return getCliProxyStatus(endpoint);
 }
 
 export async function cliproxyInstallationResponse(

@@ -55,20 +55,42 @@ export async function resolveQuadernoConfig(opts?: {
 
 	const host = env.QUADERNO_SERVER_HOST ?? dotEnvParsed.host ?? "127.0.0.1";
 	const port = env.QUADERNO_SERVER_PORT ?? dotEnvParsed.port ?? "5000";
-	const baseUrl =
+	let baseUrl =
 		env.QUADERNO_BASE_URL ??
 		(env.QUADERNO_SERVER_HOST || env.QUADERNO_SERVER_PORT || dotEnvParsed.host || dotEnvParsed.port
 			? `http://${host}:${port}`
 			: DEFAULT_QUADERNO_BASE_URL);
 
+	try {
+		const parsedUrl = new URL(baseUrl);
+		const proto = parsedUrl.protocol.toLowerCase();
+		const h = parsedUrl.hostname.toLowerCase();
+		if (
+			(proto !== "http:" && proto !== "https:") ||
+			h === "169.254.169.254" ||
+			h === "metadata.google.internal"
+		) {
+			baseUrl = DEFAULT_QUADERNO_BASE_URL;
+		}
+	} catch {
+		baseUrl = DEFAULT_QUADERNO_BASE_URL;
+	}
+
 	const apiKey = env.QUADERNO_API_KEY ?? dotEnvParsed.apiKey ?? null;
 
 	const rawSyncDir = env.QUADERNO_SYNC_DIR ?? dotEnvParsed.syncDir ?? path.join(homeDir, "Quaderno");
-	const syncDir = rawSyncDir.startsWith("~/")
+	const rawResolved = rawSyncDir.startsWith("~/")
 		? path.join(homeDir, rawSyncDir.slice(2))
 		: rawSyncDir === "~"
 			? homeDir
 			: path.resolve(rawSyncDir);
+
+	const resolvedSyncDir = path.resolve(rawResolved);
+	const homeResolved = path.resolve(homeDir);
+	const syncDir =
+		resolvedSyncDir === path.parse(resolvedSyncDir).root || resolvedSyncDir === homeResolved
+			? path.join(homeDir, "Quaderno")
+			: resolvedSyncDir;
 
 	const folder = env.QUADERNO_LEARNHARNESS_FOLDER ?? dotEnvParsed.folder ?? DEFAULT_QUADERNO_FOLDER;
 
@@ -78,6 +100,69 @@ export async function resolveQuadernoConfig(opts?: {
 		syncDir,
 		folder,
 	};
+}
+
+/**
+ * Verifies that candidatePath resolves to a safe .pdf file strictly within syncDir,
+ * preventing both lexical path traversal and symlink escape outside the sync root.
+ */
+export function isSafePdfUnderSyncRoot(candidatePath: string, syncDir: string): boolean {
+	const root = path.resolve(syncDir);
+	const resolved = path.resolve(candidatePath);
+
+	if (!resolved.toLowerCase().endsWith(".pdf")) {
+		return false;
+	}
+	if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+		return false;
+	}
+
+	if (fs.existsSync(root)) {
+		let realRoot: string;
+		try {
+			realRoot = fs.realpathSync.native(root);
+		} catch {
+			return false;
+		}
+
+		let exists = false;
+		try {
+			fs.lstatSync(resolved);
+			exists = true;
+		} catch {
+			exists = false;
+		}
+
+		if (exists) {
+			let realCandidate: string;
+			try {
+				realCandidate = fs.realpathSync.native(resolved);
+			} catch {
+				return false;
+			}
+			if (
+				!realCandidate.toLowerCase().endsWith(".pdf") ||
+				!realCandidate.startsWith(realRoot + path.sep)
+			) {
+				return false;
+			}
+		} else {
+			const parent = path.dirname(resolved);
+			if (fs.existsSync(parent)) {
+				let realParent: string;
+				try {
+					realParent = fs.realpathSync.native(parent);
+				} catch {
+					return false;
+				}
+				if (realParent !== realRoot && !realParent.startsWith(realRoot + path.sep)) {
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
 }
 
 const SUP_ASCII_MAP: Record<string, string> = {
@@ -475,15 +560,6 @@ export async function executeQuadernoAction(
 		}
 
 		// 2. Locate target PDF file (strictly contained inside config.syncDir)
-		const syncRoot = path.resolve(config.syncDir);
-		const isSafePdfUnderSyncRoot = (candidatePath: string): boolean => {
-			const resolved = path.resolve(candidatePath);
-			return (
-				resolved.toLowerCase().endsWith(".pdf") &&
-				(resolved === syncRoot || resolved.startsWith(syncRoot + path.sep))
-			);
-		};
-
 		const folderDir = path.join(config.syncDir, config.folder);
 		let resolvedPath: string | null = null;
 
@@ -492,7 +568,7 @@ export async function executeQuadernoAction(
 			const candidate = path.isAbsolute(req.filePath)
 				? req.filePath
 				: path.join(config.syncDir, req.filePath);
-			if (!isSafePdfUnderSyncRoot(candidate)) {
+			if (!isSafePdfUnderSyncRoot(candidate, config.syncDir)) {
 				return {
 					ok: false,
 					mode: "filesystem",
@@ -515,7 +591,7 @@ export async function executeQuadernoAction(
 			if (cleanStem && cleanStem !== "." && cleanStem !== "..") {
 				const targetName = `${cleanStem}.pdf`;
 				const candidate = path.join(folderDir, targetName);
-				if (isSafePdfUnderSyncRoot(candidate)) {
+				if (isSafePdfUnderSyncRoot(candidate, config.syncDir)) {
 					try {
 						const stat = await fs.promises.stat(candidate);
 						if (stat.isFile()) {
@@ -546,10 +622,13 @@ export async function executeQuadernoAction(
 					);
 
 					stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
-					if (stats[0]) {
-						resolvedPath = stats[0].full;
-						break;
+					for (const item of stats) {
+						if (isSafePdfUnderSyncRoot(item.full, config.syncDir)) {
+							resolvedPath = item.full;
+							break;
+						}
 					}
+					if (resolvedPath) break;
 				} catch {
 					// directory might not exist yet
 				}

@@ -79,6 +79,7 @@ fn handle_connection(
     on_request: &Option<Box<dyn Fn(OAuthRequestPayload) + Send + 'static>>,
     my_port: u16,
 ) {
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
 
@@ -187,11 +188,40 @@ pub fn close_oauth_listener() {
     }
 }
 
+pub fn validate_oauth_response(status: u16, headers: &[(String, String)]) -> Result<(), String> {
+    if !(100..=599).contains(&status) {
+        return Err(format!("Invalid HTTP status code: {status}"));
+    }
+    for (k, v) in headers {
+        if k.is_empty() {
+            return Err("Header name cannot be empty".to_string());
+        }
+        if !k
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(format!("Header name contains invalid characters: '{k}'"));
+        }
+        if k.contains('\r') || k.contains('\n') || k.contains('\0') {
+            return Err(
+                "Header name contains invalid control characters (CR, LF, or NULL)".to_string(),
+            );
+        }
+        if v.contains('\r') || v.contains('\n') || v.contains('\0') {
+            return Err(format!(
+                "Header value for '{k}' contains invalid control characters (CR, LF, or NULL)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn respond_oauth(
     status: u16,
     headers: Vec<(String, String)>,
     body: String,
 ) -> Result<(), String> {
+    validate_oauth_response(status, &headers)?;
     let sender_opt = {
         let lock = OAUTH_STATE.lock().unwrap();
         lock.as_ref()
@@ -231,6 +261,7 @@ pub async fn lh_oauth_respond(
     headers: Vec<(String, String)>,
     body: String,
 ) -> Result<(), String> {
+    validate_oauth_response(status, &headers)?;
     respond_oauth(status, headers, body)
 }
 
@@ -242,6 +273,64 @@ mod tests {
     use std::sync::Mutex;
 
     static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn test_validate_oauth_response_valid() {
+        let headers = vec![
+            (
+                "Content-Type".to_string(),
+                "text/html; charset=utf-8".to_string(),
+            ),
+            (
+                "Location".to_string(),
+                "http://localhost:5173/auth/callback".to_string(),
+            ),
+            ("X-Custom_Header".to_string(), "custom-value".to_string()),
+        ];
+        assert!(validate_oauth_response(200, &headers).is_ok());
+        assert!(validate_oauth_response(302, &headers).is_ok());
+        assert!(validate_oauth_response(100, &[]).is_ok());
+        assert!(validate_oauth_response(599, &[]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_oauth_response_invalid_status() {
+        assert!(validate_oauth_response(99, &[]).is_err());
+        assert!(validate_oauth_response(600, &[]).is_err());
+        assert!(validate_oauth_response(0, &[]).is_err());
+    }
+
+    #[test]
+    fn test_validate_oauth_response_crlf_injection() {
+        // CRLF in header value
+        let crlf_val = vec![(
+            "Content-Type".to_string(),
+            "text/html\r\nInjected: true".to_string(),
+        )];
+        assert!(validate_oauth_response(200, &crlf_val).is_err());
+
+        let lf_val = vec![(
+            "Content-Type".to_string(),
+            "text/html\nInjected: true".to_string(),
+        )];
+        assert!(validate_oauth_response(200, &lf_val).is_err());
+
+        let null_val = vec![("Content-Type".to_string(), "text/html\0bad".to_string())];
+        assert!(validate_oauth_response(200, &null_val).is_err());
+
+        // CRLF or invalid chars in header name
+        let crlf_key = vec![("Content-Type\r\n".to_string(), "text/html".to_string())];
+        assert!(validate_oauth_response(200, &crlf_key).is_err());
+
+        let space_key = vec![("Content Type".to_string(), "text/html".to_string())];
+        assert!(validate_oauth_response(200, &space_key).is_err());
+
+        let colon_key = vec![("Header:Name".to_string(), "val".to_string())];
+        assert!(validate_oauth_response(200, &colon_key).is_err());
+
+        let empty_key = vec![("".to_string(), "val".to_string())];
+        assert!(validate_oauth_response(200, &empty_key).is_err());
+    }
 
     #[test]
     fn second_start_fails_while_pending() {

@@ -159,11 +159,12 @@ async function renderPdfPages(
 }
 
 export function buildDemoVerifySrcDoc(html: string, requestId: string, settleMs: number, probe?: string): string {
+	const safeSettleMs = typeof settleMs === "number" && Number.isFinite(settleMs) ? Math.max(0, Math.min(30_000, Math.floor(settleMs))) : 3000;
 	const probeExpr = probe ? JSON.stringify(probe) : "null";
 	const script = `<script>
 (function() {
 	var requestId = ${JSON.stringify(requestId)};
-	var settleMs = ${settleMs};
+	var settleMs = ${safeSettleMs};
 	var probe = ${probeExpr};
 	var consoleErrors = [];
 	var pageErrors = [];
@@ -230,13 +231,16 @@ export function buildDemoVerifySrcDoc(html: string, requestId: string, settleMs:
 })();
 </script>`;
 
-	if (html.includes("<head>")) {
-		return html.replace("<head>", "<head>" + script);
-	} else if (html.includes("<html>")) {
-		return html.replace("<html>", "<html><head>" + script + "</head>");
-	} else {
-		return "<head>" + script + "</head>" + html;
+	if (/<head>/i.test(html)) {
+		return html.replace(/<head>/i, (m) => m + script);
 	}
+	if (/<body[^>]*>/i.test(html)) {
+		return html.replace(/<body[^>]*>/i, (m) => m + script);
+	}
+	if (/<html[^>]*>/i.test(html)) {
+		return html.replace(/<html[^>]*>/i, (m) => m + script);
+	}
+	return script + html;
 }
 
 export function createWorkerHeadless(opts?: {

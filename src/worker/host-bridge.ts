@@ -10,11 +10,14 @@ export interface HydratedFsSnapshot {
 	root: string;
 	dataDir: string;
 	authFile: string;
+	homeDir?: string;
 	/** Map of absolute POSIX path -> base64-encoded file contents. */
 	files: Record<string, string>;
 	/** Explicit empty directories to preserve. */
 	dirs: string[];
 }
+
+export const DEV_BRIDGE_HEADER = "x-lh-dev-bridge";
 
 export interface HostBridge {
 	hydrateFs(): Promise<HydratedFsSnapshot>;
@@ -246,7 +249,9 @@ export function createTauriHostBridge(
 export function createBrowserDevHostBridge(): HostBridge {
 	return {
 		async hydrateFs(): Promise<HydratedFsSnapshot> {
-			const res = await fetch("/__lh_dev/fs-hydrate");
+			const res = await fetch("/__lh_dev/fs-hydrate", {
+				headers: { [DEV_BRIDGE_HEADER]: "1" },
+			});
 			if (!res.ok) {
 				throw new Error(`Failed to hydrate fs: ${res.status} ${res.statusText}`);
 			}
@@ -255,7 +260,10 @@ export function createBrowserDevHostBridge(): HostBridge {
 		async syncFs(op: FsMutationOp): Promise<void> {
 			const res = await fetch("/__lh_dev/fs-sync", {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: {
+					"Content-Type": "application/json",
+					[DEV_BRIDGE_HEADER]: "1",
+				},
 				body: JSON.stringify(op),
 			});
 			if (!res.ok) {
@@ -265,7 +273,10 @@ export function createBrowserDevHostBridge(): HostBridge {
 		async readExternalFile(absPath: string): Promise<Uint8Array> {
 			const res = await fetch("/__lh_dev/fs-read-external", {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: {
+					"Content-Type": "application/json",
+					[DEV_BRIDGE_HEADER]: "1",
+				},
 				body: JSON.stringify({ path: absPath }),
 			});
 			if (!res.ok) {
@@ -299,7 +310,10 @@ export function createBrowserDevHostBridge(): HostBridge {
 
 				const res = await fetch("/__lh_dev/fetch", {
 					method: "POST",
-					headers: { "Content-Type": "application/json" },
+					headers: {
+						"Content-Type": "application/json",
+						[DEV_BRIDGE_HEADER]: "1",
+					},
 					body: JSON.stringify({ url, method, headers, body }),
 				});
 				if (res.headers.get("x-lh-dev-proxied") === "1") return res;

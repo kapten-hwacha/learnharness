@@ -38,10 +38,216 @@ import TurndownService from "turndown";
 const USER_AGENT =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const FETCH_TIMEOUT_MS = 30_000;
-const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+export const MAX_FETCH_BYTES = 5 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = MAX_FETCH_BYTES;
 /** Keep the researcher's context sane — long pages truncate with a marker. */
 const MAX_CONTENT_CHARS = 40_000;
 const MIN_USEFUL_CONTENT = 200;
+
+/**
+ * Detect private, loopback, link-local, or cloud-metadata hostnames.
+ */
+export function isPrivateOrLoopbackHost(hostname: string): boolean {
+	let host = hostname.trim().toLowerCase();
+	while (host.endsWith(".")) {
+		host = host.slice(0, -1);
+	}
+	if (host.startsWith("[") && host.endsWith("]")) {
+		host = host.slice(1, -1).trim();
+	}
+	while (host.endsWith(".")) {
+		host = host.slice(0, -1);
+	}
+	if (!host) return true;
+
+	if (
+		host === "localhost" ||
+		host === "localhost.localdomain" ||
+		host === "metadata.google.internal" ||
+		host === "0.0.0.0" ||
+		host.endsWith(".localhost") ||
+		host.endsWith(".local")
+	) {
+		return true;
+	}
+
+	if (!host.includes(":")) {
+		try {
+			const parsed = new URL(`http://${host}`);
+			if (parsed.hostname !== host) {
+				return isPrivateOrLoopbackHost(parsed.hostname);
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	const ipv4Match = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+	if (ipv4Match) {
+		const a = Number(ipv4Match[1]);
+		const b = Number(ipv4Match[2]);
+		const c = Number(ipv4Match[3]);
+		const d = Number(ipv4Match[4]);
+		if (
+			a >= 0 && a <= 255 &&
+			b >= 0 && b <= 255 &&
+			c >= 0 && c <= 255 &&
+			d >= 0 && d <= 255
+		) {
+			if (
+				a === 0 || // 0.0.0.0/8
+				a === 10 || // 10.0.0.0/8
+				a === 127 || // 127.0.0.0/8 loopback
+				(a === 169 && b === 254) || // 169.254.0.0/16 link-local / cloud metadata
+				(a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
+				(a === 192 && b === 168) || // 192.168.0.0/16 private
+				(a === 100 && b >= 64 && b <= 127) // 100.64.0.0/10 CGNAT
+			) {
+				return true;
+			}
+			return false;
+		}
+	}
+
+	if (host.includes(":")) {
+		if (
+			host === "::1" ||
+			host === "::" ||
+			host === "::0" ||
+			host === "0:0:0:0:0:0:0:1" ||
+			host === "0:0:0:0:0:0:0:0"
+		) {
+			return true;
+		}
+		if (host.startsWith("fc") || host.startsWith("fd")) {
+			return true;
+		}
+		if (
+			host.startsWith("fe8") ||
+			host.startsWith("fe9") ||
+			host.startsWith("fea") ||
+			host.startsWith("feb")
+		) {
+			return true;
+		}
+		if (host.startsWith("::ffff:")) {
+			const mapped = host.slice("::ffff:".length);
+			if (/^\d+\.\d+\.\d+\.\d+$/.test(mapped)) {
+				return isPrivateOrLoopbackHost(mapped);
+			}
+			const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+			if (hexMatch) {
+				const n1 = parseInt(hexMatch[1]!, 16);
+				const n2 = parseInt(hexMatch[2]!, 16);
+				const a = (n1 >> 8) & 0xff;
+				const b = n1 & 0xff;
+				const c = (n2 >> 8) & 0xff;
+				const d = n2 & 0xff;
+				return isPrivateOrLoopbackHost(`${a}.${b}.${c}.${d}`);
+			}
+			return true;
+		}
+		return false;
+	}
+
+	return false;
+}
+
+/**
+ * Validate that a URL is a valid, public HTTP or HTTPS URL (no credentials,
+ * non-private and non-loopback host).
+ */
+export function assertPublicHttpUrl(rawUrl: string): URL {
+	const parsed = new URL(rawUrl);
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new Error("Only http(s) URLs are supported");
+	}
+	if (parsed.username || parsed.password) {
+		throw new Error("URLs with credentials are not allowed");
+	}
+	if (isPrivateOrLoopbackHost(parsed.hostname)) {
+		throw new Error(`Refusing to fetch private or local URL: ${rawUrl}`);
+	}
+	return parsed;
+}
+
+/**
+ * Read up to maxBytes from a response body stream, throwing if the content length
+ * header or total bytes read exceeds maxBytes.
+ */
+export async function readBoundedBytes(resp: Response, maxBytes: number): Promise<Uint8Array> {
+	const cl = resp.headers.get("content-length");
+	if (cl !== null) {
+		const len = Number(cl);
+		if (Number.isFinite(len) && len > maxBytes) {
+			throw new Error(`Response too large (${len} bytes, max ${maxBytes})`);
+		}
+	}
+	if (!resp.body) {
+		return new Uint8Array(0);
+	}
+	const reader = resp.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (value) {
+				total += value.byteLength;
+				if (total > maxBytes) {
+					await reader.cancel();
+					throw new Error(`Response too large (> ${maxBytes} bytes)`);
+				}
+				chunks.push(value);
+			}
+		}
+	} catch (err) {
+		try {
+			await reader.cancel();
+		} catch {
+			// ignore cancel error
+		}
+		throw err;
+	}
+
+	const result = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		result.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return result;
+}
+
+/**
+ * Fetch a public URL with redirect validation to prevent SSRF via redirect.
+ */
+export async function fetchPublicUrl(
+	rawUrl: string,
+	init: RequestInit = {},
+	maxRedirects = 5,
+): Promise<Response> {
+	let currentUrl = assertPublicHttpUrl(rawUrl).toString();
+	let redirects = 0;
+	while (true) {
+		const resp = await fetch(currentUrl, { ...init, redirect: "manual" });
+		if (resp.status >= 300 && resp.status < 400) {
+			const location = resp.headers.get("location");
+			if (!location) {
+				return resp;
+			}
+			redirects++;
+			if (redirects > maxRedirects) {
+				throw new Error("Too many redirects");
+			}
+			const nextUrl = new URL(location, currentUrl).toString();
+			currentUrl = assertPublicHttpUrl(nextUrl).toString();
+			continue;
+		}
+		return resp;
+	}
+}
 
 const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
 
@@ -79,14 +285,17 @@ function htmlToMarkdown(html: string): { title: string; content: string } | null
 	return { title: article.title ?? "", content: markdown };
 }
 
-async function fetchAndExtract(url: string): Promise<string> {
-	const resp = await fetch(url, {
+async function fetchAndExtract(url: string, signal?: AbortSignal): Promise<string> {
+	const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+	const combinedSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
+
+	const resp = await fetchPublicUrl(url, {
 		headers: {
 			"User-Agent": USER_AGENT,
 			Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 			"Accept-Language": "en-US,en;q=0.9",
 		},
-		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+		signal: combinedSignal,
 	});
 	if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
 
@@ -104,10 +313,9 @@ async function fetchAndExtract(url: string): Promise<string> {
 	if (/image\/|audio\/|video\/|zip|octet-stream/.test(contentType)) {
 		throw new Error(`Unsupported content type: ${contentType.split(";")[0]}`);
 	}
-	const length = Number(resp.headers.get("content-length") ?? 0);
-	if (length > MAX_RESPONSE_BYTES) throw new Error("Response too large");
 
-	const text = await resp.text();
+	const bytes = await readBoundedBytes(resp, MAX_FETCH_BYTES);
+	const text = new TextDecoder().decode(bytes);
 	if (!contentType.includes("html")) return `${sourceLine}\n\n${truncate(text)}`; // plain text / markdown / code
 
 	const extracted = htmlToMarkdown(text);
@@ -165,20 +373,14 @@ export function createWebTools(search: () => SearchProvider | null): Record<stri
 				"Fetch a web page and extract its readable content as markdown (Readability). " +
 				"Handles HTML pages and plain text; JS-rendered pages fall back to a reader service.",
 			parameters: webFetchInput,
-			execute: serverExecute("web_fetch", webFetchInput, async ({ url }): Promise<string> => {
+			execute: serverExecute("web_fetch", webFetchInput, async ({ url }, ctx): Promise<string> => {
 				try {
-					const parsed = new URL(url);
-					// URL.protocol carries a TRAILING COLON ("https:", WHATWG) — the
-					// colon-less comparison born from the py-harness port (urlparse's
-					// scheme has NO colon) rejected every valid URL ever fetched
-					// (owner-reported via OpenRouter logs, 2026-10-07).
-					if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-						throw new Error("Only http(s) URLs are supported");
-				} catch {
-					return `web_fetch failed: invalid URL "${url}"`;
+					assertPublicHttpUrl(url);
+				} catch (err) {
+					return `web_fetch failed: invalid URL "${url}" (${err instanceof Error ? err.message : String(err)})`;
 				}
 				try {
-					return await fetchAndExtract(url);
+					return await fetchAndExtract(url, ctx?.signal);
 				} catch (err) {
 					return `web_fetch failed for ${url}: ${err instanceof Error ? err.message : String(err)}`;
 				}

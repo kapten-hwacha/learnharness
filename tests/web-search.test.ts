@@ -5,7 +5,13 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createWebTools } from "../src/agent/tools/web.ts";
+import {
+	assertPublicHttpUrl,
+	createWebTools,
+	fetchPublicUrl,
+	isPrivateOrLoopbackHost,
+	readBoundedBytes,
+} from "../src/agent/tools/web.ts";
 import { jobTools } from "../src/agent/tools/jobs.ts";
 import { runResearcherAgent } from "../src/agent/subagents/researcher.ts";
 import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
@@ -102,6 +108,167 @@ describe("web_search on the injected port (web.ts)", () => {
 
 			const ftp = await web_fetch!.execute!("c-ftp", { url: "ftp://example.com/file" });
 			assert.match(String(ftp.details), /invalid URL/, "non-http(s) schemes still rejected");
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
+});
+
+describe("SSRF guard and bounded stream reader (web.ts)", () => {
+	it("isPrivateOrLoopbackHost blocks loopback, private, link-local, and cloud metadata", () => {
+		// Named hosts
+		assert.equal(isPrivateOrLoopbackHost("localhost"), true);
+		assert.equal(isPrivateOrLoopbackHost("localhost.localdomain"), true);
+		assert.equal(isPrivateOrLoopbackHost("metadata.google.internal"), true);
+		assert.equal(isPrivateOrLoopbackHost("0.0.0.0"), true);
+		assert.equal(isPrivateOrLoopbackHost("service.localhost"), true);
+		assert.equal(isPrivateOrLoopbackHost("device.local"), true);
+		assert.equal(isPrivateOrLoopbackHost("localhost."), true);
+
+		// IPv4 ranges
+		assert.equal(isPrivateOrLoopbackHost("127.0.0.1"), true);
+		assert.equal(isPrivateOrLoopbackHost("127.255.255.255"), true);
+		assert.equal(isPrivateOrLoopbackHost("10.0.0.1"), true);
+		assert.equal(isPrivateOrLoopbackHost("169.254.169.254"), true);
+		assert.equal(isPrivateOrLoopbackHost("172.16.0.1"), true);
+		assert.equal(isPrivateOrLoopbackHost("172.31.255.255"), true);
+		assert.equal(isPrivateOrLoopbackHost("192.168.1.1"), true);
+		assert.equal(isPrivateOrLoopbackHost("100.64.0.1"), true);
+		assert.equal(isPrivateOrLoopbackHost("100.127.255.255"), true);
+
+		// Numeric/hex IPv4 encodings normalized by URL parser
+		assert.equal(isPrivateOrLoopbackHost("2130706433"), true);
+		assert.equal(isPrivateOrLoopbackHost("0x7f000001"), true);
+
+		// IPv6
+		assert.equal(isPrivateOrLoopbackHost("::1"), true);
+		assert.equal(isPrivateOrLoopbackHost("::"), true);
+		assert.equal(isPrivateOrLoopbackHost("[::1]"), true);
+		assert.equal(isPrivateOrLoopbackHost("0:0:0:0:0:0:0:1"), true);
+		assert.equal(isPrivateOrLoopbackHost("fc00::1"), true);
+		assert.equal(isPrivateOrLoopbackHost("fd12:3456::1"), true);
+		assert.equal(isPrivateOrLoopbackHost("fe80::1"), true);
+		assert.equal(isPrivateOrLoopbackHost("::ffff:127.0.0.1"), true);
+		assert.equal(isPrivateOrLoopbackHost("::ffff:7f00:1"), true);
+		assert.equal(isPrivateOrLoopbackHost("::ffff:169.254.169.254"), true);
+
+		// Public hosts allowed
+		assert.equal(isPrivateOrLoopbackHost("example.com"), false);
+		assert.equal(isPrivateOrLoopbackHost("8.8.8.8"), false);
+		assert.equal(isPrivateOrLoopbackHost("1.1.1.1"), false);
+		assert.equal(isPrivateOrLoopbackHost("172.32.0.1"), false);
+		assert.equal(isPrivateOrLoopbackHost("100.128.0.1"), false);
+		assert.equal(isPrivateOrLoopbackHost("2607:f8b0:4005:805::200e"), false);
+	});
+
+	it("assertPublicHttpUrl rejects private, local, credentialed, and non-http(s) URLs", () => {
+		const rejected = [
+			"http://127.0.0.1:8080",
+			"http://localhost/admin",
+			"http://169.254.169.254/latest/meta-data/",
+			"http://192.168.1.1",
+			"http://10.0.0.1",
+			"http://172.16.0.1",
+			"http://[::1]/",
+			"http://[::ffff:127.0.0.1]/",
+			"file:///etc/passwd",
+		];
+		for (const url of rejected) {
+			assert.throws(
+				() => assertPublicHttpUrl(url),
+				(err: Error) => {
+					return (
+						/Refusing to fetch private or local URL/.test(err.message) ||
+						/Only http\(s\) URLs are supported/.test(err.message)
+					);
+				},
+				`expected assertPublicHttpUrl to reject ${url}`,
+			);
+		}
+
+		assert.throws(() => assertPublicHttpUrl("https://user:pass@example.com/"), /URLs with credentials/);
+		assert.throws(() => assertPublicHttpUrl("not a url"));
+
+		// Public URL accepted
+		const parsed = assertPublicHttpUrl("https://example.com/docs?q=1");
+		assert.equal(parsed.hostname, "example.com");
+	});
+
+	it("readBoundedBytes throws when Content-Length exceeds maxBytes", async () => {
+		const resp = new Response("dummy content", {
+			headers: { "content-length": "1000" },
+		});
+		await assert.rejects(
+			async () => readBoundedBytes(resp, 500),
+			/Response too large \(1000 bytes, max 500\)/,
+		);
+	});
+
+	it("readBoundedBytes aborts and throws on a chunked stream exceeding maxBytes even when Content-Length is omitted", async () => {
+		let cancelled = false;
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new Uint8Array(200));
+				controller.enqueue(new Uint8Array(200));
+				controller.enqueue(new Uint8Array(200));
+				controller.close();
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const resp = new Response(stream); // No Content-Length header
+		await assert.rejects(
+			async () => readBoundedBytes(resp, 350),
+			/Response too large \(> 350 bytes\)/,
+		);
+		assert.equal(cancelled, true, "stream reader was cancelled when limit exceeded");
+	});
+
+	it("fetchPublicUrl and web_fetch reject redirect to a private or loopback URL", async () => {
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async (url: string | URL | Request) => {
+			const u = String(url);
+			if (u.includes("example.com/redirect")) {
+				return new Response(null, {
+					status: 302,
+					headers: { location: "http://127.0.0.1/secret" },
+				});
+			}
+			return new Response("ok", { headers: { "content-type": "text/plain" } });
+		}) as typeof fetch;
+
+		try {
+			await assert.rejects(
+				async () => fetchPublicUrl("https://example.com/redirect"),
+				/Refusing to fetch private or local URL: http:\/\/127\.0\.0\.1\/secret/,
+			);
+
+			const { web_fetch } = createWebTools(() => null);
+			const out = await web_fetch!.execute!("rf1", { url: "https://example.com/redirect" });
+			assert.match(String(out.details), /Refusing to fetch private or local URL/);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
+
+	it("web_fetch rejects private and metadata URLs upfront without making any network request", async () => {
+		let fetchCalled = false;
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async () => {
+			fetchCalled = true;
+			return new Response("should not reach here");
+		}) as typeof fetch;
+
+		try {
+			const { web_fetch } = createWebTools(() => null);
+			const out1 = await web_fetch!.execute!("p1", { url: "http://127.0.0.1:8080" });
+			assert.match(String(out1.details), /Refusing to fetch private or local URL/);
+			assert.equal(fetchCalled, false, "network was not touched for 127.0.0.1");
+
+			const out2 = await web_fetch!.execute!("p2", { url: "http://169.254.169.254/latest/meta-data/" });
+			assert.match(String(out2.details), /Refusing to fetch private or local URL/);
+			assert.equal(fetchCalled, false, "network was not touched for 169.254.169.254");
 		} finally {
 			globalThis.fetch = realFetch;
 		}

@@ -43,24 +43,28 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
 
-    builder = builder.invoke_handler(tauri::generate_handler![
-        fs_bridge::lh_fs_hydrate,
-        fs_bridge::lh_fs_sync,
-        fs_bridge::lh_fs_read_external,
-        http_bridge::lh_http_fetch,
-        http_bridge::lh_open_external,
-        oauth::lh_oauth_listen_start,
-        oauth::lh_oauth_listen_close,
-        oauth::lh_oauth_respond,
-        exec::lh_exec_command,
-        exec::lh_spawn_daemon,
-        exec::lh_kill_process,
-        window::lh_expand_window,
-        window::lh_set_zoom,
-        updater::lh_update_get,
-        updater::lh_update_check,
-        updater::lh_update_install,
-    ]);
+    builder =
+        builder
+            .manage(exec::ExecManager::default())
+            .invoke_handler(tauri::generate_handler![
+                fs_bridge::lh_fs_hydrate,
+                fs_bridge::lh_fs_sync,
+                fs_bridge::lh_fs_read_external,
+                http_bridge::lh_http_fetch,
+                http_bridge::lh_open_external,
+                oauth::lh_oauth_listen_start,
+                oauth::lh_oauth_listen_close,
+                oauth::lh_oauth_respond,
+                exec::lh_exec_command,
+                exec::lh_spawn_daemon,
+                exec::lh_kill_daemon,
+                exec::lh_kill_process,
+                window::lh_expand_window,
+                window::lh_set_zoom,
+                updater::lh_update_get,
+                updater::lh_update_check,
+                updater::lh_update_install,
+            ]);
 
     builder = builder.setup(|app| {
         let is_packaged = !cfg!(debug_assertions);

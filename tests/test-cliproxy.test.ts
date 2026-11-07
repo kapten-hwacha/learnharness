@@ -12,6 +12,12 @@ import { customProviderGet, customProviderMutation } from "../src/server/custom-
 import { piModels, piEngineForSpec } from "../src/agent/models.ts";
 import { CUSTOM_PROVIDER } from "../src/core/auth-keys.ts";
 import { normalizeContext, type Message } from "@earendil-works/pi-ai";
+import {
+	isLoopbackCliProxyEndpoint,
+	resolveEndpoint,
+	getCliProxyStatus,
+} from "../src/server/cliproxy.ts";
+import { stopManagedCliProxy } from "../src/server/cliproxy-process.ts";
 
 describe("CLIProxyAPI integration", () => {
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "lh-cliproxy-test-"));
@@ -66,6 +72,7 @@ describe("CLIProxyAPI integration", () => {
 	});
 
 	after(() => {
+		stopManagedCliProxy();
 		globalThis.fetch = originalFetch;
 		piModels().deleteProvider(CUSTOM_PROVIDER.id);
 		fs.rmSync(scratch, { recursive: true, force: true });
@@ -135,27 +142,32 @@ describe("CLIProxyAPI integration", () => {
 	});
 
 	it("streams a completion for gemini-3.8-flash via the server-configured custom provider", async () => {
-		// Set pin for reasoning on gemini-3.8-flash via PATCH
-		const getReq = new Request("http://localhost:3000/api/custom-provider", {
-			headers: { origin: "http://localhost:3000", host: "localhost:3000" },
-		});
-		const etag = customProviderGet(getReq).headers.get("etag")!;
+		// Set pin for reasoning on gemini-3.8-flash via PATCH (retry if concurrent test runs in parallel)
+		let patchRes: Response;
+		let attempts = 0;
+		do {
+			const getReq = new Request("http://localhost:3000/api/custom-provider", {
+				headers: { origin: "http://localhost:3000", host: "localhost:3000" },
+			});
+			const etag = customProviderGet(getReq).headers.get("etag")!;
 
-		const patchReq = new Request("http://localhost:3000/api/custom-provider", {
-			method: "PATCH",
-			headers: {
-				"content-type": "application/json",
-				origin: "http://localhost:3000",
-				host: "localhost:3000",
-				"if-match": etag,
-			},
-			body: JSON.stringify({
-				overrides: {
-					"gemini-3.8-flash": { reasoning: true },
+			const patchReq = new Request("http://localhost:3000/api/custom-provider", {
+				method: "PATCH",
+				headers: {
+					"content-type": "application/json",
+					origin: "http://localhost:3000",
+					host: "localhost:3000",
+					"if-match": etag,
 				},
-			}),
-		});
-		const patchRes = await customProviderMutation(patchReq);
+				body: JSON.stringify({
+					overrides: {
+						"gemini-3.8-flash": { reasoning: true },
+					},
+				}),
+			});
+			patchRes = await customProviderMutation(patchReq);
+			attempts++;
+		} while (patchRes.status === 409 && attempts < 5);
 		assert.equal(patchRes.status, 200);
 
 		// Now stream through piEngineForSpec using the live custom provider
@@ -191,5 +203,57 @@ describe("CLIProxyAPI integration", () => {
 		assert.equal(result.stopReason, "stop");
 		assert.ok(result.usage && result.usage.totalTokens > 0);
 		assert.ok(result.usage?.reasoning && result.usage.reasoning > 0);
+	});
+
+	it("isLoopbackCliProxyEndpoint and getCliProxyStatus reject non-loopback endpoints", async () => {
+		// Valid loopback endpoints
+		assert.equal(isLoopbackCliProxyEndpoint("http://127.0.0.1:8317"), true);
+		assert.equal(isLoopbackCliProxyEndpoint("http://127.0.0.1:8317/v1"), true);
+		assert.equal(isLoopbackCliProxyEndpoint("http://localhost:8317"), true);
+		assert.equal(isLoopbackCliProxyEndpoint("http://localhost:8317/v1"), true);
+		assert.equal(isLoopbackCliProxyEndpoint("http://[::1]:8317"), true);
+
+		// Invalid non-loopback or unsafe endpoints
+		assert.equal(isLoopbackCliProxyEndpoint("http://169.254.169.254:8317"), false);
+		assert.equal(isLoopbackCliProxyEndpoint("https://evil.example"), false);
+		assert.equal(isLoopbackCliProxyEndpoint("http://user:pass@127.0.0.1:8317"), false);
+		assert.equal(isLoopbackCliProxyEndpoint("ftp://127.0.0.1:8317"), false);
+		assert.equal(isLoopbackCliProxyEndpoint("not-a-valid-url"), false);
+
+		// resolveEndpoint throws for non-loopback
+		assert.throws(
+			() => resolveEndpoint("http://169.254.169.254:8317"),
+			/CLIProxyAPI endpoint must be a loopback URL/,
+		);
+		assert.throws(
+			() => resolveEndpoint("https://evil.example"),
+			/CLIProxyAPI endpoint must be a loopback URL/,
+		);
+
+		// getCliProxyStatus rejects non-loopback endpoints
+		await assert.rejects(
+			async () => await getCliProxyStatus("http://169.254.169.254:8317"),
+			/CLIProxyAPI endpoint must be a loopback URL/,
+		);
+		await assert.rejects(
+			async () => await getCliProxyStatus("https://evil.example"),
+			/CLIProxyAPI endpoint must be a loopback URL/,
+		);
+
+		// getCliProxyStatus accepts loopback endpoints without throwing loopback error
+		const prevCliproxyPath = process.env.CLIPROXY_PATH;
+		try {
+			process.env.CLIPROXY_PATH = "/nonexistent/test-binary";
+			const status127 = await getCliProxyStatus("http://127.0.0.1:8317");
+			assert.ok(["ready", "offline", "disabled", "not-found"].includes(status127.state));
+			const statusLocalhost = await getCliProxyStatus("http://localhost:8317");
+			assert.ok(["ready", "offline", "disabled", "not-found"].includes(statusLocalhost.state));
+		} finally {
+			if (prevCliproxyPath !== undefined) {
+				process.env.CLIPROXY_PATH = prevCliproxyPath;
+			} else {
+				delete process.env.CLIPROXY_PATH;
+			}
+		}
 	});
 });

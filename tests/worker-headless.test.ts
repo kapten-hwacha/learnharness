@@ -47,4 +47,21 @@ describe("src/worker/headless-worker.ts & photon-wasm.ts", () => {
 		assert.equal(typeof resize, "function");
 		assert.equal(typeof SamplingFilter.Lanczos3, "number");
 	});
+
+	it("preserves literal $& and $' sequences in probe and clamps non-finite/negative settleMs in buildDemoVerifySrcDoc", () => {
+		const trickyProbe = 'window.__result = "$&" + "$\'" + "$`" + "$$";';
+		const srcDoc = buildDemoVerifySrcDoc("<!doctype html><html><head></head><body></body></html>", "req-test", -500, trickyProbe);
+
+		assert.ok(srcDoc.includes(JSON.stringify(trickyProbe)), "Expected literal probe string to be preserved without regex replacement corruption");
+		assert.match(srcDoc, /var settleMs = 0;/);
+
+		const clampedDoc = buildDemoVerifySrcDoc("<!doctype html><html><body></body></html>", "req-test-2", 45000);
+		assert.match(clampedDoc, /var settleMs = 30000;/);
+
+		const nanDoc = buildDemoVerifySrcDoc("<!doctype html><html><body></body></html>", "req-test-3", Number.NaN);
+		assert.match(nanDoc, /var settleMs = 3000;/);
+
+		const infDoc = buildDemoVerifySrcDoc("<!doctype html><html><body></body></html>", "req-test-4", Infinity);
+		assert.match(infDoc, /var settleMs = 3000;/);
+	});
 });

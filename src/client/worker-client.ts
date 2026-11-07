@@ -351,7 +351,7 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 		};
 
 		// Main-thread sandboxed iframe runner for lh:run-demo
-		window.addEventListener("message", (event: MessageEvent) => {
+		worker.addEventListener("message", (event: MessageEvent) => {
 			if (event.data?.type === "lh:run-demo") {
 				const { requestId, html, settleMs, probe } = event.data;
 				const iframe = document.createElement("iframe");
@@ -363,8 +363,18 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 				iframe.style.height = "700px";
 				iframe.style.visibility = "hidden";
 
+				const cleanupTimer = setTimeout(() => {
+					window.removeEventListener("message", onDone);
+					iframe.remove();
+				}, Math.max(5_000, (Number(settleMs) || 3_000) + 10_000));
+
 				const onDone = (doneEvent: MessageEvent) => {
-					if (doneEvent.data?.type === "lh:demo-probe-done" && doneEvent.data?.requestId === requestId) {
+					if (
+						doneEvent.source === iframe.contentWindow &&
+						doneEvent.data?.type === "lh:demo-probe-done" &&
+						doneEvent.data?.requestId === requestId
+					) {
+						clearTimeout(cleanupTimer);
 						window.removeEventListener("message", onDone);
 						worker.postMessage(doneEvent.data);
 						iframe.remove();

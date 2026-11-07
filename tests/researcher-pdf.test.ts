@@ -140,6 +140,31 @@ describe("researcher pdf tools — download + triage", () => {
 		const ftp = asText(await tools.web_fetch_pdf!.execute!("t6", { url: "ftp://example.com/x.pdf" }));
 		assert.match(ftp, /invalid URL/);
 	});
+
+	it("web_fetch_pdf refuses private and cloud-metadata URLs upfront without making a network request", async () => {
+		const dir = await newDir();
+		const tools = createPdfReadTools(dir);
+		let fetchCalled = false;
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async () => {
+			fetchCalled = true;
+			return pdfResponse();
+		}) as typeof fetch;
+
+		try {
+			const loopback = asText(await tools.web_fetch_pdf!.execute!("ssrf-1", { url: "http://127.0.0.1/private.pdf" }));
+			assert.match(loopback, /Refusing to fetch private or local URL/);
+			assert.equal(fetchCalled, false, "network not touched for 127.0.0.1");
+
+			const metadata = asText(
+				await tools.web_fetch_pdf!.execute!("ssrf-2", { url: "http://169.254.169.254/latest/meta-data/" }),
+			);
+			assert.match(metadata, /Refusing to fetch private or local URL/);
+			assert.equal(fetchCalled, false, "network not touched for 169.254.169.254");
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
 });
 
 describe("researcher pdf tools — the temp-dir wall", () => {

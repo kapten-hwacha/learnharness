@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import { pdfExtract, pdfInfo, pdfProbe, pdfSearch } from "../subagents/pdf-ops.ts";
+import { assertPublicHttpUrl, fetchPublicUrl, readBoundedBytes } from "./web.ts";
 
 /**
  * PDF reading tools for the RESEARCHER sub-agent (owner design B,
@@ -102,32 +103,29 @@ export function createPdfReadTools(dir: string): Record<string, AgentTool<any>> 
 				"(short ≤10 pages, medium ≤40, long), and flagged (math/image-heavy) pages. " +
 				"Then read it with pdf_extract / pdf_search. Use when web_fetch reports a URL is a PDF.",
 			parameters: pdfFetchInput,
-			execute: serverExecute("web_fetch_pdf", pdfFetchInput, async ({ url }): Promise<PdfFetchSummary | string> => {
+			execute: serverExecute("web_fetch_pdf", pdfFetchInput, async ({ url }, ctx): Promise<PdfFetchSummary | string> => {
 				try {
-					const parsed = new URL(url);
-					if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-						throw new Error("Only http(s) URLs are supported");
-				} catch {
-					return `web_fetch_pdf failed: invalid URL "${url}"`;
+					assertPublicHttpUrl(url);
+				} catch (err) {
+					return `web_fetch_pdf failed: invalid URL "${url}" (${err instanceof Error ? err.message : String(err)})`;
 				}
 				try {
-					const resp = await fetch(url, {
+					const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+					const signal = ctx?.signal ? AbortSignal.any([timeoutSignal, ctx.signal]) : timeoutSignal;
+					const resp = await fetchPublicUrl(url, {
 						headers: {
 							"User-Agent": USER_AGENT,
 							Accept: "application/pdf,application/octet-stream,*/*",
 						},
-						signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+						signal,
 					});
 					if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
 					const contentType = resp.headers.get("content-type") ?? "";
 					if (!/application\/pdf/i.test(contentType) && !/\.pdf(\?|$)/i.test(parsedPathname(url))) {
 						throw new Error(`Not a PDF (content-type ${contentType.split(";")[0] || "unknown"})`);
 					}
-					const declared = Number(resp.headers.get("content-length") ?? 0);
-					if (declared > MAX_PDF_BYTES) throw new Error("PDF too large (over 25 MB)");
-					const bytes = new Uint8Array(await resp.arrayBuffer());
+					const bytes = Buffer.from(await readBoundedBytes(resp, MAX_PDF_BYTES));
 					if (bytes.length === 0) throw new Error("Empty response");
-					if (bytes.length > MAX_PDF_BYTES) throw new Error("PDF too large (over 25 MB)");
 					const filePath = path.join(dir, pdfFileName(url));
 					await fs.writeFile(filePath, bytes);
 					try {

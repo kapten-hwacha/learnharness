@@ -38,6 +38,9 @@ export function getCliproxyBinary(): string | null {
 }
 
 export function isPortListening(port = CLIPROXY_DEFAULT_PORT): Promise<boolean> {
+	if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+		return Promise.resolve(false);
+	}
 	return new Promise((resolve) => {
 		const socket = new net.Socket();
 		const onError = () => {
@@ -105,6 +108,7 @@ export async function ensureCliProxyRunning(): Promise<{ ok: boolean; error?: st
 			await new Promise((r) => setTimeout(r, 200));
 		}
 
+		stopManagedCliProxy();
 		return { ok: false, error: "Timed out waiting for CLIProxyAPI to start" };
 	} catch (err) {
 		return { ok: false, error: err instanceof Error ? err.message : String(err) };
