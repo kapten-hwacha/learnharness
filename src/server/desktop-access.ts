@@ -5,12 +5,22 @@ export function sameOriginAuthorized(
 	headers: Pick<Headers, "get">,
 	url?: string,
 ): boolean {
+	const origin = headers.get("origin");
+	if (
+		process.env.NODE_ENV !== "production" &&
+		origin !== null &&
+		(origin === "tauri://localhost" ||
+			origin === "http://tauri.localhost" ||
+			origin.startsWith("tauri://"))
+	) {
+		return true;
+	}
+
 	const fetchSite = headers.get("sec-fetch-site")?.toLowerCase();
 	if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
 		return false;
 	}
 
-	const origin = headers.get("origin");
 	if (origin !== null) {
 		if (origin === "null") return false;
 		let parsedOrigin: URL;
