@@ -31,6 +31,6 @@ npm run desktop:dist   # runs "tauri build"
 
 ## In-app updates
 
-Updates are managed via `tauri-plugin-updater` pointing to GitHub Releases for `hwacha/learnharness` (upstream releases at `amosblomqvist/learnharness`).
+Updates are managed via `tauri-plugin-updater` pointing to GitHub Releases for `kapten-hwacha/learnharness` (upstream releases at `amosblomqvist/learnharness`).
 
 Packaged apps check at startup and every 24 hours by default (when `autoUpdate` is not set to `false` in `settings.json`), download available updates, and prompt to restart. **Settings → General** displays update status, manual check, and automatic update toggle. Development builds report updater as disabled.

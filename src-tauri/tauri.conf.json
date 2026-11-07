@@ -48,7 +48,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNCNEY2MjAxNTk5ODQyMUQKUldRZFFwaFpBV0pQTzNrMzlvV2k0Y2RzQVNkODdxcEZlaGU3YnZrTExjWGdCdGVONE9EcU1WWG0K",
       "endpoints": [
-        "https://github.com/hwacha/learnharness/releases/latest/download/latest.json"
+        "https://github.com/kapten-hwacha/learnharness/releases/latest/download/latest.json"
       ]
     }
   }
