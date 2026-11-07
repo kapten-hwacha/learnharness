@@ -3,10 +3,20 @@
 	"version": "0.5.0",
 	"license": "AGPL-3.0-only",
 	"author": {
-		"name": "Amos Blomqvist",
-		"email": "255718537+amosblomqvist@users.noreply.github.com"
+		"name": "hwacha",
+		"email": "karlandres.parts@gmail.com"
 	},
-	"homepage": "https://github.com/amosblomqvist/learnharness",
+	"contributors": [
+		{
+			"name": "Amos Blomqvist (original author)",
+			"email": "255718537+amosblomqvist@users.noreply.github.com"
+		}
+	],
+	"homepage": "https://github.com/hwacha/learnharness",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/hwacha/learnharness.git"
+	},
 	"description": "An agent harness for learning: adaptive teaching, practice, and a persistent knowledge graph.",
 	"type": "module",
 	"private": true,

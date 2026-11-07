@@ -8,11 +8,14 @@
 
 <p align="center"><strong>An agent harness for learning.</strong></p>
 
+> [!NOTE]
+> This repository is a fork maintained by [hwacha](https://github.com/hwacha/learnharness), based on the original [LearnHarness](https://github.com/amosblomqvist/learnharness) created by [Amos Blomqvist](https://github.com/amosblomqvist).
+
 <p align="center">
   <a href="https://learnharness.ai">Download</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="docs/README.md">Documentation</a> ·
-  <a href="https://github.com/amosblomqvist/learnharness/issues">Issues</a> ·
+  <a href="https://github.com/hwacha/learnharness/issues">Issues</a> ·
   <a href="https://discord.gg/5tCHHQEB2e">Discord</a>
 </p>
 
@@ -45,7 +48,7 @@ Future teaching sessions can read the graph instead of starting from scratch. Pr
 
 ## Download and get started
 
-**[Download from learnharness.ai](https://learnharness.ai)** · [GitHub Releases](https://github.com/amosblomqvist/learnharness/releases)
+**[Download from learnharness.ai](https://learnharness.ai)** · [Fork Releases](https://github.com/hwacha/learnharness/releases) · [Upstream Releases](https://github.com/amosblomqvist/learnharness/releases)
 
 *(Note: Desktop packaging and release/signing are currently being migrated to Tauri 2; release binaries for the Tauri desktop shell are in progress.)*
 
@@ -77,7 +80,7 @@ npm test            # fixtures and fake providers
 
 See the [documentation index](docs/README.md) for all guides, [development](docs/development.md) for setup and checks, [architecture](docs/architecture.md) for the runtime, [keyboard shortcuts](docs/keyboard.md), and [desktop builds and releases](docs/desktop-release.md).
 
-Questions, bug reports, and feature requests: [GitHub Issues](https://github.com/amosblomqvist/learnharness/issues).
+Questions, bug reports, and feature requests: [GitHub Issues](https://github.com/hwacha/learnharness/issues) (upstream: [amosblomqvist/learnharness](https://github.com/amosblomqvist/learnharness/issues)).
 
 ## License
 

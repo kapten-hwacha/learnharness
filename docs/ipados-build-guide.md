@@ -84,7 +84,7 @@ iOS requires all binaries to be codesigned by an Apple Developer Team before ins
    ```
 
 ### Bundle Identifier & Deep Linking
-- **Bundle Identifier:** `com.amosblomqvist.learnharness`
+- **Bundle Identifier:** `com.hwacha.learnharness`
 - **URL Scheme:** `learnharness`
   - On desktop, OAuth redirects use a local loopback server (`http://127.0.0.1:port/callback`).
   - On iPadOS, local loopback sockets trigger iOS Local Network permission dialogs. LearnHarness uses custom deep-link URI `learnharness://auth/callback` to seamlessly complete OAuth without socket listeners.

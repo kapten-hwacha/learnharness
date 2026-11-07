@@ -104,7 +104,7 @@ describe("Tauri desktop platform preload", () => {
 		const configPath = fileURLToPath(new URL("../src-tauri/tauri.conf.json", import.meta.url));
 		const config = JSON.parse(readFileSync(configPath, "utf8"));
 
-		assert.equal(config.identifier, "com.amosblomqvist.learnharness");
+		assert.equal(config.identifier, "com.hwacha.learnharness");
 		assert.equal(config.build.frontendDist, "../dist-web");
 
 		const win = config.app.windows[0];

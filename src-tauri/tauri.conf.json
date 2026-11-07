@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LearnHarness",
   "version": "0.5.0",
-  "identifier": "com.amosblomqvist.learnharness",
+  "identifier": "com.hwacha.learnharness",
   "build": {
     "beforeDevCommand": "npm run vite:dev",
     "devUrl": "http://localhost:5173",
@@ -23,12 +23,11 @@
         "trafficLightPosition": {
           "x": 16,
           "y": 22.5
-        },
-        "devtools": true
+        }
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' ipc: tauri: asset: https: data: blob:; connect-src 'self' ipc: tauri: asset: https:; worker-src 'self' blob: tauri:; font-src 'self' data: tauri:;"
+      "csp": "default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' ipc: tauri: asset: https: data: blob:; connect-src 'self' ipc: tauri: asset: https:; worker-src 'self' blob: tauri:; font-src 'self' data: tauri:;"
     }
   },
   "bundle": {
@@ -49,7 +48,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNCNEY2MjAxNTk5ODQyMUQKUldRZFFwaFpBV0pQTzNrMzlvV2k0Y2RzQVNkODdxcEZlaGU3YnZrTExjWGdCdGVONE9EcU1WWG0K",
       "endpoints": [
-        "https://github.com/amosblomqvist/learnharness/releases/latest/download/latest.json"
+        "https://github.com/hwacha/learnharness/releases/latest/download/latest.json"
       ]
     }
   }
