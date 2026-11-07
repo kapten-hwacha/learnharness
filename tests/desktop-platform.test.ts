@@ -118,9 +118,10 @@ describe("Tauri desktop platform preload", () => {
 		const config = JSON.parse(readFileSync(iosConfigPath, "utf8"));
 
 		assert.equal(config.bundle.iOS.developmentTeam, "");
+		assert.equal(config.build?.devUrl, null);
 		const win = config.app.windows[0];
 		assert.equal(win.title, "LearnHarness");
-		assert.equal(win.fullscreen, true);
+		assert.equal(win.fullscreen, undefined);
 		assert.equal(win.resizable, false);
 	});
 
