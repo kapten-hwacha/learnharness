@@ -1,5 +1,3 @@
-import type { UpdateState } from "../core/update-state.ts";
-
 export const ZOOM_LADDER: readonly number[] = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 
 export function stepZoom(current: number, direction: "in" | "out" | "reset"): number {
@@ -217,40 +215,6 @@ export function installTauriPreload(deps: TauriPreloadDeps): void {
 			zoomListeners.add(callback);
 			return () => {
 				zoomListeners.delete(callback);
-			};
-		},
-		async checkForUpdates(): Promise<void> {
-			await deps.invoke("lh_update_check");
-		},
-		async installUpdate(): Promise<void> {
-			await deps.invoke("lh_update_install");
-		},
-		async getUpdateState(): Promise<UpdateState> {
-			return await deps.invoke<UpdateState>("lh_update_get");
-		},
-		onUpdateStatus(callback: (status: UpdateState) => void): () => void {
-			let unlisten: (() => void) | undefined;
-			let active = true;
-			const res = deps.listen<UpdateState>("lh://update-status", (event) => {
-				if (active && event?.payload) {
-					callback(event.payload);
-				}
-			});
-			if (typeof res === "function") {
-				unlisten = res;
-			} else if (res && typeof (res as Promise<any>).then === "function") {
-				void (res as Promise<() => void>).then((fn) => {
-					if (typeof fn === "function") {
-						unlisten = fn;
-						if (!active) {
-							fn();
-						}
-					}
-				});
-			}
-			return () => {
-				active = false;
-				unlisten?.();
 			};
 		},
 		onOpenSettings(callback: (pane: string) => void): () => void {

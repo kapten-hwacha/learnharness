@@ -50,7 +50,6 @@ const STORAGE_KEY = "lh:sidebar-open";
  * Mirrors SIDEBAR_AUTOCLOSE in electron/main.cjs — keep in sync.
  */
 import type { ChatGPTControlBridge, NativeSubscriptionControlBridge } from "@/src/core";
-import type { UpdateState } from "@/components/settings/update-settings.tsx";
 import { FilePathDropZone } from "@/components/file-path-drop-zone";
 import { isDesktop, isIos } from "@/src/core";
 const SIDEBAR_AUTOCLOSE = 928;
@@ -77,12 +76,6 @@ declare global {
 			/** The zoom truth (owner round 7): subscribes to "lh:zoom" pushes; returns unsubscribe. */
 			onZoom?: (cb: (factor: number) => void) => () => void;
 			getZoom?: () => Promise<number>;
-			/** Observational update events and a snapshot for late subscribers. */
-			onUpdateStatus?: (cb: (status: UpdateState) => void) => () => void;
-			getUpdateState?: () => Promise<UpdateState>;
-			/** Explicit manual check also downloads and stages available updates. */
-			checkForUpdates?: () => Promise<void>;
-			installUpdate?: () => void;
 			onOpenSettings?: (cb: (section: string) => void) => () => void;
 		};
 	}

@@ -334,10 +334,7 @@ export const ROLE_SLOT: Readonly<Record<ModelRole, ModelSlotName>> = {
 
 /** General settings — app-level behavior. Version DISPLAY and plans login
  *  live outside the record (package.json / auth.json) by owner decision. */
-export interface GeneralSettings {
-	/** Automatic startup/24h update checks (default ON). Manual checks bypass this. */
-	autoUpdate?: boolean;
-}
+export interface GeneralSettings {}
 
 /** One app-wide dictation preference, shared by every composer. */
 export interface DictationSettings {
@@ -539,7 +536,7 @@ export interface FactorySettings {
 
 export const FACTORY_SETTINGS: FactorySettings = {
 	version: CURRENT_SETTINGS_VERSION,
-	general: { autoUpdate: true },
+	general: {},
 	dictation: { language: "en" },
 	appearance: {
 		mode: "system",
@@ -582,11 +579,8 @@ function sanitizeHexOrNull(value: unknown): string | null {
 const boolOrDrop = (value: unknown): boolean | undefined =>
 	typeof value === "boolean" ? value : undefined;
 
-function sanitizeGeneral(raw: Record<string, unknown>): GeneralSettings {
-	const out: GeneralSettings = {};
-	const autoUpdate = boolOrDrop(raw.autoUpdate);
-	if (autoUpdate !== undefined) out.autoUpdate = autoUpdate;
-	return out;
+function sanitizeGeneral(_raw: Record<string, unknown>): GeneralSettings {
+	return {};
 }
 
 const THINKING_LEVELS: readonly ThinkingLevel[] = [

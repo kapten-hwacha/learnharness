@@ -23,7 +23,7 @@ describe("src/worker/router.ts (35-route /api/* dispatcher)", () => {
 			new Request("http://localhost/api/settings/general", {
 				method: "PUT",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ autoUpdate: false }),
+				body: JSON.stringify({}),
 			}),
 		);
 		assert.equal(putRes.status, 200);

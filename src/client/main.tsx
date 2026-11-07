@@ -10,7 +10,6 @@ import { AppShell, SidebarProvider } from "@/components/sidebar";
 import { ActivityProvider } from "@/components/activity-dock";
 import { ServerEventsProvider } from "@/components/server-events";
 import { AppearanceProvider } from "@/components/settings/appearance";
-import UpdateBanner from "@/components/update-banner";
 import { initWorkerClient } from "./worker-client.ts";
 import { installTauriPreload } from "./tauri-preload.ts";
 import { getPlatform, isDesktop, isIos } from "./platform.ts";
@@ -64,7 +63,6 @@ export function App() {
 					</ActivityProvider>
 				</SidebarProvider>
 			</AppearanceProvider>
-			<UpdateBanner />
 		</ServerEventsProvider>
 	);
 }

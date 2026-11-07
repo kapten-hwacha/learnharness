@@ -434,12 +434,7 @@ export function SettingsDialogBody({
 										title="General"
 										testid="section-general"
 									>
-										<UpdateSettings
-											autoUpdate={record.general?.autoUpdate ?? true}
-											onAutoUpdateChange={(on) =>
-												void write("general", { ...record.general, autoUpdate: on })
-											}
-										/>
+										<UpdateSettings />
 									</SettingsSection>
 								</div>
 							)}

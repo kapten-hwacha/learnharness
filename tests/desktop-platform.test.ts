@@ -6,18 +6,14 @@ import { installTauriPreload, stepZoom, ZOOM_LADDER } from "../src/client/tauri-
 import { getPlatform, isDesktop, isIos, isTauri } from "../src/client/platform.ts";
 
 const EXPECTED_LH_KEYS = [
-	"checkForUpdates",
 	"chatgpt",
 	"expandWindow",
 	"getPathForFile",
-	"getUpdateState",
 	"getZoom",
 	"importFile",
-	"installUpdate",
 	"isIos",
 	"isMobile",
 	"onOpenSettings",
-	"onUpdateStatus",
 	"onZoom",
 	"openSubscriptionBrowser",
 	"platform",

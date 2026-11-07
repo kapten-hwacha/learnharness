@@ -2,11 +2,8 @@ pub mod exec;
 pub mod fs_bridge;
 pub mod http_bridge;
 pub mod oauth;
-pub mod updater;
 pub mod window;
 
-#[cfg(not(target_os = "ios"))]
-use std::fs;
 #[cfg(not(target_os = "ios"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(target_os = "ios"))]
@@ -15,33 +12,12 @@ use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 #[cfg(not(target_os = "ios"))]
 use tauri::Emitter;
-#[cfg(not(target_os = "ios"))]
-use tauri::Manager;
 
 pub const ZOOM_LADDER: [f64; 8] = [0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
 
-#[cfg(not(target_os = "ios"))]
-fn should_auto_update(data_dir: &std::path::Path) -> bool {
-    let settings_path = data_dir.join("settings.json");
-    if let Ok(content) = fs::read_to_string(&settings_path) {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(general) = val.get("general") {
-                if general.get("autoUpdate") == Some(&serde_json::Value::Bool(false)) {
-                    return false;
-                }
-            }
-        }
-    }
-    true
-}
-
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
-
-    #[cfg(not(target_os = "ios"))]
-    {
-        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
-    }
 
     builder =
         builder
@@ -61,15 +37,9 @@ pub fn run() {
                 exec::lh_kill_process,
                 window::lh_expand_window,
                 window::lh_set_zoom,
-                updater::lh_update_get,
-                updater::lh_update_check,
-                updater::lh_update_install,
             ]);
 
     builder = builder.setup(|app| {
-        let is_packaged = !cfg!(debug_assertions);
-        updater::init_updater_machine(is_packaged);
-
         #[cfg(not(target_os = "ios"))]
         {
             let current_zoom_index = Arc::new(AtomicUsize::new(2)); // index 2 is 1.0
@@ -82,10 +52,6 @@ pub fn run() {
                     Some("About LearnHarness"),
                     None,
                 )?)
-                .item(
-                    &MenuItemBuilder::with_id("check_for_updates", "Check for Updates…")
-                        .build(app_handle)?,
-                )
                 .separator()
                 .item(&PredefinedMenuItem::hide(
                     app_handle,
@@ -147,16 +113,6 @@ pub fn run() {
 
             let zoom_idx_clone = current_zoom_index.clone();
             app.on_menu_event(move |app_h, event| match event.id().as_ref() {
-                "check_for_updates" => {
-                    if let Some(main_win) = app_h.get_webview_window("main") {
-                        let _ = main_win.set_focus();
-                    }
-                    let _ = app_h.emit("lh://open-settings", "general");
-                    let handle = app_h.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = updater::lh_update_check(handle).await;
-                    });
-                }
                 "zoom_actual" => {
                     zoom_idx_clone.store(2, Ordering::SeqCst);
                     let _ = app_h.emit("lh://zoom", 1.0);
@@ -174,27 +130,6 @@ pub fn run() {
                     let _ = app_h.emit("lh://zoom", ZOOM_LADDER[next]);
                 }
                 _ => {}
-            });
-
-            // 24h background update check
-            let bg_handle = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                let (data_dir, _, _) = fs_bridge::resolve_app_dirs(&bg_handle);
-                if should_auto_update(&data_dir) {
-                    let _ = updater::lh_update_check(bg_handle.clone()).await;
-                }
-
-                let mut interval =
-                    tokio::time::interval(tokio::time::Duration::from_secs(24 * 3600));
-                interval.tick().await; // discard immediate tick
-                loop {
-                    interval.tick().await;
-                    let (data_dir, _, _) = fs_bridge::resolve_app_dirs(&bg_handle);
-                    if should_auto_update(&data_dir) {
-                        let _ = updater::lh_update_check(bg_handle.clone()).await;
-                    }
-                }
             });
         }
 
