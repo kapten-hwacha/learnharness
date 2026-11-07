@@ -342,9 +342,126 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 
 	if (typeof window !== "undefined") {
 		const originalFetch = window.fetch.bind(window);
+		const metaEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+		const isIosDev = Boolean(metaEnv?.VITE_LH_IOS_DEV);
+		const remoteBackend = isIosDev
+			? metaEnv?.VITE_LH_REMOTE_BACKEND || "http://192.168.1.73:3000"
+			: null;
+
+function toBase64(data: string | Uint8Array | ArrayBuffer): string {
+	if (typeof Buffer !== "undefined") {
+		if (typeof data === "string") return Buffer.from(data, "utf-8").toString("base64");
+		if (data instanceof Uint8Array) return Buffer.from(data).toString("base64");
+		return Buffer.from(new Uint8Array(data)).toString("base64");
+	}
+	if (typeof data === "string") {
+		const bytes = new TextEncoder().encode(data);
+		let binary = "";
+		for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+		return btoa(binary);
+	}
+	const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+	let binary = "";
+	for (let i = 0; i < u8.length; i++) binary += String.fromCharCode(u8[i]!);
+	return btoa(binary);
+}
+
+function fromBase64(base64: string): Uint8Array {
+	if (typeof Buffer !== "undefined") {
+		return Uint8Array.from(Buffer.from(base64, "base64"));
+	}
+	const binary = atob(base64);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+	return bytes;
+}
+
+	async function bridgeFetch(url: string, init?: RequestInit): Promise<Response> {
+		const tauri = typeof window !== "undefined" ? (window as any).__TAURI_INTERNALS__ : null;
+		if (tauri?.invoke) {
+			const method = init?.method ?? "GET";
+			const headers: [string, string][] = [];
+			if (init?.headers) {
+				if (init.headers instanceof Headers) {
+					init.headers.forEach((v, k) => headers.push([k, v]));
+				} else if (Array.isArray(init.headers)) {
+					for (const [k, v] of init.headers) headers.push([k, v]);
+				} else {
+					for (const [k, v] of Object.entries(init.headers)) {
+						if (v !== undefined) headers.push([k, String(v)]);
+					}
+				}
+			}
+
+			let bodyBase64: string | undefined;
+			if (init?.body) {
+				if (typeof init.body === "string" || init.body instanceof Uint8Array || init.body instanceof ArrayBuffer) {
+					bodyBase64 = toBase64(init.body);
+				}
+			}
+
+			const res = (await tauri.invoke("lh_http_fetch", {
+				req: {
+					url,
+					method,
+					headers,
+					bodyBase64,
+				},
+			})) as {
+				status: number;
+				headers: [string, string][];
+				bodyBase64: string;
+			};
+
+			const responseHeaders = new Headers();
+			for (const [k, v] of res.headers) {
+				responseHeaders.append(k, v);
+			}
+
+			const bodyBytes = fromBase64(res.bodyBase64);
+			return new Response(bodyBytes as unknown as BodyInit, {
+				status: res.status,
+				headers: responseHeaders,
+			});
+		}
+
+		return fetch(url, init);
+	}
+
+		if (isIosDev && remoteBackend) {
+			const badge = document.createElement("div");
+			badge.id = "lh-ios-dev-badge";
+			badge.style.cssText =
+				"position:fixed;bottom:8px;right:8px;z-index:99999;padding:4px 8px;font-size:11px;font-family:monospace;background:rgba(0,0,0,0.75);color:#88ff88;border-radius:4px;pointer-events:none;";
+			badge.textContent = `Backend: ${remoteBackend} (Connecting...)`;
+			document.body.appendChild(badge);
+
+			bridgeFetch(`${remoteBackend}/api/chats`, { cache: "no-store" })
+				.then((res) => {
+					if (!res.ok) throw new Error(`HTTP ${res.status}`);
+					return res.json();
+				})
+				.then((data: any) => {
+					const count = Array.isArray(data?.chats) ? data.chats.length : 0;
+					badge.style.color = "#88ff88";
+					badge.textContent = `Backend: OK (${count} chats)`;
+				})
+				.catch((err: any) => {
+					badge.style.color = "#ff6666";
+					badge.textContent = `Backend: ERR (${err?.message || err})`;
+				});
+		}
+
 		window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 			if (isApiUrl(url)) {
+				if (remoteBackend) {
+					const targetUrl =
+						url.startsWith("http://") || url.startsWith("https://")
+							? url
+							: `${remoteBackend}${url.startsWith("/") ? url : "/" + url}`;
+					return bridgeFetch(targetUrl, init);
+				}
 				return portFetch(input, init);
 			}
 			return originalFetch(input, init);
@@ -438,7 +555,28 @@ export class WorkerEventSource extends EventTarget {
 	constructor(url: string | URL, fetchImpl?: typeof fetch) {
 		super();
 		this.url = typeof url === "string" ? url : url.toString();
-		this.fetchImpl = fetchImpl ?? workerFetch ?? (typeof window !== "undefined" ? window.fetch.bind(window) : fetch);
+		this.fetchImpl =
+			fetchImpl ??
+			(typeof window !== "undefined"
+				? window.fetch.bind(window)
+				: workerFetch ?? fetch);
+
+		const metaEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+		const isIosDev = Boolean(metaEnv?.VITE_LH_IOS_DEV);
+		if (isIosDev && this.url.includes("/api/events")) {
+			setTimeout(() => {
+				this.readyState = 1;
+				const openEv = new Event("open");
+				this.onopen?.call(this as unknown as EventSource, openEv);
+				this.dispatchEvent(openEv);
+			}, 50);
+			const timer = setInterval(() => {
+				const ev = new MessageEvent("chats-changed", { data: "{}" });
+				this.dispatchEvent(ev);
+			}, 4000);
+			this.abortController.signal.addEventListener("abort", () => clearInterval(timer));
+			return;
+		}
 
 		if (!fetchImpl && !isApiUrl(this.url) && typeof window !== "undefined" && window.EventSource && window.EventSource !== (WorkerEventSource as unknown)) {
 			return new (window.EventSource as unknown as new (url: string | URL) => WorkerEventSource)(url);
