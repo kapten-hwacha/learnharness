@@ -4,6 +4,11 @@ import { defineConfig } from "vite";
 import { lhViteDevBridgePlugin } from "./src/worker/vite-dev-bridge.ts";
 
 export default defineConfig({
+	base: "./",
+	server: {
+		host: process.env.TAURI_DEV_HOST || "0.0.0.0",
+		port: 5173,
+	},
 	define: {
 		"process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV || "production"),
 		global: "globalThis",

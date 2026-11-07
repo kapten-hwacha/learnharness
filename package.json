@@ -32,7 +32,9 @@
 		"dev:fresh": "bash scripts/dev-fresh.sh",
 		"desktop:dist": "tauri build",
 		"vite:dev": "vite",
-		"vite:build": "vite build"
+		"vite:build": "vite build",
+		"ios:prep": "npm run vite:build && cargo build --release --manifest-path src-tauri/Cargo.toml --target aarch64-apple-ios && mkdir -p src-tauri/gen/apple/Externals/arm64/debug src-tauri/gen/apple/Externals/arm64/release && cp src-tauri/target/aarch64-apple-ios/release/liblearnharness_lib.a src-tauri/gen/apple/Externals/arm64/debug/libapp.a && cp src-tauri/target/aarch64-apple-ios/release/liblearnharness_lib.a src-tauri/gen/apple/Externals/arm64/release/libapp.a",
+		"ios:prep:dev": "VITE_LH_IOS_DEV=1 npm run vite:build && cargo build --release --manifest-path src-tauri/Cargo.toml --target aarch64-apple-ios && mkdir -p src-tauri/gen/apple/Externals/arm64/debug && cp src-tauri/target/aarch64-apple-ios/release/liblearnharness_lib.a src-tauri/gen/apple/Externals/arm64/debug/libapp.a"
 	},
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "1.4.0",
