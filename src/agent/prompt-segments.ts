@@ -30,7 +30,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { PATHS, PROMPTS_OVERRIDE_DIR } from "../../config.ts";
-import { FRAGMENT_RE, isValidSegmentPath, type PromptAgent, type PromptSegmentInfo } from "../core/prompt-segments.ts";
+import { isValidSegmentPath, type PromptAgent, type PromptSegmentInfo } from "../core/prompt-segments.ts";
+import { hasTauriBridge } from "../worker/host-bridge.ts";
+import { getBundledPrompt, listBundledPromptFiles } from "./bundled-assets.ts";
 
 function promptsDir(): string {
 	return path.join(PATHS.root, "src", "agent", "prompts");
@@ -49,16 +51,40 @@ function overrideFileFor(segmentPath: string): string {
 	return path.join(PROMPTS_OVERRIDE_DIR, ...segmentPath.split("/"));
 }
 
+/** In-memory cache for prompt overrides in worker / client environments. */
+export const promptOverrideCache = new Map<string, string | null>();
+
+export function setPromptOverrideCacheEntry(segmentPath: string, text: string | null): void {
+	promptOverrideCache.set(segmentPath, text);
+}
+
+export function replacePromptOverrideCache(entries: Record<string, string>): void {
+	promptOverrideCache.clear();
+	for (const [key, value] of Object.entries(entries)) {
+		promptOverrideCache.set(key, value);
+	}
+}
+
+export function clearPromptOverrideCache(): void {
+	promptOverrideCache.clear();
+}
+
 /** Read one override file, or null when absent/invalid — the composition
  *  side's reader (the store's readOverride is the same mirror layout,
  *  kept separate because the layers may not import each other). */
 export function readPromptOverride(segmentPath: string): string | null {
 	if (!isValidSegmentPath(segmentPath)) return null;
-	try {
-		return fs.readFileSync(overrideFileFor(segmentPath), "utf-8");
-	} catch {
-		return null;
+	if (promptOverrideCache.has(segmentPath)) {
+		return promptOverrideCache.get(segmentPath) ?? null;
 	}
+	if (!hasTauriBridge()) {
+		try {
+			return fs.readFileSync(overrideFileFor(segmentPath), "utf-8");
+		} catch {
+			return null;
+		}
+	}
+	return null;
 }
 
 /** List the SOURCE segments for one agent, in composition order — the
@@ -67,34 +93,21 @@ export function readPromptOverride(segmentPath: string): string | null {
  *  method lead; the shared tool/file/format mechanics are an appendix).
  *  The exact order composeInstructions composes them in. */
 export function listSourceSegments(agent: PromptAgent): Array<{ path: string; shared: boolean; file: string }> {
-	// PRACTICE (owner, 2026-10-04): its own directory plus a CURATED
-	// shared appendix — the teaching base and the question/confidence/
-	// file mechanics stay out (the doctrine contradicts them; 00-base.md
-	// plays the base role), but the FORMATTING guide composes for every
-	// agent (owner, 2026-10-04 late): LaTeX delimiters and markdown apply
-	// in all settings — practice shares the $...$/$$...$$ authoring contract.
 	const segments: Array<{ path: string; shared: boolean; file: string }> = agent === "practice" ? [] : [
 		{ path: "system-prompt.md", shared: true, file: PATHS.teacherPrompt },
 	];
-	const dir = path.join(promptsDir(), agent);
-	if (fs.existsSync(dir)) {
-		const fragments = fs.readdirSync(dir).filter((f) => FRAGMENT_RE.test(f)).sort();
-		for (const f of fragments) {
-			segments.push({ path: `${agent}/${f}`, shared: false, file: path.join(dir, f) });
-		}
+
+	const agentFiles = listBundledPromptFiles(agent);
+	for (const f of agentFiles) {
+		segments.push({ path: `${agent}/${f}`, shared: false, file: path.join(promptsDir(), agent, f) });
 	}
-	const sharedDir = path.join(promptsDir(), "shared");
-	if (fs.existsSync(sharedDir)) {
-		// The practice allowlist (owner, 2026-10-04 late): formatting only.
-		const allow = agent === "practice" ? PRACTICE_SHARED_FRAGMENTS : null;
-		const sharedFragments = fs
-			.readdirSync(sharedDir)
-			.filter((f) => FRAGMENT_RE.test(f) && (allow === null || allow.includes(f)))
-			.sort();
-		for (const f of sharedFragments) {
-			segments.push({ path: `shared/${f}`, shared: true, file: path.join(sharedDir, f) });
-		}
+
+	const allow = agent === "practice" ? PRACTICE_SHARED_FRAGMENTS : null;
+	const sharedFiles = listBundledPromptFiles("shared").filter((f) => allow === null || allow.includes(f));
+	for (const f of sharedFiles) {
+		segments.push({ path: `shared/${f}`, shared: true, file: path.join(promptsDir(), "shared", f) });
 	}
+
 	return segments;
 }
 
@@ -109,11 +122,13 @@ export function effectivePromptSegments(
 	switches: Record<string, boolean>,
 ): PromptSegmentInfo[] {
 	return listSourceSegments(agent).map((segment) => {
-		let sourceText: string;
-		try {
-			sourceText = fs.readFileSync(segment.file, "utf-8");
-		} catch {
-			sourceText = ""; // source unreadable — the agent loader would crash anyway
+		let sourceText = getBundledPrompt(segment.path);
+		if (sourceText === null) {
+			try {
+				sourceText = fs.readFileSync(segment.file, "utf-8");
+			} catch {
+				sourceText = ""; // source unreadable — the agent loader would crash anyway
+			}
 		}
 		const overrideText = readPromptOverride(segment.path);
 		return {

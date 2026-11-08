@@ -1,9 +1,7 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { Type, type Static } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { PATHS } from "../../../config.ts";
 import { serverExecute } from "../tool-execute.ts";
+import { listBundledSkills } from "../bundled-assets.ts";
 
 export interface DiscoveredSkill {
 	name: string;
@@ -40,27 +38,8 @@ function parseSkillFile(dirName: string, raw: string): DiscoveredSkill {
 	return { name, description, body: body!.trim() };
 }
 
-function skillsDir(): string {
-	return path.join(PATHS.root, "src", "agent", "skills");
-}
-
 function discoverSkills(): DiscoveredSkill[] {
-	const dirPath = skillsDir();
-	if (!fs.existsSync(dirPath)) return [];
-	const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-	const dirs = entries
-		.filter((e) => e.isDirectory())
-		.map((e) => e.name)
-		.sort();
-	const skills: DiscoveredSkill[] = [];
-	for (const dir of dirs) {
-		const skillFile = path.join(dirPath, dir, "SKILL.md");
-		if (fs.existsSync(skillFile)) {
-			const content = fs.readFileSync(skillFile, "utf-8");
-			skills.push(parseSkillFile(dir, content));
-		}
-	}
-	return skills;
+	return listBundledSkills().map((s) => parseSkillFile(s.dirName, s.rawContent));
 }
 
 const discoveredSkills: DiscoveredSkill[] = discoverSkills();
