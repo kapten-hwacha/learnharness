@@ -52,7 +52,8 @@ function overrideFileFor(segmentPath: string): string {
 }
 
 /** In-memory cache for prompt overrides in worker / client environments. */
-export const promptOverrideCache = new Map<string, string | null>();
+export const promptOverrideCache: Map<string, string | null> =
+	((globalThis as any).__LH_PROMPT_OVERRIDE_CACHE__ ??= new Map<string, string | null>());
 
 export function setPromptOverrideCacheEntry(segmentPath: string, text: string | null): void {
 	promptOverrideCache.set(segmentPath, text);

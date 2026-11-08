@@ -404,3 +404,22 @@ export function titleFromPrompt(prompt: string): string {
 	if (cut < 0) cut = TITLE_MAX_CHARS;
 	return `${oneLine.slice(0, cut)}…`;
 }
+
+export interface NodeSearchHit {
+	nodeId: string;
+	name: string;
+	statement: string;
+	snippet: string;
+}
+
+export interface FsrsCardRow {
+	nodeId: string;
+	stability: number | null;
+	difficulty: number | null;
+	lastReviewMs: number | null;
+	reviews: number;
+	dueAtMs: number;
+	lane: "review" | "new";
+	seedRating: 1 | 2 | 3 | 4;
+	stage: "practiced" | "demonstrated" | "retained";
+}

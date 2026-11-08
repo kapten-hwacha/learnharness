@@ -1,43 +1,42 @@
 /**
- * Server-side persistence for the graph render settings (the settings-panel
- * controls): data/render-settings.json — read-modify-write, NOT a ledger.
+ * Persistence for graph render settings.
  *
- * The shape, defaults, and sanitizer live in src/core/render-settings.ts
- * (pure, shared with the client); this module only moves bytes. Whatever
- * comes off disk is sanitized by the caller on load — and we sanitize on
- * write too, so the file can never hold an out-of-range value that would
- * silently shift a slider.
+ * When getTauriInvoke() is non-null, calls Rust Tauri commands (lh_kv_get / lh_kv_set).
+ * When getTauriInvoke() is null, falls back to memory-backend.ts (Node tests).
  */
 
-import fs from "node:fs";
-import path from "node:path";
-import { RENDER_SETTINGS_FILE } from "../../config.ts";
 import { DEFAULT_RENDER_SETTINGS, sanitizeRenderSettings, type GraphRenderSettings } from "../core/render-settings.ts";
-import { assertGraphFormat, ensureGraphFormat } from "./graph-format.ts";
-import { writeFileAtomicSync } from "./atomic-write.ts";
+import { getTauriInvoke } from "../worker/host-bridge.ts";
+import { getMemoryKv, setMemoryKv } from "./memory-backend.ts";
 
-/** The persisted settings, or null when no file exists yet (first boot). */
-export function readRenderSettings(): GraphRenderSettings | null {
-	assertGraphFormat(); // honest refusal on a newer-stamped data dir
-	let raw: string;
+export async function readRenderSettings(): Promise<GraphRenderSettings | null> {
+	let raw: unknown = null;
 	try {
-		raw = fs.readFileSync(RENDER_SETTINGS_FILE, "utf-8");
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			raw = await invoke<unknown | null>("lh_kv_get", { key: "render_settings" });
+		} else {
+			raw = await getMemoryKv("render_settings");
+		}
 	} catch {
-		return null; // never booted / unreadable → caller uses defaults
+		return null;
 	}
+	if (raw === null || raw === undefined) return null;
 	try {
-		return sanitizeRenderSettings(JSON.parse(raw));
+		return sanitizeRenderSettings(raw);
 	} catch {
-		return null; // corrupt → defaults, never crash the view
+		return null;
 	}
 }
 
-/** Persist settings (sanitized). Returns what was written. */
-export function writeRenderSettings(raw: unknown): GraphRenderSettings {
+export async function writeRenderSettings(raw: unknown): Promise<GraphRenderSettings> {
 	const settings = sanitizeRenderSettings(raw);
-	fs.mkdirSync(path.dirname(RENDER_SETTINGS_FILE), { recursive: true });
-	ensureGraphFormat(); // the lazy format stamp (graph-format.ts)
-	writeFileAtomicSync(RENDER_SETTINGS_FILE, JSON.stringify(settings, null, "\t"), { allowInPlaceFallback: true });
+	const invoke = getTauriInvoke();
+	if (invoke) {
+		await invoke("lh_kv_set", { key: "render_settings", value: settings });
+	} else {
+		await setMemoryKv("render_settings", settings);
+	}
 	return settings;
 }
 

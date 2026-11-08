@@ -1,89 +1,63 @@
 /**
- * The prompt-override STORE (settings-storage wave, 2026-09-19; P2
- * reconciliation same day): the override-file CRUD behind the core port —
- * list/read/write/delete under config.PROMPTS_OVERRIDE_DIR.
+ * Prompt-override store behind the core port.
  *
- * The CANONICAL segment discovery + resolution (listSourceSegments,
- * effectivePromptSegments, allSegmentPaths) lives in the agent layer
- * (src/agent/prompt-segments.ts) — composition is an agent concern, and
- * the architecture law pins the layers apart (store may not import agent;
- * agent may not import store). Both sides share the pure path grammar
- * (src/core/prompt-segments.ts); the store's readOverride and the agent's
- * readPromptOverride read the SAME mirror layout.
- *
- * SEGMENTS: a prompt composes from the SHARED base
- * (src/agent/system-prompt.md), the shared/ fragments (composed by both
- * agents), plus every numeric-prefix *.md fragment in the agent's own
- * directory — see the agent module for the full rules.
- *
- * OVERRIDES: override files mirror the source layout under
- * config.PROMPTS_OVERRIDE_DIR — "system-prompt.md" at the root,
- * "shared/<file>", "teacher/<file>" / "prober/<file>" (POSIX-relative
- * paths, the same keys as the settings record's agent.prompts switches).
- * File presence is NOT the override: the switch is (owner decision) — the
- * user keeps their file and flips back to the source default to compare.
- *
- * Path discipline: only .md under the override dir, no traversal (no "..",
- * absolute, or empty segments) — a hand-crafted path outside the mirror
- * layout is rejected (null / no-op), never written.
+ * Implements core/ports.ts PromptOverrideStore.
+ * When getTauriInvoke() is non-null, calls Rust Tauri commands.
+ * When getTauriInvoke() is null, falls back to memory-backend.ts (Node tests).
  */
 
-import fs from "node:fs";
-import path from "node:path";
-import { PROMPTS_OVERRIDE_DIR } from "../../config.ts";
 import { isValidSegmentPath } from "../core/prompt-segments.ts";
 import type { PromptOverrideStore } from "../core/ports.ts";
-import { removeLeftoverTemps, writeFileAtomicSync } from "./atomic-write.ts";
+import { getTauriInvoke } from "../worker/host-bridge.ts";
+import {
+	deleteMemoryPromptOverride,
+	listMemoryPromptOverrides,
+	readMemoryPromptOverride,
+	writeMemoryPromptOverride,
+} from "./memory-backend.ts";
 
-/** Absolute path for an override file (unchecked — validate first). */
-function overrideFileFor(segmentPath: string): string {
-	return path.join(PROMPTS_OVERRIDE_DIR, ...segmentPath.split("/"));
+function getPromptOverrideCache(): Map<string, string | null> {
+	return ((globalThis as any).__LH_PROMPT_OVERRIDE_CACHE__ ??= new Map<string, string | null>());
 }
 
-/** The store adapter (core/ports.ts). */
 export const promptOverrides: PromptOverrideStore = {
-	listOverrides(): string[] {
-		const out: string[] = [];
-		const walk = (dir: string, prefix: string) => {
-			let entries: fs.Dirent[];
-			try {
-				entries = fs.readdirSync(dir, { withFileTypes: true });
-			} catch {
-				return; // no dir yet = no overrides
-			}
-			for (const entry of entries) {
-				const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-				if (entry.isDirectory()) walk(path.join(dir, entry.name), rel);
-				else if (entry.isFile() && entry.name.endsWith(".md") && isValidSegmentPath(rel)) out.push(rel);
-			}
-		};
-		walk(PROMPTS_OVERRIDE_DIR, "");
-		return out.sort();
+	async listOverrides(): Promise<string[]> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			const raw = await invoke<string[]>("lh_prompt_override_list");
+			return (raw ?? []).sort();
+		}
+		return await listMemoryPromptOverrides();
 	},
 
-	readOverride(segmentPath: string): string | null {
+	async readOverride(segmentPath: string): Promise<string | null> {
 		if (!isValidSegmentPath(segmentPath)) return null;
-		try {
-			return fs.readFileSync(overrideFileFor(segmentPath), "utf-8");
-		} catch {
-			return null;
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			return await invoke<string | null>("lh_prompt_override_read", { segmentPath });
+		}
+		return await readMemoryPromptOverride(segmentPath);
+	},
+
+	async writeOverride(segmentPath: string, text: string): Promise<void> {
+		if (!isValidSegmentPath(segmentPath)) return;
+		getPromptOverrideCache().set(segmentPath, text);
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_prompt_override_write", { segmentPath, content: text });
+		} else {
+			await writeMemoryPromptOverride(segmentPath, text);
 		}
 	},
 
-	writeOverride(segmentPath: string, text: string): void {
+	async deleteOverride(segmentPath: string): Promise<void> {
 		if (!isValidSegmentPath(segmentPath)) return;
-		const file = overrideFileFor(segmentPath);
-		fs.mkdirSync(path.dirname(file), { recursive: true });
-		writeFileAtomicSync(file, text, { allowInPlaceFallback: true });
-	},
-
-	deleteOverride(segmentPath: string): void {
-		if (!isValidSegmentPath(segmentPath)) return;
-		try {
-			fs.unlinkSync(overrideFileFor(segmentPath));
-		} catch {
-			// absent already = done
+		getPromptOverrideCache().delete(segmentPath);
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_prompt_override_delete", { segmentPath });
+		} else {
+			await deleteMemoryPromptOverride(segmentPath);
 		}
-		removeLeftoverTemps(overrideFileFor(segmentPath));
 	},
 };

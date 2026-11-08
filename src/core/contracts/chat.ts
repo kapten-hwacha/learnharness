@@ -356,3 +356,9 @@ export interface ArtifactPartProps {
 		reveal?: unknown;
 	};
 }
+
+export interface ChatSearchHit {
+	chatId: string;
+	title: string;
+	snippet: string;
+}

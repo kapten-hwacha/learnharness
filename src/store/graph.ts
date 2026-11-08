@@ -1,83 +1,52 @@
 /**
- * GraphStore — the fs JSONL adapter: the append-only ledgers at
- * config.LEDGER_FILES (contracts.ts "v1 emission").
- *   nodes.jsonl     GraphNode        — one line per node write: the FIRST
- *                                      line for an id defines it; a later
- *                                      line with a REPEATED id is a
- *                                      link-append (session phrasings join
- *                                      aliases, provenance unions); reads
- *                                      merge by id (core/graph.ts getGraph)
- *   chains.jsonl    GraphChain       — one line per chain ASSERTION (a second
- *                                      session asserting the same
- *                                      (premises, conclusion) appends
- *                                      another line; readers merge)
- *   sessions.jsonl  SessionCheckpoint— emission checkpoints (foldedAt)
- *   coverage.jsonl  CoverageEntry    — per-message extraction coverage
+ * GraphStore — Tauri IPC / in-memory SQLite store adapter.
  *
- * CHAINS-PRIMARY (owner, 2026-09-30): there is NO edges ledger — the edge
- * view (implication nodes + untyped arrows) is derived in core/graph.ts on
- * every read and never persisted. A stale edges.jsonl left by a pre-chains
- * build is deleted once, here, at adapter load (same doctrine as the
- * events-ledger purge below).
- *
- * Plus config.SOURCES_FILE (sources.json): the imported-notes bookkeeping
- * (NOT a ledger) — one JSON map, src-id → NotesSource, read-modify-write
- * like a chat file. The format-agnostic front door (2026-09-13).
- *
- * Implements core/ports.ts GraphStore. data/graph/* is exclusively this
- * adapter's. Reads are strict against the contracts.ts shapes (the 2026-09-02
- * graph redesign): corrupt lines are skipped, never guessed at — the ledgers
- * are the source of truth and everything else is derived (core/graph.ts,
- * which takes this port as a parameter). Same idioms as src/store/chats.ts:
- * sync fs, no framework.
+ * Implements core/ports.ts GraphStore.
+ * When getTauriInvoke() is non-null, calls Rust Tauri commands (lh_*).
+ * When getTauriInvoke() is null, falls back to memory-backend.ts (Node tests).
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { LEDGER_FILES, POSITIONS_FILE, SOURCES_FILE } from "../../config.ts";
-import { assertGraphFormat, ensureGraphFormat } from "./graph-format.ts";
-import { removeLeftoverTemps, writeFileAtomicSync } from "./atomic-write.ts";
 import type {
+	CoverageEntry,
+	ExtractionRunUsage,
+	FsrsCardRow,
 	GraphChain,
 	GraphNode,
 	GraphRegroup,
-	ExtractionRunUsage,
+	NodeSearchHit,
 	NotesSource,
 	Position,
+	PracticeHistory,
+	PracticeRecord,
 	ProvenancePoint,
-	CoverageEntry,
 	SessionCheckpoint,
 } from "../core/contracts.ts";
 import type { GraphStore } from "../core/ports.ts";
-
-// ─── JSONL primitives ────────────────────────────────────────────────────────
-
-function appendLine<T>(file: string, record: T): void {
-	fs.mkdirSync(path.dirname(file), { recursive: true });
-	ensureGraphFormat(); // the lazy format stamp (graph-format.ts)
-	fs.appendFileSync(file, `${JSON.stringify(record)}\n`, "utf-8");
-}
-
-function readRawLines(file: string): unknown[] {
-	let raw: string;
-	try {
-		raw = fs.readFileSync(file, "utf-8");
-	} catch {
-		return []; // no ledger yet — nothing has ever been emitted
-	}
-	const out: unknown[] = [];
-	for (const line of raw.split("\n")) {
-		const trimmed = line.trim();
-		if (trimmed.length === 0) continue;
-		try {
-			out.push(JSON.parse(trimmed));
-		} catch {
-			// Corrupt line: skip rather than fail the whole read — a torn
-			// append must never take the home graph down with it.
-		}
-	}
-	return out;
-}
+import { getTauriInvoke } from "../worker/host-bridge.ts";
+import {
+	memoryAppendChain,
+	memoryAppendCheckpoint,
+	memoryAppendCoverage,
+	memoryAppendNode,
+	memoryAppendRegroup,
+	memoryAppendSourceUsage,
+	memoryDeleteSources,
+	memoryGetGraphRevision,
+	memoryReadChains,
+	memoryReadCheckpoints,
+	memoryReadCoverage,
+	memoryReadFsrsCards,
+	memoryReadNodes,
+	memoryReadPositions,
+	memoryReadPracticeHistory,
+	memoryReadRegroups,
+	memoryReadSources,
+	memoryRewriteLedgers,
+	memorySearchNodes,
+	memorySyncFsrsCards,
+	memoryUpsertSource,
+	memoryWritePositions,
+} from "./memory-backend.ts";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null;
@@ -85,252 +54,290 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 const isString = (v: unknown): v is string => typeof v === "string";
 
-/** Strict shape guards — anything not matching a W4 ledger shape is skipped. */
-function readValid<T>(file: string, isValid: (v: unknown) => v is T): T[] {
-	assertGraphFormat(); // honest refusal on a newer-stamped data dir
-	return readRawLines(file).filter(isValid);
+function parseIfString(item: unknown): unknown {
+	if (typeof item === "string") {
+		try {
+			return JSON.parse(item);
+		} catch {
+			return null;
+		}
+	}
+	return item;
 }
 
-/** Provenance points are (chatId, messageId) pairs — message-granular. */
-const isProvenancePoint = (v: unknown): v is ProvenancePoint =>
-	isRecord(v) && isString(v.chatId) && isString(v.messageId);
+export const isProvenancePoint = (v: unknown): v is ProvenancePoint => {
+	const item = parseIfString(v);
+	return isRecord(item) && isString(item.chatId) && isString(item.messageId);
+};
 
+export const isGraphNode = (v: unknown): v is GraphNode => {
+	const item = parseIfString(v);
+	return (
+		isRecord(item) &&
+		isString(item.id) &&
+		isString(item.name) &&
+		isString(item.statement) &&
+		Array.isArray(item.aliases) &&
+		item.aliases.every(isString) &&
+		isString(item.createdAt) &&
+		Array.isArray(item.provenance) &&
+		item.provenance.every(isProvenancePoint)
+	);
+};
 
-const isGraphNode = (v: unknown): v is GraphNode =>
-	isRecord(v) &&
-	isString(v.id) &&
-	isString(v.name) &&
-	isString(v.statement) &&
-	Array.isArray(v.aliases) &&
-	v.aliases.every(isString) &&
-	isString(v.createdAt) &&
-	Array.isArray(v.provenance) &&
-	v.provenance.every(isProvenancePoint);
+export const isGraphChain = (v: unknown): v is GraphChain => {
+	const item = parseIfString(v);
+	return (
+		isRecord(item) &&
+		isString(item.id) &&
+		Array.isArray(item.premises) &&
+		item.premises.length > 0 &&
+		item.premises.every(isString) &&
+		isString(item.conclusion) &&
+		Array.isArray(item.provenance) &&
+		item.provenance.every(isProvenancePoint) &&
+		isString(item.createdAt)
+	);
+};
 
-/** A chain line: premises ≥ 1 (a chain IS an argument — bare propositions
- *  ride the node ledger alone), every member a string, conclusion a string.
- *  Endpoint EXISTENCE is the derivation's concern (it drops dangling
- *  chains); the store only shapes. */
-const isGraphChain = (v: unknown): v is GraphChain =>
-	isRecord(v) &&
-	isString(v.id) &&
-	Array.isArray(v.premises) &&
-	v.premises.length > 0 &&
-	v.premises.every(isString) &&
-	isString(v.conclusion) &&
-	Array.isArray(v.provenance) &&
-	v.provenance.every(isProvenancePoint) &&
-	isString(v.createdAt);
+export const isCheckpoint = (v: unknown): v is SessionCheckpoint => {
+	const item = parseIfString(v);
+	return isRecord(item) && isString(item.chatId) && isString(item.foldedAt);
+};
 
-const isCheckpoint = (v: unknown): v is SessionCheckpoint =>
-	isRecord(v) && isString(v.chatId) && isString(v.foldedAt);
+export const isCoverageEntry = (v: unknown): v is CoverageEntry => {
+	const item = parseIfString(v);
+	return (
+		isRecord(item) &&
+		isString(item.chatId) &&
+		isString(item.fp) &&
+		typeof item.tokens === "number" &&
+		isString(item.foldedAt)
+	);
+};
 
-const isCoverageEntry = (v: unknown): v is CoverageEntry =>
-	isRecord(v) && isString(v.chatId) && isString(v.fp) && typeof v.tokens === "number" && isString(v.foldedAt);
+export const isGraphRegroup = (v: unknown): v is GraphRegroup => {
+	const item = parseIfString(v);
+	return (
+		isRecord(item) &&
+		isString(item.id) &&
+		isString(item.nodeId) &&
+		isString(item.targetSessionId) &&
+		isString(item.reason) &&
+		isString(item.regroupedAt)
+	);
+};
 
-const isGraphRegroup = (v: unknown): v is GraphRegroup =>
-	isRecord(v) &&
-	isString(v.id) &&
-	isString(v.nodeId) &&
-	isString(v.targetSessionId) &&
-	isString(v.reason) &&
-	isString(v.regroupedAt);
+export const isPosition = (v: unknown): v is Position => {
+	const item = parseIfString(v);
+	return (
+		isRecord(item) &&
+		typeof item.x === "number" &&
+		Number.isFinite(item.x) &&
+		typeof item.y === "number" &&
+		Number.isFinite(item.y)
+	);
+};
 
-// ─── the port implementation ────────────────────────────────────────────────
+export const isNotesSource = (v: unknown): v is NotesSource => {
+	const item = parseIfString(v);
+	return isRecord(item) && isString(item.id) && isString(item.filePath) && isString(item.importedAt);
+};
 
 export const graphStore: GraphStore = {
-	appendNode(node: GraphNode): void {
-		appendLine(LEDGER_FILES.nodes, node);
-	},
-	/** Raw node lines in append order. A node id may appear on more than
-	 *  one line (a later session's LINK-append: phrasings + provenance); the
-	 *  derivation (core/graph.ts getGraph) merges lines by id. */
-	readNodes(): GraphNode[] {
-		return readValid(LEDGER_FILES.nodes, isGraphNode);
-	},
-
-	/** Append one chain ASSERTION; readers merge lines by (premises,
-	 *  conclusion). */
-	appendChain(assertion: GraphChain): void {
-		appendLine(LEDGER_FILES.chains, assertion);
-	},
-	readChains(): GraphChain[] {
-		return readValid(LEDGER_FILES.chains, isGraphChain);
+	async appendNode(node: GraphNode): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_graph_append_node", { node });
+		} else {
+			await memoryAppendNode(node);
+		}
 	},
 
-	appendCheckpoint(checkpoint: SessionCheckpoint): void {
-		appendLine(LEDGER_FILES.sessions, checkpoint);
-	},
-	readCheckpoints(): SessionCheckpoint[] {
-		return readValid(LEDGER_FILES.sessions, isCheckpoint);
-	},
-
-	appendCoverage(entry: CoverageEntry): void {
-		appendLine(LEDGER_FILES.coverage, entry);
-	},
-	readCoverage(): CoverageEntry[] {
-		return readValid(LEDGER_FILES.coverage, isCoverageEntry);
+	async readNodes(): Promise<GraphNode[]> {
+		const invoke = getTauriInvoke();
+		const raw = invoke ? await invoke<unknown[]>("lh_graph_read_nodes") : await memoryReadNodes();
+		return (raw ?? []).filter(isGraphNode);
 	},
 
-	appendRegroup(regroup: GraphRegroup): void {
-		appendLine(LEDGER_FILES.regroups, regroup);
-	},
-	readRegroups(): readonly GraphRegroup[] {
-		return readValid(LEDGER_FILES.regroups, isGraphRegroup);
+	async appendChain(assertion: GraphChain): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_graph_append_chain", { assertion });
+		} else {
+			await memoryAppendChain(assertion);
+		}
 	},
 
-	// ── imported-notes bookkeeping (config.SOURCES_FILE — a JSON map) ──
+	async readChains(): Promise<GraphChain[]> {
+		const invoke = getTauriInvoke();
+		const raw = invoke ? await invoke<unknown[]>("lh_graph_read_chains") : await memoryReadChains();
+		return (raw ?? []).filter(isGraphChain);
+	},
 
-	/** Upsert: keeps the existing record's usage log when re-importing. */
-	upsertSource(source: NotesSource): void {
-		const all = readSourceMap();
-		const prev = all[source.id];
-		all[source.id] = prev ? { ...source, extractions: prev.extractions } : source;
-		writeSourceMap(all);
+	async appendCheckpoint(checkpoint: SessionCheckpoint): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_graph_append_checkpoint", { checkpoint });
+		} else {
+			await memoryAppendCheckpoint(checkpoint);
+		}
 	},
-	readSources(): NotesSource[] {
-		return Object.values(readSourceMap());
+
+	async readCheckpoints(): Promise<SessionCheckpoint[]> {
+		const invoke = getTauriInvoke();
+		const raw = invoke ? await invoke<unknown[]>("lh_graph_read_checkpoints") : await memoryReadCheckpoints();
+		return (raw ?? []).filter(isCheckpoint);
 	},
-	deleteSources(ids: ReadonlySet<string>): number {
+
+	async appendCoverage(entry: CoverageEntry): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_graph_append_coverage", { entry });
+		} else {
+			await memoryAppendCoverage(entry);
+		}
+	},
+
+	async readCoverage(): Promise<CoverageEntry[]> {
+		const invoke = getTauriInvoke();
+		const raw = invoke ? await invoke<unknown[]>("lh_graph_read_coverage") : await memoryReadCoverage();
+		return (raw ?? []).filter(isCoverageEntry);
+	},
+
+	async appendRegroup(regroup: GraphRegroup): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_graph_append_regroup", { regroup });
+		} else {
+			await memoryAppendRegroup(regroup);
+		}
+	},
+
+	async readRegroups(): Promise<readonly GraphRegroup[]> {
+		const invoke = getTauriInvoke();
+		const raw = invoke ? await invoke<unknown[]>("lh_graph_read_regroups") : await memoryReadRegroups();
+		return (raw ?? []).filter(isGraphRegroup);
+	},
+
+	async upsertSource(source: NotesSource): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_graph_upsert_source", { source });
+		} else {
+			await memoryUpsertSource(source);
+		}
+	},
+
+	async readSources(): Promise<NotesSource[]> {
+		const invoke = getTauriInvoke();
+		const raw = invoke ? await invoke<unknown[]>("lh_graph_read_sources") : await memoryReadSources();
+		return (raw ?? []).filter(isNotesSource);
+	},
+
+	async deleteSources(ids: ReadonlySet<string>): Promise<number> {
 		if (ids.size === 0) return 0;
-		const all = readSourceMap();
-		let removed = 0;
-		for (const id of ids) if (Object.hasOwn(all, id)) { delete all[id]; removed++; }
-		if (removed === 0) return 0;
-		writeFileAtomicSync(SOURCES_FILE, JSON.stringify(all, null, "\t"));
-		removeLeftoverTemps(SOURCES_FILE); // crash leftovers would still hold the deleted sources
-		return removed;
-	},
-	/** Idempotent per startedAt — same discipline as chats.appendExtractionUsage. */
-	appendSourceUsage(id: string, entry: ExtractionRunUsage): void {
-		const all = readSourceMap();
-		const source = all[id];
-		if (!source) return; // no such source — nothing to bill against
-		source.extractions = source.extractions?.some((r) => r.startedAt === entry.startedAt)
-			? source.extractions
-			: [...(source.extractions ?? []), entry];
-		writeSourceMap(all);
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			return await invoke<number>("lh_graph_delete_sources", { ids: Array.from(ids) });
+		}
+		return await memoryDeleteSources(ids);
 	},
 
-	// ── the layout ledger (config.POSITIONS_FILE — a JSON map) ──
-	readPositions(): Record<string, Position> {
-		return readPositionMap();
-	},
-	writePositions(positions: Record<string, Position>): void {
-		writePositionMap(positions);
+	async appendSourceUsage(id: string, entry: ExtractionRunUsage): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_graph_append_source_usage", { id, entry });
+		} else {
+			await memoryAppendSourceUsage(id, entry);
+		}
 	},
 
-	/** THE DESTRUCTIVE SEAM (wave 6 session deletion): atomic full-content
-	 *  replacement per provided ledger (atomic-write.ts: crashes mid-write
-	 *  leave the original ledger and orphan .tmp-* files, never torn
-	 *  ledger). Empty arrays write an empty file — a purged ledger reads
-	 *  as "nothing yet", same as never-emitted. */
-	rewriteLedgers(next: {
+	async readPositions(): Promise<Record<string, Position>> {
+		const invoke = getTauriInvoke();
+		const raw = invoke ? await invoke<Record<string, unknown>>("lh_graph_read_positions") : await memoryReadPositions();
+		const out: Record<string, Position> = {};
+		for (const [id, value] of Object.entries(raw ?? {})) {
+			if (isPosition(value)) out[id] = { x: value.x, y: value.y };
+		}
+		return out;
+	},
+
+	async writePositions(positions: Record<string, Position>): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_graph_write_positions", { positions });
+		} else {
+			await memoryWritePositions(positions);
+		}
+	},
+
+	async rewriteLedgers(next: {
 		nodes?: GraphNode[];
 		chains?: GraphChain[];
 		coverage?: CoverageEntry[];
 		checkpoints?: SessionCheckpoint[];
 		regroups?: GraphRegroup[];
-	}): void {
-		const files = {
-			nodes: LEDGER_FILES.nodes,
-			chains: LEDGER_FILES.chains,
-			coverage: LEDGER_FILES.coverage,
-			checkpoints: LEDGER_FILES.sessions,
-			regroups: LEDGER_FILES.regroups,
-		} as const;
-		for (const [key, records] of Object.entries(next) as [keyof typeof files, unknown[]][]) {
-			const file = files[key];
-			fs.mkdirSync(path.dirname(file), { recursive: true });
-			// JSONL: one record per line, trailing newline — the reader
-			// must see exactly what appendLine would have written.
-			const body = records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
-			writeFileAtomicSync(file, body);
-			removeLeftoverTemps(file); // crash leftovers would still hold the purged records
+	}): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_graph_rewrite_ledgers", { next });
+		} else {
+			await memoryRewriteLedgers(next);
 		}
+	},
+
+	async searchNodes(query: string, limit?: number): Promise<NodeSearchHit[]> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			return await invoke<NodeSearchHit[]>("lh_search_nodes", { query, limit });
+		}
+		return await memorySearchNodes(query, limit);
+	},
+
+	async readPracticeHistory(): Promise<PracticeHistory> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			const res = await invoke<{
+				records?: PracticeRecord[];
+				teachChatIds?: string[];
+				teachRatings?: Record<string, 1 | 2 | 3 | 4>;
+			}>("lh_read_practice_history");
+			return {
+				records: res?.records ?? [],
+				teachChatIds: new Set(res?.teachChatIds ?? []),
+				teachRatings: new Map(
+					Object.entries(res?.teachRatings ?? {}).map(([k, v]) => [k, v as 1 | 2 | 3 | 4]),
+				),
+			};
+		}
+		return await memoryReadPracticeHistory();
+	},
+
+	async syncFsrsCards(cards: FsrsCardRow[]): Promise<void> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			await invoke("lh_upsert_fsrs_cards", { cards });
+		} else {
+			await memorySyncFsrsCards(cards);
+		}
+	},
+
+	async readFsrsCards(dueBeforeMs?: number): Promise<FsrsCardRow[]> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			return await invoke<FsrsCardRow[]>("lh_read_fsrs_cards", { dueBeforeMs });
+		}
+		return await memoryReadFsrsCards(dueBeforeMs);
+	},
+
+	async revision(): Promise<number> {
+		const invoke = getTauriInvoke();
+		if (invoke) {
+			return await invoke<number>("lh_get_graph_revision");
+		}
+		return await memoryGetGraphRevision();
 	},
 };
 
-/** positions.json — { positions, updatedAt }. Read-modify-write, NOT
- *  append-only: the settle is a full-graph computation, so it replaces the
- *  whole map. The updatedAt stamp exists for future live-physics conflict
- *  handling (a browser commit must be able to detect "the graph changed
- *  underneath me"); reads just return the map. */
-function readPositionMap(): Record<string, Position> {
-	let raw: string;
-	try {
-		raw = fs.readFileSync(POSITIONS_FILE, "utf-8");
-	} catch {
-		return {}; // no ledger yet — nothing has ever settled
-	}
-	try {
-		const parsed: unknown = JSON.parse(raw);
-		if (!isRecord(parsed) || !isRecord(parsed.positions)) return {};
-		const out: Record<string, Position> = {};
-		for (const [id, value] of Object.entries(parsed.positions)) {
-			if (isPosition(value)) out[id] = { x: value.x, y: value.y };
-		}
-		return out;
-	} catch {
-		return {};
-	}
-}
-
-function writePositionMap(positions: Record<string, Position>): void {
-	fs.mkdirSync(path.dirname(POSITIONS_FILE), { recursive: true });
-	writeFileAtomicSync(POSITIONS_FILE, JSON.stringify({ positions, updatedAt: new Date().toISOString() }, null, "\t"));
-}
-
-const isPosition = (v: unknown): v is Position =>
-	isRecord(v) && typeof v.x === "number" && Number.isFinite(v.x) && typeof v.y === "number" && Number.isFinite(v.y);
-
-/** sources.json — { id: NotesSource }. Read-modify-write, NOT append-only:
- *  the usage log lives inside the record (like a chat's JSON file). */
-function readSourceMap(): Record<string, NotesSource> {
-	assertGraphFormat(); // honest refusal on a newer-stamped data dir
-	let raw: string;
-	try {
-		raw = fs.readFileSync(SOURCES_FILE, "utf-8");
-	} catch {
-		return {};
-	}
-	try {
-		const parsed: unknown = JSON.parse(raw);
-		if (!isRecord(parsed)) return {};
-		const out: Record<string, NotesSource> = {};
-		for (const [id, value] of Object.entries(parsed)) {
-			if (isNotesSource(value)) out[id] = value;
-		}
-		return out;
-	} catch {
-		return {};
-	}
-}
-
-function writeSourceMap(map: Record<string, NotesSource>): void {
-	fs.mkdirSync(path.dirname(SOURCES_FILE), { recursive: true });
-	ensureGraphFormat(); // the lazy format stamp (graph-format.ts)
-	writeFileAtomicSync(SOURCES_FILE, JSON.stringify(map, null, "\t"), { allowInPlaceFallback: true });
-}
-
-// ─── one-way purges: dead ledgers are exactly the confusion
-// the cleanup removes (owner doctrine — nothing reads them, nothing writes
-// them, a stale file lying around is a lie). Encapsulated in a function
-// to avoid dynamic filesystem access during Turbopack module evaluation. ──
-export function purgeLegacyLedgers(): void {
-	const graphDir = path.dirname(LEDGER_FILES.nodes);
-	for (const legacy of ["edges.jsonl", "events.jsonl"]) {
-		const file = path.join(/*turbopackIgnore: true*/ graphDir, legacy);
-		try {
-			if (fs.existsSync(/*turbopackIgnore: true*/ file)) {
-				fs.rmSync(file);
-				console.info(`[graph-store] purged legacy ledger: ${file}`);
-			}
-		} catch (err) {
-			console.warn(`[graph-store] could not purge legacy ledger ${file}:`, err);
-		}
-	}
-}
-
-const isNotesSource = (v: unknown): v is NotesSource =>
-	isRecord(v) && isString(v.id) && isString(v.filePath) && isString(v.importedAt);
+export async function purgeLegacyLedgers(): Promise<void> {}

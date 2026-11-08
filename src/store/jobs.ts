@@ -1,37 +1,24 @@
 /**
- * JobStore — the fs JSON adapter: one file per background sub-agent job in
- * data/jobs/ (contracts.ts "THE ASYNC PROTOCOL"). Keyed by toolCallId for
- * dedup: the chat-handler spawn hook never creates two jobs for the same
- * tool part. Implements core/ports.ts JobStore. Idioms: sync fs, id-guarded
- * filenames, JSON with tab indentation. Writes are small and rare (activity
- * line updates); the read-modify-write sections in the runner contain no
- * awaits, so they are atomic within the single-threaded event loop.
+ * JobStore — Tauri IPC / in-memory SQLite store adapter.
+ *
+ * Implements core/ports.ts JobStore.
+ * When getTauriInvoke() is non-null, calls Rust Tauri commands (lh_*).
+ * When getTauriInvoke() is null, falls back to memory-backend.ts (Node tests).
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { PATHS } from "../../config.ts";
 import { emit } from "../core/events.ts";
-import type { JobStore } from "../core/ports.ts";
-import type { CreateJobInit, JobPatch } from "../core/ports.ts";
+import type { JobStore, CreateJobInit, JobPatch } from "../core/ports.ts";
 import type { JobRecord } from "../core/contracts.ts";
-import { removeLeftoverTemps, writeFileAtomicSync } from "./atomic-write.ts";
+import { getTauriInvoke } from "../worker/host-bridge.ts";
+import {
+	memoryDeleteJobsForChat,
+	memoryFindJobByToolCallId,
+	memoryGetJob,
+	memoryListJobs,
+	memorySaveJob,
+} from "./memory-backend.ts";
 
-/** Background jobs (data/jobs). Not in config.ts PATHS (orchestrator-owned). */
-function jobsDir(): string {
-	return path.join(PATHS.data, "jobs");
-}
-
-function jobFile(id: string): string {
-	if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Invalid job id: ${id}`);
-	return path.join(jobsDir(), `${id}.json`);
-}
-
-/** Writes announce on the events channel AFTER the write lands (the
- *  notify-after-write law, beginTurn precedent) — jobs-changed is what
- *  retires the view's interval poll (push S4, 2026-10-02): dispatch cards,
- *  progress lines, settles, and aborts all surface as one fetch. */
-function createJob(init: CreateJobInit): JobRecord {
+async function createJob(init: CreateJobInit): Promise<JobRecord> {
 	const now = new Date().toISOString();
 	const record: JobRecord = {
 		id: `job_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
@@ -44,73 +31,70 @@ function createJob(init: CreateJobInit): JobRecord {
 		createdAt: now,
 		updatedAt: now,
 	};
-	fs.mkdirSync(jobsDir(), { recursive: true });
-	writeFileAtomicSync(jobFile(record.id), JSON.stringify(record, null, "\t"), { allowInPlaceFallback: true });
+	const invoke = getTauriInvoke();
+	if (invoke) {
+		await invoke("lh_job_save", { record });
+	} else {
+		await memorySaveJob(record);
+	}
 	emit("jobs-changed", { chatId: init.chatId });
 	return record;
 }
 
-function getJob(id: string): JobRecord | null {
-	try {
-		return JSON.parse(fs.readFileSync(jobFile(id), "utf-8")) as JobRecord;
-	} catch {
-		return null;
+async function getJob(id: string): Promise<JobRecord | null> {
+	const invoke = getTauriInvoke();
+	if (invoke) {
+		return await invoke<JobRecord | null>("lh_job_get", { jobId: id });
 	}
+	return await memoryGetJob(id);
 }
 
-/** Merge a partial patch into the record (identity fields are immutable).
- *  An explicit patch.updatedAt is honored (tests pin deterministic order);
- *  otherwise the merge bumps it to now. */
-function updateJob(id: string, patch: JobPatch): JobRecord | null {
-	const record = getJob(id);
+async function updateJob(id: string, patch: JobPatch): Promise<JobRecord | null> {
+	const record = await getJob(id);
 	if (!record) return null;
-	const next: JobRecord = { ...record, ...patch, updatedAt: patch.updatedAt ?? new Date().toISOString() };
-	writeFileAtomicSync(jobFile(id), JSON.stringify(next, null, "\t"), { allowInPlaceFallback: true });
-	// EVERY write, not just status flips: progress-line updates must reach
-	// the dispatch cards (the view debounces the fetch bursts). A missing id
-	// wrote nothing and stays silent.
+	const next: JobRecord = {
+		...record,
+		...patch,
+		updatedAt: patch.updatedAt ?? new Date().toISOString(),
+	};
+	const invoke = getTauriInvoke();
+	if (invoke) {
+		await invoke("lh_job_save", { record: next });
+	} else {
+		await memorySaveJob(next);
+	}
 	emit("jobs-changed", { chatId: next.chatId });
 	return next;
 }
 
-/** All jobs for a chat, newest activity first. */
-function listJobs(chatId: string): JobRecord[] {
-	try {
-		fs.mkdirSync(jobsDir(), { recursive: true });
-		return fs
-			.readdirSync(jobsDir())
-			.filter((f) => f.endsWith(".json"))
-			.map((f) => getJob(f.slice(0, -5)))
-			.filter((j): j is JobRecord => j !== null && j.chatId === chatId)
-			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-	} catch {
-		return [];
+async function listJobs(chatId: string): Promise<JobRecord[]> {
+	const invoke = getTauriInvoke();
+	if (invoke) {
+		const raw = await invoke<JobRecord[]>("lh_job_list", { chatId });
+		return (raw ?? []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 	}
+	return await memoryListJobs(chatId);
 }
 
-/** The job fulfilling a given tool part, if any (spawn-hook dedup). */
-function findJobByToolCallId(chatId: string, toolCallId: string): JobRecord | null {
-	return listJobs(chatId).find((j) => j.toolCallId === toolCallId) ?? null;
+async function findJobByToolCallId(chatId: string, toolCallId: string): Promise<JobRecord | null> {
+	const invoke = getTauriInvoke();
+	if (invoke) {
+		return await invoke<JobRecord | null>("lh_job_find_by_tool_call", { chatId, toolCallId });
+	}
+	return await memoryFindJobByToolCallId(chatId, toolCallId);
 }
 
-/** Delete every job record file for a chat (session-deletion wave 6) —
- *  running or finished, they are the chat's records and die with it.
- *  Returns how many files were removed. The deletion route refuses while
- *  jobs are still running, so every record here is terminal. */
-function deleteJobsForChat(chatId: string): number {
+async function deleteJobsForChat(chatId: string): Promise<number> {
 	let removed = 0;
-	for (const job of listJobs(chatId)) {
-		try {
-			fs.unlinkSync(jobFile(job.id));
-			removeLeftoverTemps(jobFile(job.id));
-			removed++;
-		} catch {
-			/* already gone — the count is best-effort truth */
-		}
+	const invoke = getTauriInvoke();
+	if (invoke) {
+		removed = await invoke<number>("lh_job_delete_for_chat", { chatId });
+	} else {
+		removed = await memoryDeleteJobsForChat(chatId);
 	}
-	// Only when something actually died — a zero-file delete wrote nothing
-	// (the endTurn present-entry law).
-	if (removed > 0) emit("jobs-changed", { chatId });
+	if (removed > 0) {
+		emit("jobs-changed", { chatId });
+	}
 	return removed;
 }
 
