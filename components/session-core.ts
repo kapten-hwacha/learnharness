@@ -948,6 +948,20 @@ export class SessionModel {
 		this.setStatus("ready");
 	}
 
+	/** Authoritative settle: abort active stream reader and transition to ready.
+	 *  Used when the server confirms turn completion (turn-settled) but the
+	 *  local stream has not naturally delivered [DONE]. */
+	settle(): void {
+		this.consumeAbort?.abort();
+		this.consumeAbort = null;
+		this.streamingIds = new Set();
+		this.streamingMessageId = null;
+		this.executions = new Map();
+		if (this.statusValue !== "ready") {
+			this.setStatus("ready");
+		}
+	}
+
 	/** Submission snapshots outlive the dock, not the session mount. */
 	questionDraft(questionKey: string): QuestionDraft | undefined {
 		return this.questionDrafts.get(questionKey);

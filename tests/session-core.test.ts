@@ -950,6 +950,30 @@ describe("answer submission recovery", () => {
 		assert.equal(m.getState().error?.message, "answer input targets no pending question call");
 	});
 
+	it("settle() transitions model out of streaming to ready", async () => {
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				const encoder = new TextEncoder();
+				controller.enqueue(encoder.encode(`data: {"type":"agent_start"}\n\n`));
+				controller.enqueue(encoder.encode(`data: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n`));
+			},
+		});
+		const m = model({
+			initialMessages: [question],
+			fetch: async (url) => {
+				if (String(url) === "/api/chat") return Response.json({ ok: true });
+				if (String(url).endsWith("/stream")) return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+				return Response.json({ messages: [question, newAnswerResult("q1", "quiz", answer)], turnInFlight: true });
+			},
+		});
+		void m.submitAnswer("quiz", "q1", answer);
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(m.status, "streaming");
+
+		m.settle();
+		assert.equal(m.status, "ready");
+	});
+
 	it("does not repost an answer whose acceptance acknowledgement was lost", async () => {
 		let posts = 0;
 		const saved = JSON.parse(JSON.stringify([question, newAnswerResult("q1", "quiz", answer)])) as LhMessage[];
