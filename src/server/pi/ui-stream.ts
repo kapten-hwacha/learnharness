@@ -80,11 +80,11 @@ export interface PiTurnSpec {
 	/** Report settlement failure while the views are still open. */
 	onSettleError?: (error: unknown) => string;
 	/** Release liveness even if the normal finish seam throws. */
-	onSettleFailure?: (error: unknown, reportedErrorText?: string) => void;
+	onSettleFailure?: (error: unknown, reportedErrorText?: string) => void | Promise<void>;
 	/** The canonical end-of-turn seam: persist + usage + extraction + endTurn.
 	 *  Receives the agent's FULL final state (native messages) — the caller
 	 *  persists the slice past its own base count. */
-	onFinish: (messages: AgentMessage[], isAborted: boolean) => void;
+	onFinish: (messages: AgentMessage[], isAborted: boolean) => void | Promise<void>;
 	/** Tool-call ids already used in this chat's record (THE LACAN FIX,
 	 *  owner-approved 2026-10-04): when present, a ToolCallIdUniquifier
 	 *  sits at this boundary — providers that reset ids every response
@@ -223,22 +223,27 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 	// suppressing the fresh per-turn re-seed). Our app mints no system
 	// messages of its own (the prompt is composed per turn), so dropping
 	// the role wholesale is exact; revisit if prompt-updates ever land.
-	const settleWith = () => {
-		try {
-			const settled_ = [...agent.state.messages].filter((m) => (m as { role?: string }).role !== "system");
-			onFinish((uniquifier?.remapSettled(settled_) as AgentMessage[]) ?? settled_, sawAbort);
-		} catch (err) {
-			console.error("[turn] settlement failed:", err);
-			try { onSettleFailure?.(err, reportedErrorText); }
-			catch (cleanupError) { console.error("[turn] settlement cleanup failed:", cleanupError); }
-			if (reportedErrorText === undefined) {
-				reportedErrorText = onSettleError?.(err) ?? "An error occurred.";
-				send({ type: "error", errorText: reportedErrorText });
+	let finishPromise: Promise<void> | undefined;
+	const settleWith = async () => {
+		if (finishPromise) return finishPromise;
+		finishPromise = (async () => {
+			try {
+				const settled_ = [...agent.state.messages].filter((m) => (m as { role?: string }).role !== "system");
+				await onFinish((uniquifier?.remapSettled(settled_) as AgentMessage[]) ?? settled_, sawAbort);
+			} catch (err) {
+				console.error("[turn] settlement failed:", err);
+				try { await onSettleFailure?.(err, reportedErrorText); }
+				catch (cleanupError) { console.error("[turn] settlement cleanup failed:", cleanupError); }
+				if (reportedErrorText === undefined) {
+					reportedErrorText = onSettleError?.(err) ?? "An error occurred.";
+					send({ type: "error", errorText: reportedErrorText });
+				}
 			}
-		}
+		})();
+		return finishPromise;
 	};
 
-	const handle = (event: AgentEvent) => {
+	const handle = async (event: AgentEvent) => {
 		if (settled) return;
 		// THE LACAN FIX: ids uniquify HERE, before any view — the one seam
 		// every consumer downstream shares. No uniquifier → verbatim.
@@ -256,13 +261,13 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 		}
 		if (event.type === "agent_end") {
 			// Persist/report before the terminal closes every view to new frames.
-			settleWith();
+			await settleWith();
 			closeAll();
 		}
 	};
 	requestCycle?.bindRelease(handle);
 	agent.subscribe((event) => {
-		if (!requestCycle?.hold(event)) handle(event);
+		if (!requestCycle?.hold(event)) void handle(event);
 	});
 
 	void (async () => {
@@ -274,7 +279,7 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 				const outcome = requestCycle.finishNativeCycle();
 				if (denied) agent.state.messages = outcome.messages;
 				if (outcome.action !== "resumeForeground") {
-					handle({ type: "agent_end", messages: [...agent.state.messages] });
+					await handle({ type: "agent_end", messages: [...agent.state.messages] });
 					break;
 				}
 			} while (!sawAbort);
@@ -290,7 +295,7 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 			console.error("[turn] agent loop failed:", err);
 			reportedErrorText = onError?.(err) ?? "An error occurred.";
 			send({ type: "error", errorText: reportedErrorText });
-			settleWith();
+			await settleWith();
 			closeAll();
 		}
 	})();

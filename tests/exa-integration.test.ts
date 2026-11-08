@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, it } from "node:test";
+import { resetMemoryStores } from "../src/store/memory-backend.ts";
 
 // An isolated store and fake key ensure this exercises the real composition
 // without reading the developer's settings or calling a paid provider.
@@ -23,13 +24,14 @@ after(() => {
 });
 
 it("a saved Exa key activates search, and a saved pin reaches the adapter", async () => {
-	const saved = saveKey("EXA_API_KEY", "exa-fake-test-key-123456");
+	resetMemoryStores();
+	const saved = await saveKey("EXA_API_KEY", "exa-fake-test-key-123456");
 	assert.equal(saved.ok, true);
-	assert.equal(searchStatus().engine, "exa");
-	assert.equal(keyStatuses().find((row) => row.id === "EXA_API_KEY")?.present, true);
-	writeSettings({ version: 1, agent: { search: { engine: "exa" } } });
-	assert.equal(searchStatus().engine, "exa");
-	assert.match(searchStatus().reason, /chosen/);
+	assert.equal((await searchStatus()).engine, "exa");
+	assert.equal((await keyStatuses()).find((row) => row.id === "EXA_API_KEY")?.present, true);
+	await writeSettings({ version: 1, agent: { search: { engine: "exa" } } });
+	assert.equal((await searchStatus()).engine, "exa");
+	assert.match((await searchStatus()).reason, /chosen/);
 	globalThis.fetch = async (input, init) => {
 		assert.equal(String(input), "https://api.exa.ai/search");
 		assert.equal((init?.headers as Record<string, string>)["x-api-key"], "exa-fake-test-key-123456");

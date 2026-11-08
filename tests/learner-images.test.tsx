@@ -60,7 +60,7 @@ const JOBS_DIR = path.join(PATHS.data, "jobs");
 const createdChats: string[] = [];
 const createdJobs: string[] = [];
 const snapshots = new Map<string, ImageSnapshot>();
-const showImageTool = createShowImageTool({ chatId: "test", chatStore: { saveImageSnapshot: (_chatId, id, image) => snapshots.set(id, image) } });
+const showImageTool = createShowImageTool({ chatId: "test", chatStore: { saveImageSnapshot: async (_chatId, id, image) => { snapshots.set(id, image); } } });
 
 after(() => {
 	fs.rmSync(scratch, { recursive: true, force: true });
@@ -386,20 +386,20 @@ describe("visual job runner with an image", () => {
 			deliver: async (steer) => {
 				steers.push(steer);
 				const jobId = (steer.details as { jobId: string }).jobId;
-				const job = jobStore.getJob(jobId);
+				const job = await jobStore.getJob(jobId);
 				if (job && job.status === "running") {
 					const failed = job.result ? isSubagentFailure(job.kind, job.result as never) : true;
-					jobStore.updateJob(jobId, { status: failed ? "error" : "done", activity: failed ? "failed" : "delivered" });
+					await jobStore.updateJob(jobId, { status: failed ? "error" : "done", activity: failed ? "failed" : "delivered" });
 				}
 			},
 		});
 		return { steers, runner };
 	}
 
-	function visualChat(title: string, input: { brief: string; image: string }) {
-		const chat = chatStore.createChat(title);
+	async function visualChat(title: string, input: { brief: string; image: string }) {
+		const chat = await chatStore.createChat(title);
 		createdChats.push(chat.id);
-		chatStore.saveMessages(chat.id, [
+		await chatStore.saveMessages(chat.id, [
 			{ id: "u1", role: "user", content: "mark my photo", timestamp: 1 } as never,
 			{
 				id: "a1",
@@ -423,14 +423,14 @@ describe("visual job runner with an image", () => {
 				timestamp: 1,
 			} as never,
 		]);
-		const job = jobStore.createJob({ kind: "visual", chatId: chat.id, toolCallId: "call-vi", input });
+		const job = await jobStore.createJob({ kind: "visual", chatId: chat.id, toolCallId: "call-vi", input });
 		createdJobs.push(job.id);
 		return job;
 	}
 
 	it("loads the image, annotates it, and steers an annotated image", async () => {
 		const p = file("runner.png", raster(40, 30));
-		const job = visualChat("Test: annotate runner", { brief: "Circle the yellow half.", image: p });
+		const job = await visualChat("Test: annotate runner", { brief: "Circle the yellow half.", image: p });
 		headlessOverride.current = fakeHeadless();
 		visualModelOverride.current = scripted([
 			fauxAssistantMessage(
@@ -446,19 +446,19 @@ describe("visual job runner with an image", () => {
 			headlessOverride.current = undefined;
 			visualModelOverride.current = undefined;
 		}
-		const result = jobStore.getJob(job.id)!.result as VisualResult;
+		const result = (await jobStore.getJob(job.id))!.result as VisualResult;
 		const image = await loadLearnerImage(p);
 		assert.deepEqual(result.image, { path: fs.realpathSync.native(p), snapshotId: image.snapshotId });
 		assert.ok(result.svg.includes('href="learner-image"'));
 		assert.ok(!result.svg.includes(image.data));
-		assert.equal(chatStore.getChat(job.chatId)?.imageSnapshots?.[image.snapshotId]?.data, image.data);
+		assert.equal((await chatStore.getChat(job.chatId))?.imageSnapshots?.[image.snapshotId]?.data, image.data);
 		assert.equal(steers.length, 1);
 		assert.match(steers[0]!.content as string, /^The annotated image is drawn, verified by inspection/);
 	});
 
 	it("an image gone by run time delivers a FAILED steer", async () => {
 		const p = file("vanishing.png", raster(8, 8));
-		const job = visualChat("Test: annotate runner, vanished image", { brief: "b", image: p });
+		const job = await visualChat("Test: annotate runner, vanished image", { brief: "b", image: p });
 		fs.rmSync(p);
 		headlessOverride.current = fakeHeadless();
 		visualModelOverride.current = scripted([]).engine;
@@ -472,7 +472,7 @@ describe("visual job runner with an image", () => {
 		const result = (steers[0]!.details as { result: VisualResult }).result;
 		assert.equal(result.svg, "");
 		assert.match(result.notes ?? "", /^FAILED: Cannot open image .*vanishing\.png: no such file/);
-		assert.equal(jobStore.getJob(job.id)!.status, "error");
+		assert.equal((await jobStore.getJob(job.id))!.status, "error");
 	});
 });
 

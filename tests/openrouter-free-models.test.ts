@@ -20,7 +20,7 @@ describe("native 1.4 OpenRouter free catalog (offline, no live discovery)", { co
 			const originalFetch = globalThis.fetch;
 			process.env = { NODE_ENV: "test", HOME: "/nonexistent/free-catalog", OPENROUTER_API_KEY: "dummy-free-catalog" };
 			try {
-				const catalog = modelCatalog();
+				const catalog = await modelCatalog();
 				const listed = catalog.models.find((m) => m.provider === "openrouter" && m.id === id);
 				assert.ok(listed);
 				assert.deepEqual(listed.input, input);
@@ -47,7 +47,7 @@ describe("native 1.4 OpenRouter free catalog (offline, no live discovery)", { co
 				assert.equal(payload?.model, id);
 				assert.match(JSON.stringify(payload?.tools), /offline_tool/);
 				delete process.env.OPENROUTER_API_KEY;
-				assert.ok(!modelCatalog().models.some((m) => m.provider === "openrouter"), "even free models retain the provider key gate");
+				assert.ok(!(await modelCatalog()).models.some((m) => m.provider === "openrouter"), "even free models retain the provider key gate");
 			} finally { process.env = before; globalThis.fetch = originalFetch; }
 		});
 	}

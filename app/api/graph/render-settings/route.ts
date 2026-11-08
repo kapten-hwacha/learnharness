@@ -17,7 +17,7 @@ import { readRenderSettings, writeRenderSettings } from "@/src/server";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-	return Response.json(readRenderSettings());
+	return Response.json(await readRenderSettings());
 }
 
 export async function PUT(request: Request) {
@@ -27,5 +27,5 @@ export async function PUT(request: Request) {
 	} catch {
 		return Response.json({ error: "invalid JSON body" }, { status: 400 });
 	}
-	return Response.json(writeRenderSettings(body));
+	return Response.json(await writeRenderSettings(body));
 }

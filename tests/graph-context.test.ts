@@ -18,7 +18,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { after, describe, it } from "node:test";
+import { after, beforeEach, describe, it } from "node:test";
+import { resetMemoryStores } from "../src/store/memory-backend.ts";
 
 // ── the seam, BEFORE any config-loading import ──────────────────────────────
 const TMP_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "lh-graph-context-"));
@@ -36,6 +37,10 @@ const { graphStore } = await import("../src/store/graph.ts");
 
 after(() => {
 	fs.rmSync(TMP_DATA, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+	resetMemoryStores();
 });
 
 const PICKS = [
@@ -136,7 +141,7 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 		assert.equal(res.status, 200);
 		const { id } = (await res.json()) as { id: string };
 
-		const record = chatStore.getChat(id)!;
+		const record = (await chatStore.getChat(id))!;
 		assert.equal(record.messages.length, 1, "the marker is message[0], alone until the first turn");
 		const m = record.messages[0] as { role: string; customType: string; content: string };
 		assert.equal(m.role, "custom");
@@ -154,7 +159,7 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 				body: JSON.stringify(body),
 			}));
 			const { id } = (await res.json()) as { id: string };
-			assert.equal(chatStore.getChat(id)!.messages.length, 0);
+			assert.equal((await chatStore.getChat(id))!.messages.length, 0);
 		}
 	});
 
@@ -162,9 +167,9 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 		const node = (id: string, name: string, statement: string) => ({
 			id, name, statement, aliases: [] as string[], createdAt: "2026-10-01T00:00:00.000Z", provenance: [],
 		});
-		graphStore.appendNode(node("n_prem", "Cauchy-Schwarz", "Inner product bound."));
-		graphStore.appendNode(node("n_conc", "Triangle inequality", "Norm of sum bound."));
-		graphStore.appendChain({
+		await graphStore.appendNode(node("n_prem", "Cauchy-Schwarz", "Inner product bound."));
+		await graphStore.appendNode(node("n_conc", "Triangle inequality", "Norm of sum bound."));
+		await graphStore.appendChain({
 			id: "arg_tri", premises: ["n_prem"], conclusion: "n_conc",
 			provenance: [], createdAt: "2026-10-01T00:00:00.000Z",
 		});
@@ -177,7 +182,7 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 			body: JSON.stringify({ title: "practice norms", kind: "practice", graphContext: { propositions: onlyConclusion } }),
 		}));
 		const { id: pracId } = (await pracRes.json()) as { id: string };
-		const pracMsg = chatStore.getChat(pracId)!.messages[0] as { content: string };
+		const pracMsg = (await chatStore.getChat(pracId))!.messages[0] as { content: string };
 		assert.ok(pracMsg.content.includes("- [n_conc] Triangle inequality (new): Norm of sum bound."));
 		assert.ok(pracMsg.content.includes("- [n_prem] Cauchy-Schwarz (supporting premise · new): Inner product bound."));
 		assert.ok(pracMsg.content.includes("- Cauchy-Schwarz → Triangle inequality"));
@@ -188,7 +193,7 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 			body: JSON.stringify({ title: "teach norms", graphContext: { propositions: onlyConclusion } }),
 		}));
 		const { id: teachId } = (await teachRes.json()) as { id: string };
-		const teachMsg = chatStore.getChat(teachId)!.messages[0] as { content: string };
+		const teachMsg = (await chatStore.getChat(teachId))!.messages[0] as { content: string };
 		assert.ok(teachMsg.content.includes("- [n_conc] Triangle inequality: Norm of sum bound."));
 		assert.ok(!teachMsg.content.includes("n_prem"));
 		assert.ok(teachMsg.content.includes("- Triangle inequality (no premises)"));

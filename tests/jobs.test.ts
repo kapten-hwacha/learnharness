@@ -136,14 +136,14 @@ function trackJob(id: string) {
  * nothing ever times out, which is why the file passes alone and flaked
  * in the full run. The fence makes every test's start state identical:
  * all tracked jobs settled, aborts unregistered, seams inert. */
-afterEach(() => {
+afterEach(async () => {
 	for (const id of createdJobs) {
 		try {
-			const job = jobStore.getJob(id);
+			const job = await jobStore.getJob(id);
 			if (job && job.status === "running") {
-				jobStore.updateJob(id, { status: "done", activity: "settled (fence)" });
+				await jobStore.updateJob(id, { status: "done", activity: "settled (fence)" });
 			}
-			if (job?.delivery?.status === "pending") jobStore.updateJob(id, { delivery: { ...job.delivery, status: "delivered" } });
+			if (job?.delivery?.status === "pending") await jobStore.updateJob(id, { delivery: { ...job.delivery, status: "delivered" } });
 			unregisterJobAbort(id);
 		} catch {
 			/* already gone */
@@ -237,77 +237,77 @@ function post(chatId: string, input: unknown): Request {
  * a late wake into the NEXT test (the respawn hook is module-global),
  * poisoning even synchronous neighbors. waitFor returns the instant the
  * condition holds, so the generous budget costs nothing when healthy. */
-function waitFor(cond: () => boolean, timeoutMs = 30_000, what = "condition"): Promise<void> {
+function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 30_000, what = "condition"): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const started = Date.now();
-		const tick = () => {
-			if (cond()) return resolve();
+		const tick = async () => {
+			if (await cond()) return resolve();
 			if (Date.now() - started > timeoutMs) return reject(new Error(`timeout waiting for ${what}`));
 			setTimeout(tick, 25);
 		};
-		tick();
+		void tick();
 	});
 }
 
 // ─── 1. job store CRUD ───────────────────────────────────────────────────────
 
 describe("job store", () => {
-	it("create → get → update → list round-trips", () => {
-		const job = jobStore.createJob({ kind: "research", chatId: "chat_storetest", toolCallId: "call-store" });
+	it("create → get → update → list round-trips", async () => {
+		const job = await jobStore.createJob({ kind: "research", chatId: "chat_storetest", toolCallId: "call-store" });
 		trackJob(job.id);
 
 		assert.match(job.id, /^job_/);
 		assert.equal(job.status, "running");
 		assert.equal(job.activity, "starting");
 
-		const loaded = jobStore.getJob(job.id)!;
+		const loaded = (await jobStore.getJob(job.id))!;
 		assert.equal(loaded.toolCallId, "call-store");
 		assert.equal(loaded.kind, "research");
 
-		const updated = jobStore.updateJob(job.id, { activity: 'web_search: "test"', status: "done", result: { brief: "b" } })!;
+		const updated = (await jobStore.updateJob(job.id, { activity: 'web_search: "test"', status: "done", result: { brief: "b" } }))!;
 		assert.equal(updated.activity, 'web_search: "test"');
 		assert.equal(updated.status, "done");
 		assert.ok(updated.updatedAt >= job.updatedAt);
 		// immutable identity fields survive a patch
 		assert.equal(updated.toolCallId, "call-store");
-		assert.equal(jobStore.getJob(updated.id)!.toolCallId, "call-store");
+		assert.equal((await jobStore.getJob(updated.id))!.toolCallId, "call-store");
 
-		const listed = jobStore.listJobs("chat_storetest");
+		const listed = await jobStore.listJobs("chat_storetest");
 		assert.ok(listed.some((j) => j.id === job.id));
-		assert.equal(jobStore.listJobs("chat_other").some((j) => j.id === job.id), false, "jobs are scoped to their chat");
+		assert.equal((await jobStore.listJobs("chat_other")).some((j) => j.id === job.id), false, "jobs are scoped to their chat");
 
-		const byTool = jobStore.findJobByToolCallId("chat_storetest", "call-store");
+		const byTool = await jobStore.findJobByToolCallId("chat_storetest", "call-store");
 		assert.equal(byTool?.id, job.id);
-		assert.equal(jobStore.findJobByToolCallId("chat_storetest", "call-missing"), null);
+		assert.equal(await jobStore.findJobByToolCallId("chat_storetest", "call-missing"), null);
 	});
 
 	// ── push-architecture S4 (2026-10-02): every WRITE announces on the
 	// events channel (notify-after-write); reads stay silent ──
-	it("every mutation emits jobs-changed {chatId}; reads emit nothing", () => {
+	it("every mutation emits jobs-changed {chatId}; reads emit nothing", async () => {
 		const got: { chatId?: string }[] = [];
 		const off = subscribe((e) => {
 			if (e.type === "jobs-changed") got.push({ chatId: e.chatId });
 		});
-		const job = jobStore.createJob({ kind: "research", chatId: "chat_storeemit", toolCallId: "call-emit" });
+		const job = await jobStore.createJob({ kind: "research", chatId: "chat_storeemit", toolCallId: "call-emit" });
 		trackJob(job.id);
 		assert.deepEqual(got, [{ chatId: "chat_storeemit" }], "createJob announces after the write");
 		got.length = 0;
 
-		jobStore.updateJob(job.id, { activity: "still working" });
+		await jobStore.updateJob(job.id, { activity: "still working" });
 		assert.deepEqual(got, [{ chatId: "chat_storeemit" }], "updateJob announces on EVERY write — progress lines included");
 		got.length = 0;
 
-		jobStore.updateJob("job_missing", { activity: "noop" });
+		await jobStore.updateJob("job_missing", { activity: "noop" });
 		assert.deepEqual(got, [], "a missing id wrote nothing — silent");
 
-		jobStore.listJobs("chat_storeemit");
-		jobStore.getJob(job.id);
+		await jobStore.listJobs("chat_storeemit");
+		await jobStore.getJob(job.id);
 		assert.deepEqual(got, [], "reads are silent");
 
-		jobStore.deleteJobsForChat("chat_storeemit");
+		await jobStore.deleteJobsForChat("chat_storeemit");
 		assert.deepEqual(got, [{ chatId: "chat_storeemit" }], "a real delete announces");
 		got.length = 0;
-		jobStore.deleteJobsForChat("chat_storeemit");
+		await jobStore.deleteJobsForChat("chat_storeemit");
 		assert.deepEqual(got, [], "a zero-file delete wrote nothing — silent");
 		off();
 	});
@@ -320,7 +320,7 @@ describe("steer helpers (contracts.ts)", () => {
 	const demo: DemoResult = { title: "T", html: "<html></html>", tested: true, notes: "ok" };
 	const visual: VisualResult = { svg: "<svg/>", notes: "ok" };
 
-	it("buildSubagentSteer: a native marker — brief on the model-facing content, artifact payload in details", () => {
+	it("buildSubagentSteer: a native marker — brief on the model-facing content, artifact payload in details", async () => {
 		const job = { id: "job_x", kind: "research" as const, toolCallId: "call-x" };
 		const steer = buildSubagentSteer(job, research);
 		assert.equal(steer.id, "steer_job_x", "deterministic id per job — idempotent delivery");
@@ -337,7 +337,7 @@ describe("steer helpers (contracts.ts)", () => {
 		assert.deepEqual(data.result, research);
 	});
 
-	it("accumulateJobUsage: sums per model call; fields NO call reported stay undefined (absent is not zero)", () => {
+	it("accumulateJobUsage: sums per model call; fields NO call reported stay undefined (absent is not zero)", async () => {
 		let total: JobUsage | undefined = undefined;
 		total = accumulateJobUsage(total, "z-ai/glm-5.3-flash", {
 			inputTokens: 10,
@@ -383,7 +383,7 @@ describe("steer helpers (contracts.ts)", () => {
 		}, "lastStep always mirrors the LATEST call, never the sums");
 	});
 
-	it("buildAbortSteer: a subagent-abort marker — teacher-facing text on content, the abort payload in details", () => {
+	it("buildAbortSteer: a subagent-abort marker — teacher-facing text on content, the abort payload in details", async () => {
 		const steer = buildAbortSteer({ id: "job_c", kind: "demo", toolCallId: "call-c" });
 		assert.equal(steer.id, "steer_job_c", "same id space — steerDelivered treats either as delivered");
 		assert.equal(steer.role, "custom");
@@ -394,7 +394,7 @@ describe("steer helpers (contracts.ts)", () => {
 		assert.deepEqual(steer.details, { jobId: "job_c", kind: "demo", toolCallId: "call-c", aborted: true });
 	});
 
-	it("isSubagentFailure: failure shapes only (empty html/svg, failure brief)", () => {
+	it("isSubagentFailure: failure shapes only (empty html/svg, failure brief)", async () => {
 		assert.equal(isSubagentFailure("research", research), false);
 		assert.equal(isSubagentFailure("research", { brief: "Research failed: x", sources: [] }), true);
 		// a brief with sources is a success even if the text mentions failure
@@ -405,7 +405,7 @@ describe("steer helpers (contracts.ts)", () => {
 		assert.equal(isSubagentFailure("visual", { ...visual, svg: "" }), true);
 	});
 
-	it("steerDelivered: matches on the deterministic steer id (any steer kind)", () => {
+	it("steerDelivered: matches on the deterministic steer id (any steer kind)", async () => {
 		const steer = buildSubagentSteer({ id: "job_y", kind: "demo", toolCallId: "c" }, demo);
 		assert.equal(steer.id, "steer_job_y");
 		assert.equal(steerDelivered([], steer.id), false);
@@ -418,7 +418,7 @@ describe("steer helpers (contracts.ts)", () => {
 		assert.equal(steerDelivered([steer], handoff.id), false);
 	});
 
-	it("failure steers tell the teacher how to recover (research/demo/visual wording)", () => {
+	it("failure steers tell the teacher how to recover (research/demo/visual wording)", async () => {
 		const failResearch = buildSubagentSteer({ id: "j1", kind: "research", toolCallId: "c" }, { brief: "Research failed: API down", sources: [] });
 		const failDemo = buildSubagentSteer({ id: "j2", kind: "demo", toolCallId: "c" }, { title: "T", html: "", tested: true, notes: "FAILED: boom" });
 		const failVisual = buildSubagentSteer({ id: "j3", kind: "visual", toolCallId: "c" }, { svg: "", notes: "FAILED: boom" });
@@ -428,7 +428,7 @@ describe("steer helpers (contracts.ts)", () => {
 		assert.ok(failResearch.content.includes("flag the uncertainty"));
 	});
 
-	it("pdf steers (sources v0): brief + page citations on success, PDF failed: shape on failure, abort wording per kind", () => {
+	it("pdf steers (sources v0): brief + page citations on success, PDF failed: shape on failure, abort wording per kind", async () => {
 		const pdf: PdfResult = { path: "/tmp/doc.pdf", question: "q?", brief: "The formula is on p. 2.", pagesRead: [2], pagesConsulted: [1, 2] };
 		const ok = buildSubagentSteer({ id: "jp", kind: "pdf", toolCallId: "cp" }, pdf);
 		assert.ok(ok.content.includes("page citations"), "the teacher is told to cite pages");
@@ -459,9 +459,9 @@ function fakeDeliver() {
 		steers,
 		deliver: async (steer: SteerMessage) => {
 			steers.push(steer);
-			const job = jobStore.getJob((steer.details as { jobId: string }).jobId)!;
-			chatStore.saveMessages(job.chatId, [...chatStore.getChat(job.chatId)!.messages, steer]);
-			noteSteersDurable(job.chatId, [steer]);
+			const job = (await jobStore.getJob((steer.details as { jobId: string }).jobId))!;
+			await chatStore.saveMessages(job.chatId, [...(await chatStore.getChat(job.chatId))!.messages, steer]);
+			await noteSteersDurable(job.chatId, [steer]);
 		},
 	};
 }
@@ -471,8 +471,8 @@ function setTurnRunner(run: TurnRunner): void {
 	setRawTurnRunner(async (chatId, input) => {
 		const status = await run(chatId, input);
 		if (status === 200 && input.type === "steers") {
-			const record = chatStore.getChat(chatId);
-			if (record) chatStore.saveMessages(chatId, [...record.messages, ...input.steers.filter((s) => !steerDelivered(record.messages, s.id))]);
+			const record = await chatStore.getChat(chatId);
+			if (record) await chatStore.saveMessages(chatId, [...record.messages, ...input.steers.filter((s) => !steerDelivered(record.messages, s.id))]);
 		}
 		return status;
 	});
@@ -498,7 +498,7 @@ function researchCallingTeacher(): PiEngine {
 
 describe("dispatch (async protocol §2)", () => {
 	it("the research call resolves immediately with an ack; the turn continues and the runner steers", async () => {
-		const chat = chatStore.createChat("Test: research dispatch");
+		const chat = await chatStore.createChat("Test: research dispatch");
 		trackChat(chat.id);
 		// BYOK turn gate (owner, 2026-09-22): the scripted chat needs a
 		// conversation model — the per-chat pin, exactly like the setup flow.
@@ -525,7 +525,7 @@ describe("dispatch (async protocol §2)", () => {
 		// The teacher's SAME turn carried on past the tool call.
 		assert.ok(body.includes("Back with the brief."), "the turn continued after the dispatch");
 
-		const saved = projectNative(chatStore.getChat(chat.id)!.messages);
+		const saved = projectNative((await chatStore.getChat(chat.id))!.messages);
 		const part = saved[1]!.parts.find((p) => p.type === "tool-research");
 		assert.ok(part && part.type === "tool-research", "research tool part persisted");
 		assert.equal(part.state, "output-available", "the part resolved at dispatch time (not held pending)");
@@ -533,12 +533,12 @@ describe("dispatch (async protocol §2)", () => {
 		assert.match(String((part as { output?: unknown }).output), /fire-and-forget/);
 
 		// The job record exists and the background runner completed it.
-		const job = jobStore.findJobByToolCallId(chat.id, "call-r1");
+		const job = await jobStore.findJobByToolCallId(chat.id, "call-r1");
 		assert.ok(job, "dispatch created a job record");
 		trackJob(job!.id);
-		await waitFor(() => jobStore.getJob(job!.id)!.status !== "running", 8000, "research job completion");
+		await waitFor(async () => (await jobStore.getJob(job!.id))!.status !== "running", 8000, "research job completion");
 
-		const done = jobStore.getJob(job!.id)!;
+		const done = (await jobStore.getJob(job!.id))!;
 		assert.equal(done.status, "done");
 		assert.equal(done.activity, "finished");
 
@@ -594,14 +594,14 @@ function stubSearch(): SearchProvider & { queries: string[] } {
 
 describe("research runner (async protocol §3)", () => {
 	it("runJob completes the job: result + sources on the job, brief on the steer, activity recorded", async () => {
-		const chat = chatStore.createChat("Test: runner completion");
+		const chat = await chatStore.createChat("Test: runner completion");
 		trackChat(chat.id);
 
 		// A dispatched research part in the stored chat (the input is also
 		// what the runner falls back to on a crash-recovery re-spawn).
-		chatStore.saveMessages(chat.id, nativeToolMessages("which sigma version?", "research", "call-run1", RESEARCH_INPUT));
+		await chatStore.saveMessages(chat.id, nativeToolMessages("which sigma version?", "research", "call-run1", RESEARCH_INPUT));
 
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-run1" });
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-run1" });
 		trackJob(job.id);
 
 		const delivery = fakeDeliver();
@@ -615,7 +615,7 @@ describe("research runner (async protocol §3)", () => {
 		}
 
 		// The job is done, with the activity line from the tool call.
-		const done = jobStore.getJob(job.id)!;
+		const done = (await jobStore.getJob(job.id))!;
 		assert.equal(done.status, "done");
 		assert.equal(done.activity, "finished", "delivery does not own the worker status");
 		const result = done.result as ResearchResult;
@@ -633,10 +633,10 @@ describe("research runner (async protocol §3)", () => {
 		const url = "https://example.com/supplied-source";
 		const brief = `## Summary\nVerified supplied source. [Source](${url})\n\n## Sources\n- Source (${url})`;
 		const input = { question: `Verify ${url}` };
-		const chat = chatStore.createChat("Test: keyless fetch-only research");
+		const chat = await chatStore.createChat("Test: keyless fetch-only research");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, nativeToolMessages("verify supplied URL", "research", "call-keyless", input));
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-keyless" });
+		await chatStore.saveMessages(chat.id, nativeToolMessages("verify supplied URL", "research", "call-keyless", input));
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-keyless" });
 		trackJob(job.id);
 		const delivery = fakeDeliver();
 		const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver, searchProvider: () => null });
@@ -658,7 +658,7 @@ describe("research runner (async protocol §3)", () => {
 			globalThis.fetch = realFetch;
 		}
 		assert.deepEqual(fetched, [url]);
-		const done = jobStore.getJob(job.id)!;
+		const done = (await jobStore.getJob(job.id))!;
 		assert.equal(done.status, "done");
 		assert.equal((done.result as ResearchResult).brief, brief);
 		assert.ok((done.result as ResearchResult).sources.some((s) => s.url === url));
@@ -667,11 +667,11 @@ describe("research runner (async protocol §3)", () => {
 	});
 
 	it("a failing runner still steers (the teacher learns the outcome) and the job lands error", async () => {
-		const chat = chatStore.createChat("Test: runner failure");
+		const chat = await chatStore.createChat("Test: runner failure");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, nativeToolMessages("hi", "research", "call-err1", RESEARCH_INPUT));
+		await chatStore.saveMessages(chat.id, nativeToolMessages("hi", "research", "call-err1", RESEARCH_INPUT));
 
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-err1" });
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-err1" });
 		trackJob(job.id);
 
 		const delivery = fakeDeliver();
@@ -687,7 +687,7 @@ describe("research runner (async protocol §3)", () => {
 			researchModelOverride.current = undefined;
 		}
 
-		const errored = jobStore.getJob(job.id)!;
+		const errored = (await jobStore.getJob(job.id))!;
 		assert.equal(errored.status, "error");
 		assert.match(errored.error ?? "", /model exploded/);
 
@@ -698,10 +698,10 @@ describe("research runner (async protocol §3)", () => {
 	});
 
 	it("runJob resolves the input from the transcript when dispatch-time input is absent (crash recovery)", async () => {
-		const chat = chatStore.createChat("Test: transcript input fallback");
+		const chat = await chatStore.createChat("Test: transcript input fallback");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, nativeToolMessages("go", "research", "call-fb1", RESEARCH_INPUT));
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-fb1" });
+		await chatStore.saveMessages(chat.id, nativeToolMessages("go", "research", "call-fb1", RESEARCH_INPUT));
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-fb1" });
 		trackJob(job.id);
 
 		const delivery = fakeDeliver();
@@ -719,7 +719,7 @@ describe("research runner (async protocol §3)", () => {
 			researchModelOverride.current = undefined;
 		}
 
-		const done = jobStore.getJob(job.id)!;
+		const done = (await jobStore.getJob(job.id))!;
 		assert.equal(done.status, "done", "the researcher ran from the transcript-resolved input");
 		assert.equal((done.result as ResearchResult).brief, BRIEF);
 	});
@@ -769,11 +769,11 @@ describe("pdf runner (sources v0)", () => {
 	}
 
 	it("runJob completes a pdf job: brief + pagesConsulted land on the record, citation steer delivered", async () => {
-		const chat = chatStore.createChat("Test: pdf runner");
+		const chat = await chatStore.createChat("Test: pdf runner");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, nativeToolMessages("read this pdf", "pdf", "call-pdf1", PDF_INPUT));
+		await chatStore.saveMessages(chat.id, nativeToolMessages("read this pdf", "pdf", "call-pdf1", PDF_INPUT));
 
-		const job = jobStore.createJob({ kind: "pdf", chatId: chat.id, toolCallId: "call-pdf1" });
+		const job = await jobStore.createJob({ kind: "pdf", chatId: chat.id, toolCallId: "call-pdf1" });
 		trackJob(job.id);
 
 		const delivery = fakeDeliver();
@@ -785,7 +785,7 @@ describe("pdf runner (sources v0)", () => {
 			pdfModelOverride.current = undefined;
 		}
 
-		const done = jobStore.getJob(job.id)!;
+		const done = (await jobStore.getJob(job.id))!;
 		assert.equal(done.status, "done");
 		assert.equal(done.activity, "finished");
 		const result = done.result as PdfResult;
@@ -804,14 +804,14 @@ describe("pdf runner (sources v0)", () => {
 		it(`resolves a home-relative PDF through aliased HOME from ${mode} input without rewriting history`, async () => {
 			assert.equal(os.homedir(), homeAlias);
 			assert.notEqual(homeAlias, fs.realpathSync.native(homeAlias));
-			const chat = chatStore.createChat(`Test: relative PDF ${mode}`);
+			const chat = await chatStore.createChat(`Test: relative PDF ${mode}`);
 			trackChat(chat.id);
 			const toolCallId = `call-pdf-relative-${mode}`;
 			const input = { ...PDF_INPUT, path: relativePath };
 			const messages = nativeToolMessages("read this pdf", "pdf", toolCallId, input);
 			const before = structuredClone(messages);
-			chatStore.saveMessages(chat.id, messages);
-			const job = jobStore.createJob({ kind: "pdf", chatId: chat.id, toolCallId });
+			await chatStore.saveMessages(chat.id, messages);
+			const job = await jobStore.createJob({ kind: "pdf", chatId: chat.id, toolCallId });
 			trackJob(job.id);
 			const delivery = fakeDeliver();
 			const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver });
@@ -824,8 +824,8 @@ describe("pdf runner (sources v0)", () => {
 
 			// Worker completion is not the delivery barrier: wait for canonical
 			// acceptance before asserting the history prefix and appended result.
-			await waitFor(() => jobStore.getJob(job.id)?.delivery?.status === "delivered", 8000, "canonical PDF delivery acknowledgement");
-			const done = jobStore.getJob(job.id)!;
+			await waitFor(async () => (await jobStore.getJob(job.id))?.delivery?.status === "delivered", 8000, "canonical PDF delivery acknowledgement");
+			const done = (await jobStore.getJob(job.id))!;
 			assert.equal(done.status, "done");
 			assert.deepEqual(done.delivery, { kind: "result", status: "delivered" });
 			const result = done.result as PdfResult;
@@ -835,7 +835,7 @@ describe("pdf runner (sources v0)", () => {
 			assert.deepEqual(result.pagesConsulted, [1, 2]);
 			assert.equal(delivery.steers.length, 1);
 			assert.equal(input.path, relativePath, "dispatch input remains relative");
-			const persisted = chatStore.getChat(chat.id)!.messages;
+			const persisted = (await chatStore.getChat(chat.id))!.messages;
 			assert.deepEqual(persisted.slice(0, before.length), before, "original history and tool-call arguments remain as supplied");
 			const steer = delivery.steers[0]!;
 			assert.equal(steer.id, `steer_${job.id}`);
@@ -851,10 +851,10 @@ describe("pdf runner (sources v0)", () => {
 	}
 
 	it("an unreadable source: the job lands error with the PDF failed: brief and the steer flags the gap", async () => {
-		const chat = chatStore.createChat("Test: pdf runner failure");
+		const chat = await chatStore.createChat("Test: pdf runner failure");
 		trackChat(chat.id);
 		const badPath = path.join(import.meta.dirname, "fixtures", "not-a-pdf.txt");
-		const job = jobStore.createJob({ kind: "pdf", chatId: chat.id, toolCallId: "call-pdf2" });
+		const job = await jobStore.createJob({ kind: "pdf", chatId: chat.id, toolCallId: "call-pdf2" });
 		trackJob(job.id);
 
 		const delivery = fakeDeliver();
@@ -866,7 +866,7 @@ describe("pdf runner (sources v0)", () => {
 			pdfModelOverride.current = undefined;
 		}
 
-		const done = jobStore.getJob(job.id)!;
+		const done = (await jobStore.getJob(job.id))!;
 		assert.equal(done.status, "error", "the failure brief is a subagent failure");
 		const result = done.result as PdfResult;
 		assert.match(result.brief, /^PDF failed:/);
@@ -879,7 +879,7 @@ describe("pdf runner (sources v0)", () => {
 });
 
 describe("researcher agent", () => {
-	it("runs with the web tool set (no network touched)", () => {
+	it("runs with the web tool set (no network touched)", async () => {
 		// The researcher is a runSubagent call over the webTools registry —
 		// the tool set is what the loop sees.
 		assert.ok(webTools.web_search, "web_search available");
@@ -910,26 +910,27 @@ describe("researcher agent", () => {
  */
 describe("wake pipeline (src/server/jobs.ts)", () => {
 	/** A chat with a finished job ready for delivery. */
-	function setup(kind: "research" | "demo" = "research"): { chatId: string; jobId: string; steer: SteerMessage } {
-		const chat = chatStore.createChat("Test: wake pipeline");
+	async function setup(kind: "research" | "demo" = "research"): Promise<{ chatId: string; jobId: string; steer: SteerMessage }> {
+		const chat = await chatStore.createChat("Test: wake pipeline");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, [{ id: "u1", role: "user", content: "hello", timestamp: 1 } as never]);
+		await chatStore.saveMessages(chat.id, [{ id: "u1", role: "user", content: "hello", timestamp: 1 } as never]);
 
-		const job = jobStore.createJob({ kind, chatId: chat.id, toolCallId: `call-${jobStore.listJobs(chat.id).length}` });
+		const listCount = (await jobStore.listJobs(chat.id)).length;
+		const job = await jobStore.createJob({ kind, chatId: chat.id, toolCallId: `call-${listCount}` });
 		trackJob(job.id);
 		const result: ResearchResult = { brief: "Done: it works.", sources: [{ title: "s", url: "https://x.test" }] };
-		jobStore.updateJob(job.id, { result, status: "done", activity: "finished", delivery: { kind: "result", status: "pending" } });
+		await jobStore.updateJob(job.id, { result, status: "done", activity: "finished", delivery: { kind: "result", status: "pending" } });
 		const steer = buildSubagentSteer(job, result);
 		return { chatId: chat.id, jobId: job.id, steer };
 	}
 
 	it("delivers a PROBE HANDOFF steer the same way — the teacher's wake turn", async () => {
-		const chat = chatStore.createChat("Test: probe handoff wake");
+		const chat = await chatStore.createChat("Test: probe handoff wake");
 		trackChat(chat.id);
 		// The concluded probe: a persisted probe_done call + result (the
 		// native seam the chat-handler's construction branch keys on) and no
 		// open question.
-		chatStore.saveMessages(chat.id, nativeToolMessages("teach me calc", "probe_done", "call-pd", { ok: true }));
+		await chatStore.saveMessages(chat.id, nativeToolMessages("teach me calc", "probe_done", "call-pd", { ok: true }));
 		const handoff = buildProbeHandoffSteer(chat.id);
 		let seen: { chatId: string; steers: SteerMessage[] } | undefined;
 		setTurnRunner(async (cid, input) => {
@@ -946,11 +947,11 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 	});
 
 	it("a redelivered handoff dedupes via the transcript (idempotent by steer id)", async () => {
-		const chat = chatStore.createChat("Test: handoff idempotent");
+		const chat = await chatStore.createChat("Test: handoff idempotent");
 		trackChat(chat.id);
 		const handoff = buildProbeHandoffSteer(chat.id);
 		// The transcript already carries the steer (a previous wake completed).
-		chatStore.saveMessages(chat.id, [handoff as never]);
+		await chatStore.saveMessages(chat.id, [handoff as never]);
 		let fired = 0;
 		setTurnRunner(async () => {
 			fired++;
@@ -962,7 +963,7 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 	});
 
 	it("delivers: fires the turn runner with the record + steer, then flips the job done", async () => {
-		const { chatId, jobId, steer } = setup();
+		const { chatId, jobId, steer } = await setup();
 		let seen: { chatId: string; steers: SteerMessage[] } | undefined;
 		setTurnRunner(async (cid, input) => {
 			seen = { chatId: cid, steers: (input as SteerInput).steers as SteerMessage[] };
@@ -970,10 +971,10 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 		});
 
 		await deliverJobResult(steer);
-		await waitFor(() => jobStore.getJob(jobId)!.status !== "running", 8000, "job flip after delivery");
+		await waitFor(async () => (await jobStore.getJob(jobId))!.status !== "running", 8000, "job flip after delivery");
 
-		assert.equal(jobStore.getJob(jobId)!.status, "done");
-		assert.equal(jobStore.getJob(jobId)!.delivery?.status, "delivered");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done");
+		assert.equal((await jobStore.getJob(jobId))!.delivery?.status, "delivered");
 		assert.ok(seen, "the turn runner fired");
 		assert.equal(seen.chatId, chatId);
 		assert.equal(seen.steers.length, 1);
@@ -981,7 +982,7 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 	});
 
 	it("waits while a question part is pending, and fires once it clears", async () => {
-		const { chatId, jobId, steer } = setup();
+		const { chatId, jobId, steer } = await setup();
 		let fired = 0;
 		setTurnRunner(async () => {
 			fired++;
@@ -990,7 +991,7 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 
 		// A dangling question call blocks the wake (the model would reject an
 		// unanswered tool call — fork 1: the record ends at the call).
-		chatStore.saveMessages(chatId, [
+		await chatStore.saveMessages(chatId, [
 			{ id: "u1", role: "user", content: "hello", timestamp: 1 } as never,
 			{
 				id: "a1",
@@ -1011,12 +1012,12 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 
 		await delay(1200);
 		assert.equal(fired, 0, "no wake while the quiz is pending");
-		assert.equal(jobStore.getJob(jobId)!.status, "done", "worker is finished while delivery waits");
-		assert.equal(jobStore.getJob(jobId)!.delivery?.status, "pending");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done", "worker is finished while delivery waits");
+		assert.equal((await jobStore.getJob(jobId))!.delivery?.status, "pending");
 
 		// The learner answers: the real tool result clears the dangling call.
-		const record = chatStore.getChat(chatId)!;
-		chatStore.saveMessages(chatId, [
+		const record = (await chatStore.getChat(chatId))!;
+		await chatStore.saveMessages(chatId, [
 			...record.messages,
 			{
 				id: "r1",
@@ -1032,12 +1033,12 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 
 		await waitFor(() => fired > 0, 8000, "wake after the quiz answer");
 		await delivery; // now it resolves — the steer was delivered
-		await waitFor(() => jobStore.getJob(jobId)!.status !== "running", 8000, "job flip after the deferred wake");
-		assert.equal(jobStore.getJob(jobId)!.status, "done");
+		await waitFor(async () => (await jobStore.getJob(jobId))!.status !== "running", 8000, "job flip after the deferred wake");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done");
 	});
 
 	for (const pause of ["dismissal", "question recovery"] as const) it(`the ${pause} pause holds deliveries until the user's next turn settles`, async () => {
-		const { chatId, jobId, steer } = setup();
+		const { chatId, jobId, steer } = await setup();
 		let fired = 0;
 		setTurnRunner(async () => {
 			fired++;
@@ -1047,7 +1048,7 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 		// Both resolutions clear the dangling call, so only the persisted
 		// manual-only pause holds the wake. Recovery can be interrupted after
 		// write-ahead but before any replacement output is persisted.
-		chatStore.saveMessages(chatId, [
+		await chatStore.saveMessages(chatId, [
 			{ id: "u1", role: "user", content: "hello", timestamp: 1 } as never,
 			{
 				id: "a1",
@@ -1076,23 +1077,23 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 
 		await delay(1200);
 		assert.equal(fired, 0, `no wake while the session sits ${pause}-paused`);
-		assert.equal(jobStore.getJob(jobId)!.delivery?.status, "pending", "the delivery holds (queued, not lost)");
+		assert.equal((await jobStore.getJob(jobId))!.delivery?.status, "pending", "the delivery holds (queued, not lost)");
 
 		// The user's next message is the wake — its turn settles, and the
 		// settlement re-pump lands the held delivery right after it.
-		const record = chatStore.getChat(chatId)!;
+		const record = (await chatStore.getChat(chatId))!;
 		const afterUser = [...record.messages, { id: "u2", role: "user", content: "moving on", timestamp: 2 } as never];
-		chatStore.saveMessages(chatId, afterUser);
-		settleSteers(chatId, afterUser);
+		await chatStore.saveMessages(chatId, afterUser);
+		await settleSteers(chatId, afterUser);
 
 		await waitFor(() => fired > 0, 8000, "wake after the pause lifts");
 		await delivery;
-		await waitFor(() => jobStore.getJob(jobId)!.status !== "running", 8000, "job flip after the held wake");
-		assert.equal(jobStore.getJob(jobId)!.status, "done");
+		await waitFor(async () => (await jobStore.getJob(jobId))!.status !== "running", 8000, "job flip after the held wake");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done");
 	});
 
 	it("retries with backoff on a 409 (a client turn raced in) and delivers on the retry", async () => {
-		const { jobId, steer } = setup();
+		const { jobId, steer } = await setup();
 		let calls = 0;
 		setTurnRunner(async () => {
 			calls++;
@@ -1101,15 +1102,15 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 
 		await deliverJobResult(steer);
 		assert.ok(calls >= 2, "409 was retried");
-		await waitFor(() => jobStore.getJob(jobId)!.status !== "running", 8000, "job flip after the retry");
-		assert.equal(jobStore.getJob(jobId)!.status, "done");
+		await waitFor(async () => (await jobStore.getJob(jobId))!.status !== "running", 8000, "job flip after the retry");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done");
 	});
 
 	it("is idempotent: a steer already in the transcript flips the job without firing a turn", async () => {
-		const { chatId, jobId, steer } = setup();
+		const { chatId, jobId, steer } = await setup();
 		// Simulate the crash window: the wake completed but the flip didn't.
-		const record = chatStore.getChat(chatId)!;
-		chatStore.saveMessages(chatId, [...record.messages, steer] as never);
+		const record = (await chatStore.getChat(chatId))!;
+		await chatStore.saveMessages(chatId, [...record.messages, steer] as never);
 
 		let fired = 0;
 		setTurnRunner(async () => {
@@ -1119,7 +1120,7 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 
 		await deliverJobResult(steer);
 		assert.equal(fired, 0, "no duplicate wake for an already-delivered steer");
-		assert.equal(jobStore.getJob(jobId)!.status, "done", "the job still flips — recovery completes");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done", "the job still flips — recovery completes");
 	});
 
 // ─── continuation coalescing (the delivery-starvation fix) ───────────────────
@@ -1132,7 +1133,7 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 	}
 
 	it("hands queued markers to the LIVE run (pi steering queue) — no wake fires, the registry waits", async () => {
-		const { chatId, jobId, steer } = setup();
+		const { chatId, jobId, steer } = await setup();
 		const { handed, agent } = fakeAgent();
 		let fired = 0;
 		setTurnRunner(async () => {
@@ -1148,20 +1149,20 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 		await waitFor(() => handed.length === 1, 8000, "marker handed to the live agent");
 		await delay(1200);
 		assert.equal(fired, 0, "no wake while the run is live");
-		assert.equal(jobStore.getJob(jobId)!.status, "done", "worker finished before delivery");
-		assert.equal(jobStore.getJob(jobId)!.delivery?.status, "pending");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done", "worker finished before delivery");
+		assert.equal((await jobStore.getJob(jobId))!.delivery?.status, "pending");
 
 		// Settlement: the run persisted the injected marker.
 		unregisterLiveAgent(chatId);
-		settleSteers(chatId, [steer as never]);
+		await settleSteers(chatId, [steer as never]);
 		await delivery;
-		assert.equal(jobStore.getJob(jobId)!.status, "done", "delivery resolves at settlement");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done", "delivery resolves at settlement");
 		assert.equal(fired, 0, "never needed a wake");
 		endTurn(chatId);
 	});
 
 	it("a handed marker the run never injected (stopper exit / missed poll) strands at settlement — the idle wake delivers it", async () => {
-		const { chatId, jobId, steer } = setup();
+		const { chatId, jobId, steer } = await setup();
 		const { handed, agent } = fakeAgent();
 		let fired = 0;
 		setTurnRunner(async () => {
@@ -1177,19 +1178,19 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 		// The run settles WITHOUT the marker (question stopper exited before
 		// the follow-up poll) — reconcile against the persisted truth.
 		unregisterLiveAgent(chatId);
-		settleSteers(chatId, []);
+		await settleSteers(chatId, []);
 		endTurn(chatId);
 
 		// The marker returned to pending — the pump's idle wake delivers it.
 		await delivery;
 		assert.equal(fired, 1, "the stranded marker rode the idle wake");
-		assert.equal(jobStore.getJob(jobId)!.status, "done");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done");
 	});
 
 	it("a probe-handoff NEVER rides a live run — it waits the turn out and wakes", async () => {
-		const chat = chatStore.createChat("Test: handoff never live");
+		const chat = await chatStore.createChat("Test: handoff never live");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, nativeToolMessages("teach me calc", "probe_done", "call-pd", { ok: true }));
+		await chatStore.saveMessages(chat.id, nativeToolMessages("teach me calc", "probe_done", "call-pd", { ok: true }));
 		const handoff = buildProbeHandoffSteer(chat.id);
 		const { handed, agent } = fakeAgent();
 		const fired: SteerMessage[][] = [];
@@ -1208,7 +1209,7 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 
 		// The prober's turn settles — now the handoff wakes the TEACHER.
 		unregisterLiveAgent(chat.id);
-		settleSteers(chat.id, []);
+		await settleSteers(chat.id, []);
 		endTurn(chat.id);
 		await delivery;
 		assert.equal(fired.length, 1);
@@ -1216,7 +1217,7 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 	});
 
 	it("registerLiveAgent immediately steers pending markers into the NEW run (the parked-behind-quiz path)", async () => {
-		const { chatId, jobId, steer } = setup();
+		const { chatId, jobId, steer } = await setup();
 		const { handed, agent } = fakeAgent();
 		let fired = 0;
 		setTurnRunner(async () => {
@@ -1226,7 +1227,7 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 
 		// A dangling question has the pump parked in waitForIdle: the
 		// marker is pending but no live run exists to take it.
-		chatStore.saveMessages(chatId, [
+		await chatStore.saveMessages(chatId, [
 			...nativeToolMessages("teach me", "probe_done", "call-q", { ok: true }),
 			{
 				id: "a-q",
@@ -1249,36 +1250,37 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 		// it rides the run's START steering poll (first LLM call).
 		assert.ok(beginTurn(chatId));
 		registerLiveAgent(chatId, agent as never);
+		await waitFor(() => handed.length === 1, 8000, "registration steered marker in");
 		assert.equal(handed.length, 1, "registration itself steered the marker in");
 		assert.equal(handed[0]!.id, steer.id);
 
 		// The answer run persisted the marker — the parked pump's wake
 		// re-check resolves it without ever firing a turn.
 		unregisterLiveAgent(chatId);
-		settleSteers(chatId, [steer as never]);
+		await settleSteers(chatId, [steer as never]);
 		endTurn(chatId);
 		await delivery;
 		assert.equal(fired, 0, "the parked wake never fired — the run delivered");
-		assert.equal(jobStore.getJob(jobId)!.status, "done");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done");
 	});
 
-	it("only a durable marker acknowledges delivery, independently of worker completion", () => {
-		const { chatId, jobId, steer } = setup();
-		assert.equal(jobStore.getJob(jobId)!.status, "done");
-		assert.equal(jobStore.getJob(jobId)!.delivery?.status, "pending");
-		chatStore.saveMessages(chatId, [...chatStore.getChat(chatId)!.messages, steer]);
-		noteSteersDurable(chatId, [steer]);
-		noteSteersDurable(chatId, [steer]);
-		assert.equal(jobStore.getJob(jobId)!.delivery?.status, "delivered");
-		assert.equal(jobStore.getJob(jobId)!.activity, "finished");
+	it("only a durable marker acknowledges delivery, independently of worker completion", async () => {
+		const { chatId, jobId, steer } = await setup();
+		assert.equal((await jobStore.getJob(jobId))!.status, "done");
+		assert.equal((await jobStore.getJob(jobId))!.delivery?.status, "pending");
+		await chatStore.saveMessages(chatId, [...(await chatStore.getChat(chatId))!.messages, steer]);
+		await noteSteersDurable(chatId, [steer]);
+		await noteSteersDurable(chatId, [steer]);
+		assert.equal((await jobStore.getJob(jobId))!.delivery?.status, "delivered");
+		assert.equal((await jobStore.getJob(jobId))!.activity, "finished");
 	});
 
 	it("the idle wake carries EVERY pending marker in ONE turn", async () => {
-		const { chatId, steer } = setup();
-		const job2 = jobStore.createJob({ kind: "research", chatId, toolCallId: "call-2" });
+		const { chatId, steer } = await setup();
+		const job2 = await jobStore.createJob({ kind: "research", chatId, toolCallId: "call-2" });
 		trackJob(job2.id);
 		const result: ResearchResult = { brief: "Second result.", sources: [] };
-		jobStore.updateJob(job2.id, { result });
+		await jobStore.updateJob(job2.id, { result });
 		const steer2 = buildSubagentSteer(job2, result);
 
 		const fired: SteerMessage[][] = [];
@@ -1297,22 +1299,23 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 
 
 	it("a failed start stays pending without changing the worker outcome", async () => {
-		const { chatId, jobId, steer } = setup();
+		const { chatId, jobId, steer } = await setup();
 		let attempts = 0;
 		setTurnRunner(async () => { attempts++; return 500; });
 		const delivery = deliverJobResult(steer);
 		await waitFor(() => attempts === 1, 8000, "failed start attempted");
 		await delay(1000);
 		assert.equal(attempts, 1, "no automatic retry loop");
-		assert.equal(jobStore.getJob(jobId)!.status, "done");
-		assert.equal(jobStore.getJob(jobId)!.error, undefined);
-		assert.equal(jobStore.getJob(jobId)!.delivery?.status, "pending");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done");
+		assert.equal((await jobStore.getJob(jobId))!.error, undefined);
+		assert.equal((await jobStore.getJob(jobId))!.delivery?.status, "pending");
 		const handed: SteerMessage[] = [];
 		assert.ok(beginTurn(chatId));
 		registerLiveAgent(chatId, { steer: (m: SteerMessage) => handed.push(m) } as never);
+		await waitFor(() => handed.length === 1, 8000, "registration steered marker in");
 		assert.deepEqual(handed.map((m) => m.id), [steer.id]);
 		unregisterLiveAgent(chatId);
-		settleSteers(chatId, [steer]);
+		await settleSteers(chatId, [steer]);
 		endTurn(chatId);
 		await delivery;
 	});
@@ -1325,10 +1328,10 @@ function delay(ms: number): Promise<void> {
 // ─── persist id hygiene (the duplicate-empty-key bug) ────────────────────────
 
 describe("persistTurn (native history, Wave B)", () => {
-	it("stamps EMPTY ids (pi minted no id) at the canonical write and preserves existing ones", () => {
-		const chat = chatStore.createChat("Test: persist stamps ids");
+	it("stamps EMPTY ids (pi minted no id) at the canonical write and preserves existing ones", async () => {
+		const chat = await chatStore.createChat("Test: persist stamps ids");
 		trackChat(chat.id);
-		const stamped = persistTurn(chatStore, chat.id, 0, [
+		const stamped = await persistTurn(chatStore, chat.id, 0, [
 			{ id: "", role: "user", content: "wake turn", timestamp: 1 } as never,
 			{
 				id: "msg_kept",
@@ -1345,15 +1348,15 @@ describe("persistTurn (native history, Wave B)", () => {
 		assert.notEqual(stamped[0]!.id, "", "empty id replaced");
 		assert.match(stamped[0]!.id, /^msg_/);
 		assert.equal(stamped[1]!.id, "msg_kept", "server-authored id untouched");
-		const record = chatStore.getChat(chat.id)!;
+		const record = (await chatStore.getChat(chat.id))!;
 		assert.equal(record.messages.length, 2, "both messages persisted");
 		assert.ok(record.messages.every((m) => m.id && m.id.length > 0), "no empty ids survive persist");
 	});
 
-	it("baseCount slices the turn's own messages (the agent's state is append-only across turns)", () => {
-		const chat = chatStore.createChat("Test: persist slices the turn tail");
+	it("baseCount slices the turn's own messages (the agent's state is append-only across turns)", async () => {
+		const chat = await chatStore.createChat("Test: persist slices the turn tail");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, [
+		await chatStore.saveMessages(chat.id, [
 			{ id: "base_1", role: "user", content: "first", timestamp: 1 } as never,
 		]);
 		// The agent's state at onFinish: the base record + the turn's OWN new
@@ -1373,17 +1376,17 @@ describe("persistTurn (native history, Wave B)", () => {
 				timestamp: 1,
 			} as never,
 		];
-		const stamped = persistTurn(chatStore, chat.id, 1, state, false);
+		const stamped = await persistTurn(chatStore, chat.id, 1, state, false);
 		assert.equal(stamped.length, 1, "only the turn's new tail persists");
-		const record = chatStore.getChat(chat.id)!;
+		const record = (await chatStore.getChat(chat.id))!;
 		assert.equal(record.messages.length, 2, "the base record is untouched — append-only");
 		assert.match(record.messages[1]!.id, /^msg_/);
 	});
 
-	it("drops clean question placeholders, keeps errored ones (fork 1: the record ends at the unanswered call)", () => {
-		const chat = chatStore.createChat("Test: persist placeholder filtering");
+	it("drops clean question placeholders, keeps errored ones (fork 1: the record ends at the unanswered call)", async () => {
+		const chat = await chatStore.createChat("Test: persist placeholder filtering");
 		trackChat(chat.id);
-		const stamped = persistTurn(chatStore, chat.id, 0, [
+		const stamped = await persistTurn(chatStore, chat.id, 0, [
 			{
 				id: "",
 				role: "assistant",
@@ -1419,7 +1422,7 @@ describe("persistTurn (native history, Wave B)", () => {
 			} as never,
 		], false);
 		assert.equal(stamped.length, 2, "the clean placeholder is filtered, the errored result stays");
-		const record = chatStore.getChat(chat.id)!;
+		const record = (await chatStore.getChat(chat.id))!;
 		assert.equal(record.messages.length, 2);
 		assert.equal((record.messages[1] as { isError: boolean }).isError, true);
 	});
@@ -1428,7 +1431,7 @@ describe("persistTurn (native history, Wave B)", () => {
 // ─── prompt composition hygiene (the README leak) ─────────────────────────────
 
 describe("prompt composition", () => {
-	it("loads ONLY numeric-prefix fragments — README.md never enters the system prompt", () => {
+	it("loads ONLY numeric-prefix fragments — README.md never enters the system prompt", async () => {
 		const instructions = composeInstructions("teacher");
 		assert.ok(!instructions.includes("Prompt fragments"), "README content must not leak");
 		assert.ok(!instructions.includes("Rules for adding a fragment"), "README content must not leak (rules)");
@@ -1441,7 +1444,7 @@ describe("prompt composition", () => {
 		}
 	});
 
-	it("the question principles compose into the teacher prompt; the probe's quick-measurement revision landed", () => {
+	it("the question principles compose into the teacher prompt; the probe's quick-measurement revision landed", async () => {
 		const teacher = composeInstructions("teacher");
 		// the T2a doctrine fragment (user-locked wording 2026-09-15): verbatim presence
 		for (const pin of [
@@ -1467,7 +1470,7 @@ describe("prompt composition", () => {
 		assert.ok(!prober.includes("Question principles"), "the teach-phase fragment never composes into the prober");
 	});
 
-	it("the predict-check cycle composes into the teacher; the craft chunk reaches BOTH agents (owner 2026-10-03)", () => {
+	it("the predict-check cycle composes into the teacher; the craft chunk reaches BOTH agents (owner 2026-10-03)", async () => {
 		const teacher = composeInstructions("teacher");
 		// the cycle doctrine (28-predictions.md) — teacher-only
 		assert.ok(teacher.includes("predict → teach → check"), "the cycle line is in");
@@ -1488,7 +1491,7 @@ describe("prompt composition", () => {
 		assert.ok(!prober.includes("predict → teach → check"), "the teaching cycle stays out of the prober");
 	});
 
-	it("the sources-v0 prompt lines compose: read/pdf doctrine in the teacher, the read line in the prober", () => {
+	it("the sources-v0 prompt lines compose: read/pdf doctrine in the teacher, the read line in the prober", async () => {
 		const teacher = composeInstructions("teacher");
 		assert.ok(teacher.includes("Learner source files"), "the teacher carries the source-files section");
 		assert.ok(teacher.includes("brief with page citations"), "the pdf brief's citation duty is stated");
@@ -1496,7 +1499,7 @@ describe("prompt composition", () => {
 		assert.ok(prober.includes("the `read` tool can inspect it directly"), "the prober knows it can read learner files");
 	});
 
-	it("the sources-v1 shared fragment composes into BOTH agents (find/ls/grep doctrine)", () => {
+	it("the sources-v1 shared fragment composes into BOTH agents (find/ls/grep doctrine)", async () => {
 		for (const kind of ["teacher", "prober"] as const) {
 			const instructions = composeInstructions(kind);
 			assert.ok(instructions.includes("## Learner files"), `${kind} carries the shared learner-files fragment`);
@@ -1512,7 +1515,7 @@ describe("prompt composition", () => {
 		);
 	});
 
-	it("guards prompt size — no fragment can silently balloon (the README-leak class)", () => {
+	it("guards prompt size — no fragment can silently balloon (the README-leak class)", async () => {
 		// The wave-1 leak: README.md (815 bytes / ~200 tokens) rode into every
 		// teacher turn until the numeric-prefix filter stopped it. This guard
 		// catches the sibling failure mode — an accidental dump pasted into a
@@ -1545,11 +1548,11 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 		]);
 	}
 
-	function newChatWithResearchJob(label: string, toolCallId: string): { chatId: string; jobId: string } {
-		const chat = chatStore.createChat(`Test: ${label}`);
+	async function newChatWithResearchJob(label: string, toolCallId: string): Promise<{ chatId: string; jobId: string }> {
+		const chat = await chatStore.createChat(`Test: ${label}`);
 		trackChat(chat.id);
 		// Native fixture — the record is agent history (Wave B).
-		chatStore.saveMessages(chat.id, [
+		await chatStore.saveMessages(chat.id, [
 			{ id: "u1", role: "user", content: "hi", timestamp: 1 } as never,
 			{
 				id: "a1",
@@ -1576,13 +1579,13 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 				timestamp: 1,
 			} as never,
 		]);
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId });
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId });
 		trackJob(job.id);
 		return { chatId: chat.id, jobId: job.id };
 	}
 
 	it("kills the running loop: error \"Aborted by learner\" immediately, loop unwinds silently, teacher gets the abort steer", async () => {
-		const { jobId } = newChatWithResearchJob("abort running job", "call-abort1");
+		const { jobId } = await newChatWithResearchJob("abort running job", "call-abort1");
 		const fired: SteerMessage[] = [];
 		setTurnRunner(async (_cid, input) => {
 			fired.push(...((input as SteerInput).steers as SteerMessage[]));
@@ -1598,19 +1601,19 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 		});
 		try {
 			const settled = runner.runJob(jobId, RESEARCH_INPUT);
-			await waitFor(() => jobStore.getJob(jobId)!.activity === "researching", 8000, "loop started");
+			await waitFor(async () => (await jobStore.getJob(jobId))!.activity === "researching", 8000, "loop started");
 
-			const outcome = abortJob(jobId);
+			const outcome = await abortJob(jobId);
 			assert.ok(outcome.ok);
-			const killed = jobStore.getJob(jobId)!;
+			const killed = (await jobStore.getJob(jobId))!;
 			assert.equal(killed.status, "error", "flipped synchronously — the poll sees it at once");
 			assert.equal(killed.error, "Aborted by learner", "abort reads as an error with a reason, not a failure");
 			assert.equal(killed.activity, "aborted");
 
 			await settled; // unwinds — no hang
-			assert.equal(jobStore.getJob(jobId)!.status, "error", "the runner never overwrites the flip");
-			assert.equal(jobStore.getJob(jobId)!.error, "Aborted by learner");
-			assert.equal(jobStore.getJob(jobId)!.result, undefined, "no result on an aborted job");
+			assert.equal((await jobStore.getJob(jobId))!.status, "error", "the runner never overwrites the flip");
+			assert.equal((await jobStore.getJob(jobId))!.error, "Aborted by learner");
+			assert.equal((await jobStore.getJob(jobId))!.result, undefined, "no result on an aborted job");
 
 			await waitFor(() => fired.length > 0, 8000, "abort wake fired");
 			const last = fired[0]!;
@@ -1618,23 +1621,23 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 			assert.equal(last.id, `steer_${jobId}`);
 			assert.equal(last.customType, "subagent-abort", "the abort marker — no artifact");
 			// aborted is terminal: the wake completing must not flip it
-			assert.equal(jobStore.getJob(jobId)!.status, "error", "terminal after the wake");
+			assert.equal((await jobStore.getJob(jobId))!.status, "error", "terminal after the wake");
 		} finally {
 			researchModelOverride.current = undefined;
 		}
 	});
 
 	it("the usage folded so far survives the kill (money channel outlives the abort)", async () => {
-		const { jobId } = newChatWithResearchJob("abort keeps usage", "call-abort2");
+		const { jobId } = await newChatWithResearchJob("abort keeps usage", "call-abort2");
 		setTurnRunner(async () => 200);
 		researchModelOverride.current = oneStepThenHangModel();
 		const runner = createJobRunner({ chatStore, jobStore, deliver: async () => {}, searchProvider: () => stubSearch() });
 		try {
 			const settled = runner.runJob(jobId, RESEARCH_INPUT);
-			await waitFor(() => (jobStore.getJob(jobId)!.usage?.steps ?? 0) === 1, 8000, "first step folded");
-			abortJob(jobId);
+			await waitFor(async () => ((await jobStore.getJob(jobId))!.usage?.steps ?? 0) === 1, 8000, "first step folded");
+			await abortJob(jobId);
 			await settled;
-			const job = jobStore.getJob(jobId)!;
+			const job = (await jobStore.getJob(jobId))!;
 			assert.equal(job.status, "error");
 		assert.equal(job.error, "Aborted by learner");
 			assert.equal(job.usage!.steps, 1, "usage-so-far persisted by the runner's finally");
@@ -1651,13 +1654,13 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 	});
 
 	it("a finished worker with a queued result is no longer abortable", async () => {
-		const chat = chatStore.createChat("Test: abort delivering job");
+		const chat = await chatStore.createChat("Test: abort delivering job");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, [{ id: "u1", role: "user", content: "hello", timestamp: 1 } as never]);
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-abort3" });
+		await chatStore.saveMessages(chat.id, [{ id: "u1", role: "user", content: "hello", timestamp: 1 } as never]);
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-abort3" });
 		trackJob(job.id);
 		const result: ResearchResult = { brief: "Done: it works.", sources: [{ title: "s", url: "https://x.test" }] };
-		jobStore.updateJob(job.id, { result, status: "done", activity: "finished", delivery: { kind: "result", status: "pending" } });
+		await jobStore.updateJob(job.id, { result, status: "done", activity: "finished", delivery: { kind: "result", status: "pending" } });
 
 		// Block the pump's idle gates so the result steer sits QUEUED, not in flight.
 		assert.ok(beginTurn(chat.id));
@@ -1669,28 +1672,28 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 		void deliverJobResult(buildSubagentSteer(job, result)).catch(() => {
 			/* dropped by the abort below */
 		});
-		assert.equal(jobStore.getJob(job.id)!.delivery?.status, "pending");
+		assert.equal((await jobStore.getJob(job.id))!.delivery?.status, "pending");
 
-		const outcome = abortJob(job.id);
+		const outcome = await abortJob(job.id);
 		assert.deepEqual(outcome, { ok: false, reason: "not_running" });
-		assert.equal(jobStore.getJob(job.id)!.status, "done");
-		assert.equal(jobStore.getJob(job.id)!.error, undefined);
+		assert.equal((await jobStore.getJob(job.id))!.status, "done");
+		assert.equal((await jobStore.getJob(job.id))!.error, undefined);
 
 		endTurn(chat.id); // gates open — whatever is left in the queue fires
 		await waitFor(() => fired.length > 0, 8000, "wake fired");
 		assert.equal(fired.length, 1, "exactly one result delivery");
 		assert.equal(fired[0]!.customType, "subagent-steer");
-		assert.equal(jobStore.getJob(job.id)!.status, "done");
+		assert.equal((await jobStore.getJob(job.id))!.status, "done");
 	});
 
-	it("outcome reasons: not_found for unknown, not_running for settled jobs", () => {
-		assert.deepEqual(abortJob("job_does_not_exist"), { ok: false, reason: "not_found" });
-		const chat = chatStore.createChat("Test: abort settled job");
+	it("outcome reasons: not_found for unknown, not_running for settled jobs", async () => {
+		assert.deepEqual(await abortJob("job_does_not_exist"), { ok: false, reason: "not_found" });
+		const chat = await chatStore.createChat("Test: abort settled job");
 		trackChat(chat.id);
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-abort4" });
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-abort4" });
 		trackJob(job.id);
-		jobStore.updateJob(job.id, { status: "done", activity: "delivered" });
-		assert.deepEqual(abortJob(job.id), { ok: false, reason: "not_running" });
+		await jobStore.updateJob(job.id, { status: "done", activity: "delivered" });
+		assert.deepEqual(await abortJob(job.id), { ok: false, reason: "not_running" });
 	});
 });
 
@@ -1712,21 +1715,21 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 
 	/** A FRESH "running" record (no loop registration): the orphan shape.
 	 *  Freshness is the point — the old code needed 15 minutes of age. */
-	function orphanJob(withResult?: ResearchResult): { chatId: string; jobId: string } {
-		const chat = chatStore.createChat("Test: stale sweep");
+	async function orphanJob(withResult?: ResearchResult): Promise<{ chatId: string; jobId: string }> {
+		const chat = await chatStore.createChat("Test: stale sweep");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, [{ id: "u1", role: "user", content: "hello", timestamp: 1 } as never]);
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: `call-sweep-${createdJobs.length}` });
+		await chatStore.saveMessages(chat.id, [{ id: "u1", role: "user", content: "hello", timestamp: 1 } as never]);
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: `call-sweep-${createdJobs.length}` });
 		trackJob(job.id);
-		if (withResult) jobStore.updateJob(job.id, { result: withResult, activity: "delivering result" });
+		if (withResult) await jobStore.updateJob(job.id, { result: withResult, activity: "delivering result" });
 		return { chatId: chat.id, jobId: job.id };
 	}
 
-	it("a running record with a LIVE loop registration is never recovered — however old (the double-run guard)", () => {
-		const { jobId } = orphanJob();
+	it("a running record with a LIVE loop registration is never recovered — however old (the double-run guard)", async () => {
+		const { jobId } = await orphanJob();
 		// Backdate the record well past every plausible in-flight run: age
 		// alone must NOT trigger recovery anymore.
-		jobStore.updateJob(jobId, { updatedAt: new Date(Date.now() - 30 * 60_000).toISOString() });
+		await jobStore.updateJob(jobId, { updatedAt: new Date(Date.now() - 30 * 60_000).toISOString() });
 		registerJobAbort(jobId, new AbortController()); // a loop is executing
 		// JURISDICTIONAL (owner round 8, 2026-10-05): the sweep scans the
 		// SHARED jobs dir — under the full suite, OTHER FILES' processes
@@ -1738,17 +1741,17 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 			respawnedIds.push(id);
 		});
 		resetSweepThrottle();
-		recoverStaleJobs();
+		await recoverStaleJobs();
 		assert.ok(!respawnedIds.includes(jobId), "a live loop is provably executing — no respawn beside it");
-		assert.equal(jobStore.getJob(jobId)!.activity, "starting", "the record is untouched");
+		assert.equal((await jobStore.getJob(jobId))!.activity, "starting", "the record is untouched");
 		// Hermetic teardown: settle + unregister so later sweeps in THIS suite
 		// never see this fixture as a fresh orphan.
-		jobStore.updateJob(jobId, { status: "done", activity: "settled (test)" });
+		await jobStore.updateJob(jobId, { status: "done", activity: "settled (test)" });
 		unregisterJobAbort(jobId);
 	});
 
-	it("a running record WITHOUT a registration is an orphan: the loop is re-spawned immediately (no age wait)", () => {
-		const { jobId } = orphanJob();
+	it("a running record WITHOUT a registration is an orphan: the loop is re-spawned immediately (no age wait)", async () => {
+		const { jobId } = await orphanJob();
 		// JURISDICTIONAL (see above): foreign respawns may interleave under
 		// the full suite — ours must be among them, at once.
 		const respawnedIds: string[] = [];
@@ -1756,26 +1759,26 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 			respawnedIds.push(id);
 		});
 		resetSweepThrottle();
-		recoverStaleJobs();
+		await recoverStaleJobs();
 		assert.ok(respawnedIds.includes(jobId), "the orphan's loop is re-spawned at once");
-		assert.equal(jobStore.getJob(jobId)!.activity, "recovering: re-running");
+		assert.equal((await jobStore.getJob(jobId))!.activity, "recovering: re-running");
 		// Hermetic teardown (see above) — the respawned loop is the TEST's
 		// fake seam, nothing real runs.
-		jobStore.updateJob(jobId, { status: "done", activity: "settled (test)" });
+		await jobStore.updateJob(jobId, { status: "done", activity: "settled (test)" });
 	});
 
 	it("an orphan WITH a stored result is re-delivered: the wake fires and the job flips done", async () => {
-		const { jobId } = orphanJob({ brief: "Done: it works.", sources: [] });
+		const { jobId } = await orphanJob({ brief: "Done: it works.", sources: [] });
 		let fired = 0;
 		setTurnRunner(async () => {
 			fired++;
 			return 200;
 		});
 		resetSweepThrottle();
-		recoverStaleJobs();
+		await recoverStaleJobs();
 		await waitFor(() => fired > 0, 8000, "recovery wake fired");
-		await waitFor(() => jobStore.getJob(jobId)!.status !== "running", 8000, "orphan settled after re-delivery");
-		assert.equal(jobStore.getJob(jobId)!.status, "done");
+		await waitFor(async () => (await jobStore.getJob(jobId))!.status !== "running", 8000, "orphan settled after re-delivery");
+		assert.equal((await jobStore.getJob(jobId))!.status, "done");
 	});
 });
 
@@ -1783,11 +1786,11 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 
 describe("BYOK job refusal (no factory floor)", () => {
 	it("runJob with NO resolvable engine lands the job as error — the envelope wording, no phantom run", async () => {
-		const chat = chatStore.createChat("Test: unconfigured spawn");
+		const chat = await chatStore.createChat("Test: unconfigured spawn");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, nativeToolMessages("hi", "research", "call-nc1", RESEARCH_INPUT));
+		await chatStore.saveMessages(chat.id, nativeToolMessages("hi", "research", "call-nc1", RESEARCH_INPUT));
 
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-nc1" });
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-nc1" });
 		trackJob(job.id);
 
 		const delivery = fakeDeliver();
@@ -1796,7 +1799,7 @@ describe("BYOK job refusal (no factory floor)", () => {
 		const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver });
 		await runner.runJob(job.id);
 
-		const done = jobStore.getJob(job.id)!;
+		const done = (await jobStore.getJob(job.id))!;
 		// The refusal lands through the SAME convention as every other
 		// failed job (BYOK review fix, Teacher stream 2026-09-22): the kind's
 		// failure result steers the teacher — a dispatched job is never
@@ -1819,11 +1822,11 @@ describe("BYOK job refusal (no factory floor)", () => {
 
 describe("provider-key job refusal (key-presence interlude)", () => {
 	it("an engine whose provider key is gone refuses the spawn — envelope wording, no phantom run", async () => {
-		const chat = chatStore.createChat("Test: keyless spawn");
+		const chat = await chatStore.createChat("Test: keyless spawn");
 		trackChat(chat.id);
-		chatStore.saveMessages(chat.id, nativeToolMessages("hi", "research", "call-km1", RESEARCH_INPUT));
+		await chatStore.saveMessages(chat.id, nativeToolMessages("hi", "research", "call-km1", RESEARCH_INPUT));
 
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-km1" });
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-km1" });
 		trackJob(job.id);
 
 		const delivery = fakeDeliver();
@@ -1846,7 +1849,7 @@ describe("provider-key job refusal (key-presence interlude)", () => {
 
 		// The refusal lands through the SAME convention as every failed job:
 		// honest record, kind failure shape steered, terminal flip after.
-		const done = jobStore.getJob(job.id)!;
+		const done = (await jobStore.getJob(job.id))!;
 		assert.equal(done.status, "error", "the job lands error, never a phantom run");
 		assert.equal(done.error, providerKeyMissing(engine.model.provider, ["cheap"]).error, "the envelope's error line verbatim");
 		assert.deepEqual(seen, [[engine.model.provider, "cheap"]], "the check saw the engine's provider + the researcher's tier");
@@ -1869,22 +1872,22 @@ describe("composer steering: steerLiveChat + the deliver-or-requeue lifecycle", 
 		return { handed, agent: { steer: (m: unknown) => handed.push(m) } };
 	}
 
-	it("no live turn → false, nothing parked (the client falls back to a plain send)", () => {
-		const chatId = chatStore.createChat("steer: idle").id;
+	it("no live turn → false, nothing parked (the client falls back to a plain send)", async () => {
+		const chatId = (await chatStore.createChat("steer: idle")).id;
 		const msg = { id: "steer_x1", role: "user", content: "hold on", timestamp: 1 };
-		assert.equal(steerLiveChat(chatId, msg as never), false);
+		assert.equal(await steerLiveChat(chatId, msg as never), false);
 		const { handed, agent } = fakeAgent();
 		registerLiveAgent(chatId, agent as never); // a later run hands NOTHING
 		assert.equal(handed.length, 0, "nothing was parked by the refused steer");
 		unregisterLiveAgent(chatId);
 	});
 
-	it("live agent → steered AND parked (the stranding safety net)", () => {
-		const chatId = chatStore.createChat("steer: live").id;
+	it("live agent → steered AND parked (the stranding safety net)", async () => {
+		const chatId = (await chatStore.createChat("steer: live")).id;
 		const msg = { id: "steer_x2", role: "user", content: "also cover Venus", timestamp: 1 };
 		const { handed, agent } = fakeAgent();
 		registerLiveAgent(chatId, agent as never);
-		assert.equal(steerLiveChat(chatId, msg as never), true);
+		assert.equal(await steerLiveChat(chatId, msg as never), true);
 		assert.equal(handed.length, 1, "handed to the live agent's steering queue");
 		// Re-registering the SAME agent never re-hands (double-handoff guard).
 		registerLiveAgent(chatId, agent as never);
@@ -1892,19 +1895,19 @@ describe("composer steering: steerLiveChat + the deliver-or-requeue lifecycle", 
 		unregisterLiveAgent(chatId);
 	});
 
-	it("settlement reconciliation: delivered ids drop, stranded ones ride the NEXT run", () => {
-		const chatId = chatStore.createChat("steer: reconcile").id;
+	it("settlement reconciliation: delivered ids drop, stranded ones ride the NEXT run", async () => {
+		const chatId = (await chatStore.createChat("steer: reconcile")).id;
 		const delivered = { id: "steer_d1", role: "user", content: "delivered", timestamp: 1 };
 		const stranded = { id: "steer_s1", role: "user", content: "stranded behind a question", timestamp: 2 };
 		const { handed, agent } = fakeAgent();
 		registerLiveAgent(chatId, agent as never);
-		assert.equal(steerLiveChat(chatId, delivered as never), true);
-		assert.equal(steerLiveChat(chatId, stranded as never), true);
+		assert.equal(await steerLiveChat(chatId, delivered as never), true);
+		assert.equal(await steerLiveChat(chatId, stranded as never), true);
 
 		// Settlement: the run persisted ONLY the delivered one (the stranded
 		// copy died with the agent — question termination / abort).
 		unregisterLiveAgent(chatId);
-		reconcileUserSteers(chatId, [delivered] as never);
+		await reconcileUserSteers(chatId, [delivered] as never);
 
 		// The chat's next run (the answer turn) picks up the stranded steer.
 		const next = fakeAgent();
@@ -1912,6 +1915,6 @@ describe("composer steering: steerLiveChat + the deliver-or-requeue lifecycle", 
 		assert.equal(next.handed.length, 1, "exactly the stranded steer rides the next run");
 		assert.deepEqual((next.handed[0] as { id: string }).id, "steer_s1");
 		unregisterLiveAgent(chatId);
-		reconcileUserSteers(chatId, [stranded, delivered] as never); // cleanup
+		await reconcileUserSteers(chatId, [stranded, delivered] as never); // cleanup
 	});
 });

@@ -290,22 +290,22 @@ describe("clarifier role and store", () => {
 		assert.equal(spec?.id, "deepseek-flash");
 	});
 
-	it("appendClarification keeps one thread per question and leaves updatedAt alone", () => {
-		const record = chatStore.createChat("clarify store fixture");
+	it("appendClarification keeps one thread per question and leaves updatedAt alone", async () => {
+		const record = await chatStore.createChat("clarify store fixture");
 		try {
-			const before = chatStore.getChat(record.id)!.updatedAt;
-			assert.equal(chatStore.appendClarification(record.id, "call_a", exchange("one")).length, 1);
-			assert.equal(chatStore.appendClarification(record.id, "call_a", exchange("two")).length, 2);
-			chatStore.appendClarification(record.id, "call_b", exchange("other"));
-			const saved = chatStore.getChat(record.id)!;
+			const before = (await chatStore.getChat(record.id))!.updatedAt;
+			assert.equal((await chatStore.appendClarification(record.id, "call_a", exchange("one"))).length, 1);
+			assert.equal((await chatStore.appendClarification(record.id, "call_a", exchange("two"))).length, 2);
+			await chatStore.appendClarification(record.id, "call_b", exchange("other"));
+			const saved = (await chatStore.getChat(record.id))!;
 			assert.deepEqual(saved.clarifications?.call_a?.map((e) => e.asked), ["one", "two"]);
 			assert.deepEqual(saved.clarifications?.call_b?.map((e) => e.asked), ["other"]);
 			assert.equal(saved.updatedAt, before);
 			// Messages written later keep the threads (read-modify-write).
-			chatStore.saveMessages(record.id, lesson());
-			assert.equal(chatStore.getChat(record.id)!.clarifications?.call_a?.length, 2);
+			await chatStore.saveMessages(record.id, lesson());
+			assert.equal((await chatStore.getChat(record.id))!.clarifications?.call_a?.length, 2);
 		} finally {
-			fs.unlinkSync(`${PATHS.chats}/${record.id}.json`);
+			await chatStore.deleteChat(record.id);
 		}
 	});
 });
@@ -316,9 +316,9 @@ function memoryStore(record: ChatRecord) {
 	let current = structuredClone(record);
 	const turns: TurnUsage[] = [];
 	const store = {
-		getChat: (id: string) => (id === current.id ? structuredClone(current) : null),
-		appendTurnUsage: (_id: string, entry: TurnUsage) => void turns.push(entry),
-		appendClarification: (_id: string, toolCallId: string, ex: ClarifyExchange) => {
+		getChat: async (id: string) => (id === current.id ? structuredClone(current) : null),
+		appendTurnUsage: async (_id: string, entry: TurnUsage) => void turns.push(entry),
+		appendClarification: async (_id: string, toolCallId: string, ex: ClarifyExchange) => {
 			const thread = [...(current.clarifications?.[toolCallId] ?? []), ex];
 			current = { ...current, clarifications: { ...current.clarifications, [toolCallId]: thread } };
 			return thread;
@@ -422,12 +422,16 @@ describe("clarifyQuestion", () => {
 
 	it("allows one reply in flight per question", async () => {
 		let release!: () => void;
+		let started!: () => void;
+		const ready = new Promise<void>((r) => (started = r));
 		const gate = new Promise<void>((r) => (release = r));
 		const { deps } = setup(async () => {
+			started();
 			await gate;
 			return "ok";
 		});
 		const first = clarifyQuestion("chat_1", { toolCallId: "call_open", text: "one" }, undefined, deps);
+		await ready;
 		const second = await clarifyQuestion("chat_1", { toolCallId: "call_open", text: "two" }, undefined, deps);
 		assert.equal(second.ok ? 200 : second.status, 409);
 		release();

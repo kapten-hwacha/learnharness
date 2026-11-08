@@ -79,12 +79,12 @@ describe("turn settlement recovery", () => {
 		assert.equal(frames.some(f => f.includes('"type":"error"')), false);
 	});
 
-	it("does not contain a canonical write failure as an empty successful persist", () => {
+	it("does not contain a canonical write failure as an empty successful persist", async () => {
 		const store = {
-			getChat: () => ({ messages: [] }),
+			getChat: async () => ({ messages: [] }),
 			saveMessages() { throw new Error("synthetic disk failure"); },
 		} as unknown as ChatStore;
 		const message = { role: "assistant", content: [{ type: "text", text: "Synthetic reply" }], stopReason: "stop", timestamp: 1 } as AgentMessage;
-		assert.throws(() => persistTurn(store, "fixture", 0, [message], false), /The reply could not be saved\./);
+		await assert.rejects(async () => persistTurn(store, "fixture", 0, [message], false), /The reply could not be saved\./);
 	});
 });

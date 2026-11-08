@@ -179,12 +179,12 @@ function jobIdOf(steer: SteerMessage): string | null {
 /** Call only after canonical conversation persistence. Streaming visibility
  * is not durable acceptance. The saved marker wins over delivery-bookkeeping
  * failures; acknowledging delivery never changes the worker's outcome. */
-export function noteSteersDurable(chatId: string, persisted: readonly LhMessage[]): void {
+export async function noteSteersDurable(chatId: string, persisted: readonly LhMessage[]): Promise<void> {
 	for (const message of persisted) {
-		if (message.role === "custom") finalizeSteer(message);
+		if (message.role === "custom") await finalizeSteer(message);
 	}
 	for (const entry of [...(state().queues.get(chatId) ?? [])]) {
-		if (persisted.some((message) => message.id === entry.steer.id)) completeEntry(chatId, entry);
+		if (persisted.some((message) => message.id === entry.steer.id)) await completeEntry(chatId, entry);
 	}
 }
 
@@ -194,8 +194,8 @@ function removeEntry(chatId: string, entry: QueuedSteer): void {
 	else state().queues.delete(chatId);
 }
 
-function completeEntry(chatId: string, entry: QueuedSteer): void {
-	finalizeSteer(entry.steer);
+async function completeEntry(chatId: string, entry: QueuedSteer): Promise<void> {
+	await finalizeSteer(entry.steer);
 	removeEntry(chatId, entry);
 	entry.resolve();
 }
@@ -210,20 +210,31 @@ export function discardChatDeliveries(chatId: string): void {
 }
 
 /** Finalize a delivered steer's job bookkeeping — job steers only. */
-function finalizeSteer(steer: SteerMessage): void {
+async function finalizeSteer(steer: SteerMessage): Promise<void> {
 	const jobId = jobIdOf(steer);
-	if (jobId) finalizeJob(jobId);
+	if (jobId) await finalizeJob(jobId);
 }
+
+const inFlightDeliveries = new Map<string, Promise<void>>();
 
 /** Queue one logical delivery per ID, including in-flight wake cargo.
  * Job promises resolve on durable marker acceptance (or session deletion);
  * failed starts stay pending. Non-job probe handoffs keep their existing
  * wake-acceptance/error semantics. Workers never await this promise. */
-export async function deliverJobResult(steer: SteerMessage): Promise<void> {
-	const chatId = await chatIdOf(steer);
-	const entry = queueSteer(chatId, steer);
-	void pump(chatId);
-	return entry.promise;
+export function deliverJobResult(steer: SteerMessage): Promise<void> {
+	const existing = inFlightDeliveries.get(steer.id);
+	if (existing) return existing;
+	const p = (async () => {
+		const chatId = await chatIdOf(steer);
+		const entry = queueSteer(chatId, steer);
+		void pump(chatId);
+		return entry.promise;
+	})();
+	inFlightDeliveries.set(steer.id, p);
+	void p.finally(() => {
+		if (inFlightDeliveries.get(steer.id) === p) inFlightDeliveries.delete(steer.id);
+	});
+	return p;
 }
 
 function queueSteer(chatId: string, steer: SteerMessage): QueuedSteer {
@@ -258,18 +269,6 @@ export async function automaticFollowUpAllowed(chatId: string, agent?: Agent): P
 }
 
 async function handOffEligible(chatId: string, agent: Agent): Promise<void> {
-	const queue = state().queues.get(chatId);
-	// Keep automatic results in their owning registry. Never mix them into a
-	// foreground batch without express account consent. Learner steers below
-	// remain deliverable, including the first poll of an answer run.
-	if ((await automaticFollowUpAllowed(chatId, agent)) && queue && queue.length > 0) {
-		for (const entry of queue) {
-			if (!entry.waking && !entry.deferred && entry.handedTo !== agent && entry.steer.customType !== "probe-handoff") {
-				agent.steer(entry.steer);
-				entry.handedTo = agent;
-			}
-		}
-	}
 	// User steers (2026-10-03): same hand-off, any live run — a steer
 	// stranded behind a question or abort rides the chat's next run's
 	// first boundary. No probe-handoff exclusion: these are learner
@@ -279,6 +278,19 @@ async function handOffEligible(chatId: string, agent: Agent): Promise<void> {
 		for (const entry of userQueue) {
 			if (entry.handedTo !== agent) {
 				agent.steer(entry.message);
+				entry.handedTo = agent;
+			}
+		}
+	}
+
+	const queue = state().queues.get(chatId);
+	// Keep automatic results in their owning registry. Never mix them into a
+	// foreground batch without express account consent. Learner steers below
+	// remain deliverable, including the first poll of an answer run.
+	if ((await automaticFollowUpAllowed(chatId, agent)) && queue && queue.length > 0) {
+		for (const entry of queue) {
+			if (!entry.waking && !entry.deferred && entry.handedTo !== agent && entry.steer.customType !== "probe-handoff") {
+				agent.steer(entry.steer);
 				entry.handedTo = agent;
 			}
 		}
@@ -687,6 +699,8 @@ async function restorePendingDeliveries(chatId: string): Promise<void> {
 		if (steerDelivered(record.messages, steer.id)) finalizeSteer(steer);
 		else queueSteer(chatId, steer);
 	}
+	const live = state().liveAgents.get(chatId);
+	if (live) void handOffEligible(chatId, live);
 }
 
 /**

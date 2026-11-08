@@ -65,18 +65,18 @@ const { readSettings, writeSettings } = await import("../src/store/settings.ts")
 
 it("the section route persists language independently and rejects unsupported values without writing", async () => {
 	const { PUT } = await import("../app/api/settings/[section]/route.ts");
-	writeSettings({ version: 1, general: {} });
+	await writeSettings({ version: 1, general: {} });
 	const put = (language: string) => PUT(new Request("http://localhost/api/settings/dictation", {
 		method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ language }),
 	}), { params: Promise.resolve({ section: "dictation" }) });
 	assert.equal((await put("pl")).status, 200);
 	const saved = { version: 1, dictation: { language: "pl" }, general: {} };
-	assert.deepEqual(readSettings(), saved);
+	assert.deepEqual(await readSettings(), saved);
 	assert.equal((await put("unsupported")).status, 400);
-	assert.deepEqual(readSettings(), saved);
+	assert.deepEqual(await readSettings(), saved);
 	const general = await PUT(new Request("http://localhost/api/settings/general", {
 		method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
 	}), { params: Promise.resolve({ section: "general" }) });
 	assert.equal(general.status, 200);
-	assert.deepEqual(readSettings(), saved, "general cannot erase dictation language");
+	assert.deepEqual(await readSettings(), saved, "general cannot erase dictation language");
 });

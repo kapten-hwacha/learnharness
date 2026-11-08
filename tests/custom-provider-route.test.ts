@@ -7,28 +7,22 @@
  *      would take the model metadata and the user's pins with it.
  */
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import { after, before, describe, it } from "node:test";
-
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lh-custom-route-"));
-process.env.LH_DATA_DIR = dir;
-process.env.LH_AUTH_FILE = path.join(dir, "auth.json");
-const SETTINGS_FILE = path.join(dir, "settings.json");
+import { after, before, beforeEach, describe, it } from "node:test";
+import { getMemoryKv, setMemoryKv, resetMemoryStores } from "../src/store/memory-backend.ts";
 
 const realFetch = globalThis.fetch;
 after(() => {
 	globalThis.fetch = realFetch;
-	fs.rmSync(dir, { recursive: true, force: true });
-	delete process.env.LH_DATA_DIR;
-	delete process.env.LH_AUTH_FILE;
 });
 
 type Route = typeof import("../app/api/custom-provider/route.ts");
 let route: Route;
 before(async () => {
 	route = await import("../app/api/custom-provider/route.ts");
+});
+
+beforeEach(() => {
+	resetMemoryStores();
 });
 
 const BASE = "http://h/v1";
@@ -44,23 +38,24 @@ const CONNECTED = {
 	},
 };
 
-function seed(record: unknown): void {
-	fs.writeFileSync(SETTINGS_FILE, JSON.stringify(record, null, "\t"), "utf-8");
+async function seed(record: unknown): Promise<void> {
+	await setMemoryKv("settings", record);
 }
 
-function stored(): { customProvider?: { models?: { id: string }[]; overrides?: unknown; manualModels?: string[] } } {
-	return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
+async function stored(): Promise<{ customProvider?: { models?: { id: string }[]; overrides?: unknown; manualModels?: string[] } }> {
+	return ((await getMemoryKv("settings")) ?? {}) as any;
 }
 
 function answerWith(status: number, statusText: string, body?: unknown): void {
 	globalThis.fetch = (async () => (body === undefined ? new Response("nope", { status, statusText }) : Response.json(body))) as typeof fetch;
 }
 
-function post(payload: unknown): Promise<Response> {
+async function post(payload: unknown): Promise<Response> {
+	const getRes = await route.GET(new Request("http://localhost/api/custom-provider"));
 	return route.POST(
 		new Request("http://localhost/api/custom-provider", {
 			method: "POST",
-			headers: { "content-type": "application/json", origin: "http://localhost", "if-match": route.GET(new Request("http://localhost/api/custom-provider")).headers.get("etag")! },
+			headers: { "content-type": "application/json", origin: "http://localhost", "if-match": getRes.headers.get("etag")! },
 			body: JSON.stringify({ authMode: payload && typeof payload === "object" && "key" in payload ? "apiKey" : "keyless", ...payload as object }),
 		}),
 	);
@@ -68,13 +63,13 @@ function post(payload: unknown): Promise<Response> {
 
 describe("POST /api/custom-provider — typed ids and a failed probe", () => {
 	it("a transient failure keeps the stored models, their metadata, and their pins", async () => {
-		seed(CONNECTED);
+		await seed(CONNECTED);
 		answerWith(503, "Service Unavailable");
 
 		const res = await post({ baseUrl: BASE, manualModels: "m1" });
 		assert.equal(res.status, 200);
 
-		const cp = stored().customProvider;
+		const cp = (await stored()).customProvider;
 		assert.deepEqual(cp?.models?.map((m) => m.id), ["disc-1", "disc-2", "m1"]);
 		assert.deepEqual(cp?.models?.[0], { id: "disc-1", context: 131072 }, "detected metadata survives");
 		assert.deepEqual(cp?.overrides, CONNECTED.customProvider.overrides, "the prune must not fire on a failed probe");
@@ -82,23 +77,23 @@ describe("POST /api/custom-provider — typed ids and a failed probe", () => {
 	});
 
 	it("a rejected key fails the connect even when ids are typed", async () => {
-		seed(CONNECTED);
+		await seed(CONNECTED);
 		answerWith(401, "Unauthorized");
-		const before = stored();
+		const beforeRecord = await stored();
 
 		const res = await post({ baseUrl: BASE, key: "sk-abcdefghijk", manualModels: "m1" });
 		assert.equal(res.status, 502);
-		assert.deepEqual(stored(), before, "nothing is stored on an auth failure");
+		assert.deepEqual(await stored(), beforeRecord, "nothing is stored on an auth failure");
 	});
 
 	it("a new endpoint with no model list starts from the typed ids alone", async () => {
-		seed(CONNECTED);
+		await seed(CONNECTED);
 		answerWith(404, "Not Found");
 
 		const res = await post({ baseUrl: "http://other/v1", manualModels: "y, x" });
 		assert.equal(res.status, 200);
 
-		const cp = stored().customProvider;
+		const cp = (await stored()).customProvider;
 		assert.deepEqual(cp?.models?.map((m) => m.id), ["x", "y"], "the previous endpoint's models do not follow the URL");
 		assert.equal(cp?.overrides, undefined, "no pin survives a list the old pins do not belong to");
 		assert.deepEqual(cp?.manualModels, ["y", "x"], "the typed order is kept as typed");
@@ -115,13 +110,13 @@ describe("POST /api/custom-provider — typed ids and a failed probe", () => {
 	});
 
 	it("a working probe merges the typed ids and keeps discovered metadata", async () => {
-		seed(CONNECTED);
+		await seed(CONNECTED);
 		answerWith(200, "OK", { data: [{ id: "disc-1", context_length: 65536 }] });
 
 		const res = await post({ baseUrl: BASE, manualModels: "disc-1, m2" });
 		assert.equal(res.status, 200);
 
-		const cp = stored().customProvider;
+		const cp = (await stored()).customProvider;
 		assert.deepEqual(cp?.models?.map((m) => m.id), ["disc-1", "m2"]);
 		assert.deepEqual(cp?.models?.[0], { id: "disc-1", context: 65536 }, "discovery is not replaced by a bare typed id");
 		assert.deepEqual(cp?.overrides, { "disc-1": { context: 200000 } }, "pins follow the ids this connect offers");

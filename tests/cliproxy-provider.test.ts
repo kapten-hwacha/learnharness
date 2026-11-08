@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { after, before, describe, it } from "node:test";
+import { after, before, beforeEach, describe, it } from "node:test";
 import { normalizeContext, type Message } from "@earendil-works/pi-ai";
 import { CLIPROXY_PROVIDER } from "../src/core/contracts/cliproxy.ts";
 import { parseCliProxySettingsBody } from "../src/server/settings-body.ts";
 import { settingsStore } from "../src/store/settings.ts";
 import { piModels, piEngineForSpec } from "../src/agent/models.ts";
 import { modelCatalog } from "../src/server/model-catalog.ts";
-import { ensureCliProxyRunning, isPortListening } from "../src/server/cliproxy-process.ts";
+import { isPortListening } from "../src/server/cliproxy-process.ts";
+import { resetMemoryStores } from "../src/store/memory-backend.ts";
+import { refreshCliproxyEnabled } from "../src/server/cliproxy-config.ts";
 
 describe("CLIProxyAPI first-class provider", () => {
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "lh-cliproxy-first-class-test-"));
@@ -19,6 +21,10 @@ describe("CLIProxyAPI first-class provider", () => {
 		process.env.LH_DATA_DIR = scratch;
 		process.env.LH_AUTH_FILE = path.join(scratch, "auth.json");
 		fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
+	});
+
+	beforeEach(() => {
+		resetMemoryStores();
 	});
 
 	after(() => {
@@ -46,14 +52,16 @@ describe("CLIProxyAPI first-class provider", () => {
 		assert.equal(parseCliProxySettingsBody(null).ok, false);
 	});
 
-	it("provider registration in piModels() reflects enabled vs disabled", () => {
+	it("provider registration in piModels() reflects enabled vs disabled", async () => {
 		// When disabled
-		settingsStore.writeSettings({ version: 1, cliproxy: { enabled: false } });
+		await settingsStore.writeSettings({ version: 1, cliproxy: { enabled: false } });
+		await refreshCliproxyEnabled();
 		let models = piModels();
 		assert.equal(models.getProvider(CLIPROXY_PROVIDER), undefined);
 
 		// When enabled
-		settingsStore.writeSettings({ version: 1, cliproxy: { enabled: true } });
+		await settingsStore.writeSettings({ version: 1, cliproxy: { enabled: true } });
+		await refreshCliproxyEnabled();
 		models = piModels();
 		const provider = models.getProvider(CLIPROXY_PROVIDER);
 		assert.ok(provider, "cliproxy provider must be registered when enabled");
@@ -65,14 +73,16 @@ describe("CLIProxyAPI first-class provider", () => {
 		assert.ok(argon, "gemini-4-argon model must exist");
 
 		// When disabled again
-		settingsStore.writeSettings({ version: 1, cliproxy: { enabled: false } });
+		await settingsStore.writeSettings({ version: 1, cliproxy: { enabled: false } });
+		await refreshCliproxyEnabled();
 		models = piModels();
 		assert.equal(models.getProvider(CLIPROXY_PROVIDER), undefined);
 	});
 
-	it("model catalog lists gemini-3.8-flash and gemini-4-argon when enabled", () => {
-		settingsStore.writeSettings({ version: 1, cliproxy: { enabled: true } });
-		const catalog = modelCatalog();
+	it("model catalog lists gemini-3.8-flash and gemini-4-argon when enabled", async () => {
+		await settingsStore.writeSettings({ version: 1, cliproxy: { enabled: true } });
+		await refreshCliproxyEnabled();
+		const catalog = await modelCatalog();
 
 		const providerKey = catalog.providers.find((p) => p.id === CLIPROXY_PROVIDER);
 		assert.ok(providerKey, "cliproxy must be listed in catalog providers");
@@ -84,7 +94,8 @@ describe("CLIProxyAPI first-class provider", () => {
 	});
 
 	it("streams a completion using piEngineForSpec with cliproxy provider", async () => {
-		settingsStore.writeSettings({ version: 1, cliproxy: { enabled: true } });
+		await settingsStore.writeSettings({ version: 1, cliproxy: { enabled: true } });
+		await refreshCliproxyEnabled();
 
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input, init) => {
@@ -119,7 +130,7 @@ describe("CLIProxyAPI first-class provider", () => {
 			});
 
 			const messages: Message[] = [
-				{ role: "user", content: "What is 15 + 27? Answer with only the number.", timestamp: Date.now() },
+				{ role: "user", content: "What is 6 * 7?", timestamp: Date.now() },
 			];
 			const context = normalizeContext({ messages });
 
@@ -129,18 +140,24 @@ describe("CLIProxyAPI first-class provider", () => {
 
 			for await (const event of stream) {
 				if (event.type === "thinking_delta") {
-					thinkingText += (event as { delta?: string }).delta ?? "";
+					thinkingText += (event as any).delta ?? "";
 				} else if (event.type === "text_delta") {
-					responseText += (event as { delta?: string }).delta ?? "";
+					responseText += (event as any).delta ?? "";
 				}
 			}
 
 			const result = await stream.result();
 			assert.equal(result.stopReason, "stop");
-			assert.match(responseText, /42/);
-			assert.match(thinkingText, /Thinking/);
+			assert.equal(responseText, "42");
+			assert.equal(thinkingText, "Thinking...");
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
+	});
+
+	it("isPortListening correctly identifies when port is listening vs not", async () => {
+		// Port 0 / invalid should not be listening
+		const notListening = await isPortListening(0);
+		assert.equal(notListening, false);
 	});
 });

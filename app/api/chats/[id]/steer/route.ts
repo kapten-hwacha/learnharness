@@ -15,7 +15,7 @@ import { getChat, steerLiveChat } from "@/src/server";
 
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
 	const { id } = await ctx.params;
-	if (!getChat(id)) return Response.json({ error: "unknown chat" }, { status: 404 });
+	if (!(await getChat(id))) return Response.json({ error: "unknown chat" }, { status: 404 });
 	let input;
 	try {
 		const body = (await request.json()) as { input?: unknown };

@@ -67,15 +67,15 @@ describe("chat attachments", () => {
 	});
 
 	it("rejects a malformed PDF before changing the saved chat record", async () => {
-		const chat = chatStore.createChat("Attachment validation test");
-		const before = chatStore.getChat(chat.id)!.messages;
+		const chat = await chatStore.createChat("Attachment validation test");
+		const before = (await chatStore.getChat(chat.id))!.messages;
 		try {
 			const malformedPdf = { name: "broken.pdf", mimeType: "application/pdf" as const, data: encode(new TextEncoder().encode("%PDF-not-a-document")) };
 			const response = await handleChatInput(chat.id, { type: "text", text: "", attachments: [malformedPdf] });
 			assert.equal(response.status, 400);
-			assert.deepEqual(chatStore.getChat(chat.id)!.messages, before);
+			assert.deepEqual((await chatStore.getChat(chat.id))!.messages, before);
 		} finally {
-			chatStore.deleteChat(chat.id);
+			await chatStore.deleteChat(chat.id);
 		}
 	});
 
@@ -83,21 +83,21 @@ describe("chat attachments", () => {
 		const model = piModels().getModels("openrouter").find((candidate) => !candidate.input.includes("image"));
 		assert.ok(model);
 		assert.equal(model.input.includes("image"), false);
-		const chat = chatStore.createChat("Text-only attachment gate test");
+		const chat = await chatStore.createChat("Text-only attachment gate test");
 		const previousKey = process.env.OPENROUTER_API_KEY;
 		process.env.OPENROUTER_API_KEY = "synthetic-key-no-provider-calls";
 		try {
-			chatStore.saveSettings(chat.id, { model: { provider: model.provider, id: model.id } });
-			const before = chatStore.getChat(chat.id)!.messages;
+			await chatStore.saveSettings(chat.id, { model: { provider: model.provider, id: model.id } });
+			const before = (await chatStore.getChat(chat.id))!.messages;
 			const response = await handleChatInput(chat.id, { type: "text", text: "", attachments: [image] }, () => { throw new Error("A refused upload must not build an agent"); });
 			assert.equal(response.status, 400);
 			assert.match(await response.text(), /does not support image attachments/);
-			assert.deepEqual(chatStore.getChat(chat.id)!.messages, before);
+			assert.deepEqual((await chatStore.getChat(chat.id))!.messages, before);
 			assert.equal(isTurnRunning(chat.id), false);
 		} finally {
 			if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
 			else process.env.OPENROUTER_API_KEY = previousKey;
-			chatStore.deleteChat(chat.id);
+			await chatStore.deleteChat(chat.id);
 		}
 	});
 

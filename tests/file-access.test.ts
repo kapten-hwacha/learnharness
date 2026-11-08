@@ -215,8 +215,8 @@ describe("live policy and all learner-source surfaces", () => {
 		policy = { restricted: true, folders: [a] };
 		let snapshots = 0;
 		let jobs = 0;
-		const ctx = { chatId: "synthetic", chatStore: { getChat: () => null, saveImageSnapshot: () => { snapshots++; } } as unknown as ChatStore,
-			jobStore: { findJobByToolCallId: () => undefined, createJob: () => { jobs++; throw new Error("must not create a refused job"); } } as unknown as JobStore, spawn: () => {}, deliver: () => {} };
+		const ctx = { chatId: "synthetic", chatStore: { getChat: async () => null, saveImageSnapshot: async () => { snapshots++; } } as unknown as ChatStore,
+			jobStore: { findJobByToolCallId: async () => undefined, createJob: async () => { jobs++; throw new Error("must not create a refused job"); } } as unknown as JobStore, spawn: () => {}, deliver: () => {} };
 		for (const tools of [createProberTools(ctx), createTeacherTools(ctx), practiceTools({ ...ctx, jobs: ctx })]) {
 			await assert.rejects(tools.read!.execute!("x", { path: path.join(outside, "secret.txt") }), boundary);
 			await assert.rejects(tools.ls!.execute!("x", { path: outside }), boundary);
@@ -248,24 +248,24 @@ describe("live policy and all learner-source surfaces", () => {
 		const engine = { model: faux.getModel(), streamFn: (() => { calls++; throw new Error("must not call model"); }) as typeof faux.streamSimple };
 		for (const kind of ["pdf", "visual"] as const) {
 			policy = { restricted: true, folders: [a] };
-			const chat = chatStore.createChat(`synthetic queued ${kind}`);
+			const chat = await chatStore.createChat(`synthetic queued ${kind}`);
 			const input = kind === "pdf" ? { path: "StudyA/sample.pdf", question: "?" } : { image: "StudyA/image.png", brief: "mark" };
 			let spawned = 0;
 			let id = "";
 			const tools = jobTools({ chatId: chat.id, jobStore, spawn: (job) => { id = job.id; spawned++; } });
 			await tools[kind]!.execute!("queued-call", input);
 			assert.equal(spawned, 1);
-			assert.deepEqual(jobStore.getJob(id)?.input, input);
+			assert.deepEqual((await jobStore.getJob(id))?.input, input);
 			policy = { restricted: true, folders: [b] };
 			// Repeated call IDs acknowledge the original job, not a new read.
 			await tools[kind]!.execute!("queued-call", input);
 			assert.equal(spawned, 1);
 			const runner = createJobRunner({ chatStore, jobStore, engineFor: () => engine, deliver: async () => {} });
 			await runner.runJob(id);
-			const job = jobStore.getJob(id)!;
+			const job = (await jobStore.getJob(id))!;
 			assert.match(JSON.stringify(job.result), /Access denied:.*allowed folders/);
 			assert.deepEqual(job.input, input);
-			assert.equal(chatStore.getChat(chat.id)?.imageSnapshots, undefined);
+			assert.equal((await chatStore.getChat(chat.id))?.imageSnapshots, undefined);
 		}
 		assert.equal(calls, 0);
 	});

@@ -354,7 +354,7 @@ describe("keyless researcher loop", () => {
 function fakeJobStore(): JobStore {
 	const jobs = new Map<string, JobRecord>();
 	return {
-		createJob(init) {
+		async createJob(init) {
 			const job: JobRecord = {
 				id: `job_${jobs.size + 1}`,
 				kind: init.kind,
@@ -368,15 +368,15 @@ function fakeJobStore(): JobStore {
 			jobs.set(job.id, job);
 			return job;
 		},
-		getJob: (id) => jobs.get(id) ?? null,
-		updateJob: (id, patch) => {
+		getJob: async (id) => jobs.get(id) ?? null,
+		updateJob: async (id, patch) => {
 			const job = jobs.get(id);
 			if (!job) return null;
 			return Object.assign(job, patch);
 		},
-		listJobs: () => [...jobs.values()],
-		findJobByToolCallId: () => null,
-		deleteJobsForChat: () => 0, // the drop tests never delete
+		listJobs: async () => [...jobs.values()],
+		findJobByToolCallId: async () => null,
+		deleteJobsForChat: async () => 0, // the drop tests never delete
 	};
 }
 
@@ -431,8 +431,8 @@ import type { ChatStore } from "../src/core/ports.ts";
 /** A chat-store stub — the registry factories only CLOSE OVER it at build
  *  time (quiz/plan superRefines read it at execute time, never here). */
 const fakeChatStore = {
-	getChat: () => null,
-	saveMessages: () => {},
+	getChat: async () => null,
+	saveMessages: async () => {},
 } as unknown as ChatStore;
 
 const ctxBase = { chatId: "chat-gate-test", chatStore: fakeChatStore };

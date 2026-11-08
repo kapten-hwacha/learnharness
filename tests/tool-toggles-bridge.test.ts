@@ -42,8 +42,9 @@ describe("AgentBuildOptions.toolToggles (the P2 bridge)", () => {
 		assert.deepEqual(toolNames(bare), ["ask_user_question", "quiz"]);
 	});
 
-	it("flows into the prober's registry; probe_done survives everything", () => {
-		const chatId = chatStore.createChat("Toggle bridge test").id;
+	it("flows into the prober's registry; probe_done survives everything", async () => {
+		const chat = await chatStore.createChat("Toggle bridge test");
+		const chatId = chat.id;
 		const ctx: ProberToolContext = { chatId, chatStore, deliver: () => {}, jobStore, spawn: () => {} };
 		const prober = createProberAgent(ctx, { engine: fauxEngine(), toolToggles: { ask_user_question: false } });
 		const names = toolNames(prober);

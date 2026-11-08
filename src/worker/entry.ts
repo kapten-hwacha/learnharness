@@ -1,12 +1,11 @@
 import "../client/shims.ts";
-import { configurePaths } from "../../config.ts";
 import { headlessOverride } from "../agent/subagents/headless.ts";
 import { initAuthEnv } from "../server/keys.ts";
 import { installCustomProviderSource } from "../server/custom-provider.ts";
-import { getHostBridge, waitForInitialBridge } from "./host-bridge.ts";
+import { waitForInitialBridge } from "./host-bridge.ts";
 import { createWorkerHeadless } from "./headless-worker.ts";
 import { dispatchWorkerRequest } from "./router.ts";
-import { ensureParentDirs, getInternalFiles, hydrateMemfs, normalizeFsPath } from "./shims/fs.ts";
+import { setWorkerHomeDir } from "./shims/node-stubs.ts";
 
 export interface WorkerApiRequestMessage {
 	type: "lh:api-request";
@@ -44,11 +43,6 @@ export function createWorkerMessageHandler(
 		if (!data) return;
 
 		if (data.type === "lh:import-file") {
-			const { path, data: fileBytes } = data;
-			const uint8 = fileBytes instanceof Uint8Array ? fileBytes : new Uint8Array(fileBytes);
-			const normPath = normalizeFsPath(path);
-			ensureParentDirs(normPath);
-			getInternalFiles().set(normPath, uint8);
 			return;
 		}
 
@@ -163,11 +157,10 @@ export function ensureWorkerBooted(): Promise<void> {
 	if (!bootPromise) {
 		bootPromise = (async () => {
 			const bridge = await waitForInitialBridge();
-			const snapshot = await bridge.hydrateFs();
-			configurePaths({ root: snapshot.root, dataDir: snapshot.dataDir, authFile: snapshot.authFile });
-			hydrateMemfs(snapshot);
+			const init = await bridge.initRuntime();
+			setWorkerHomeDir(init.homeDir);
 
-			initAuthEnv();
+			await initAuthEnv();
 			installCustomProviderSource();
 
 			headlessOverride.current = createWorkerHeadless();

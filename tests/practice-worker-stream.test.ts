@@ -47,10 +47,10 @@ const CONCLUDE = {
 } as const;
 
 const createdChats: string[] = [];
-after(() => {
+after(async () => {
 	for (const id of createdChats) {
 		try {
-			fs.unlinkSync(path.join(PATHS.chats, `${id}.json`));
+			await chatStore.deleteChat(id);
 		} catch {}
 	}
 });
@@ -69,8 +69,8 @@ function scripted(steps: FauxResponseStep[]): { engine: PiEngine } {
 
 describe("Practice next problem flow over real worker transport", () => {
 	it("Turn 1 (pose) -> Turn 2 (conclude) -> Turn 3 (next problem pose) flips to ready and activates problem", async () => {
-		const chat = chatStore.createChat("Test: practice next loop", "practice");
-		chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
+		const chat = await chatStore.createChat("Test: practice next loop", "practice");
+		await chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
 		createdChats.push(chat.id);
 
 		const { engine } = scripted([
@@ -84,7 +84,7 @@ describe("Practice next problem flow over real worker transport", () => {
 		]);
 
 		const factory = (opts: { chatId?: string; messages?: any[] }) =>
-			createPracticeAgent({ chatId: chat.id, chatStore }, { engine, messages: opts.messages });
+			createPracticeAgent({ chatId: chat.id, chatStore, record: opts.messages ? { messages: opts.messages } as any : undefined }, { engine, messages: opts.messages });
 
 		// Wire up worker message handler with the real Next.js API routes / handleChatRequest
 		const streamRoute = await import("../app/api/chats/[id]/stream/route.ts");

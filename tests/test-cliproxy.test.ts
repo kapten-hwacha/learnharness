@@ -96,7 +96,7 @@ describe("CLIProxyAPI integration", () => {
 		const getReq = new Request("http://localhost:3000/api/custom-provider", {
 			headers: { origin: "http://localhost:3000", host: "localhost:3000" },
 		});
-		const getRes = customProviderGet(getReq);
+		const getRes = await customProviderGet(getReq);
 		assert.equal(getRes.status, 200);
 		const etag = getRes.headers.get("etag")!;
 		assert.ok(etag, "GET must return an etag");
@@ -128,7 +128,7 @@ describe("CLIProxyAPI integration", () => {
 		const getAfterReq = new Request("http://localhost:3000/api/custom-provider", {
 			headers: { origin: "http://localhost:3000", host: "localhost:3000" },
 		});
-		const getAfterRes = customProviderGet(getAfterReq);
+		const getAfterRes = await customProviderGet(getAfterReq);
 		const afterBody = await getAfterRes.json();
 		assert.equal(afterBody.baseUrl, "http://127.0.0.1:8317/v1");
 		assert.equal(afterBody.authMode, "apiKey");
@@ -149,7 +149,7 @@ describe("CLIProxyAPI integration", () => {
 			const getReq = new Request("http://localhost:3000/api/custom-provider", {
 				headers: { origin: "http://localhost:3000", host: "localhost:3000" },
 			});
-			const etag = customProviderGet(getReq).headers.get("etag")!;
+			const etag = (await customProviderGet(getReq)).headers.get("etag")!;
 
 			const patchReq = new Request("http://localhost:3000/api/custom-provider", {
 				method: "PATCH",

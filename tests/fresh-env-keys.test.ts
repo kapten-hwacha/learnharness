@@ -49,6 +49,8 @@ process.env.LH_AUTH_FILE = AUTH;
 
 // The file BEFORE first boot: one file-only key.
 fs.writeFileSync(AUTH, JSON.stringify({ OPENAI_API_KEY: "sk-file-fresh-file-fresh" }));
+const { setMemoryAuthContent } = await import("../src/store/memory-backend.ts");
+setMemoryAuthContent(JSON.stringify({ OPENAI_API_KEY: "sk-file-fresh-file-fresh" }));
 
 // The env the switch must hide — set BEFORE the module's first import:
 //  - an env-ONLY provider key (the engine-path specimen)
@@ -65,6 +67,7 @@ const { deleteKey, envKeysIgnored, initAuthEnv, keyStatuses, keyValue, saveKey }
 	"../src/server/keys.ts"
 );
 const { authStore } = await import("../src/store/auth.ts");
+await initAuthEnv();
 
 after(() => {
 	fs.rmSync(TMP, { recursive: true, force: true });
@@ -79,9 +82,9 @@ describe("the fresh-user switch (boot under LH_IGNORE_ENV_KEYS=1)", () => {
 		assert.equal(process.env.OPENROUTER_API_KEY, undefined, "deleted from process.env at boot");
 	});
 
-	it("the env copy of a file-backed var is deleted; the FILE value is what fills the env (only auth.json counts)", () => {
+	it("the env copy of a file-backed var is deleted; the FILE value is what fills the env (only auth.json counts)", async () => {
 		assert.equal(process.env.OPENAI_API_KEY, "sk-file-fresh-file-fresh", "the env copy died; the fill-gap reflected the file value");
-		assert.equal(authStore.authVars().OPENAI_API_KEY, "sk-file-fresh-file-fresh");
+		assert.equal((await authStore.authVars()).OPENAI_API_KEY, "sk-file-fresh-file-fresh");
 	});
 
 	it("keyValue: env keys invisible, file keys visible — and a post-boot env reintroduction stays invisible (belt-and-suspenders)", () => {
@@ -112,8 +115,8 @@ describe("the fresh-user switch (boot under LH_IGNORE_ENV_KEYS=1)", () => {
 		}
 	});
 
-	it("the status view is the fresh machine's: file sources only, no env rows, no shadowing", () => {
-		const rows = keyStatuses();
+	it("the status view is the fresh machine's: file sources only, no env rows, no shadowing", async () => {
+		const rows = await keyStatuses();
 		const openai = rows.find((r) => r.id === "OPENAI_API_KEY");
 		assert.ok(openai, "the file-backed provider key has a row");
 		assert.equal(openai!.present, true);
@@ -123,22 +126,22 @@ describe("the fresh-user switch (boot under LH_IGNORE_ENV_KEYS=1)", () => {
 		assert.equal(rows.some((r) => r.source === "env"), false, "no env-owned key under the switch");
 	});
 
-	it("a fresh user CAN add keys mid-session: save reflects file → env (engines see it, no restart)", () => {
-		const result = saveKey("ZAI_API_KEY", "zai-fresh-sim-key-1234567890");
+	it("a fresh user CAN add keys mid-session: save reflects file → env (engines see it, no restart)", async () => {
+		const result = await saveKey("ZAI_API_KEY", "zai-fresh-sim-key-1234567890");
 		assert.equal(result.ok, true);
-		assert.equal(authStore.authVars().ZAI_API_KEY, "zai-fresh-sim-key-1234567890", "persisted to the file");
+		assert.equal((await authStore.authVars()).ZAI_API_KEY, "zai-fresh-sim-key-1234567890", "persisted to the file");
 		assert.equal(process.env.ZAI_API_KEY, "zai-fresh-sim-key-1234567890", "reflected into env for pi-ai");
-		const row = keyStatuses().find((r) => r.id === "ZAI_API_KEY");
+		const row = (await keyStatuses()).find((r) => r.id === "ZAI_API_KEY");
 		assert.equal(row!.source, "file", "the status honestly reports the file as the source");
 		// and DELETE removes both (fill-gap semantics hold under the switch)
-		deleteKey("ZAI_API_KEY");
+		await deleteKey("ZAI_API_KEY");
 		assert.equal(process.env.ZAI_API_KEY, undefined);
-		assert.equal(authStore.authVars().ZAI_API_KEY, undefined);
+		assert.equal((await authStore.authVars()).ZAI_API_KEY, undefined);
 	});
 
-	it("re-running initAuthEnv is idempotent — deleted env keys never resurrect", () => {
+	it("re-running initAuthEnv is idempotent — deleted env keys never resurrect", async () => {
 		process.env.OPENROUTER_API_KEY = "sk-or-zombie";
-		initAuthEnv();
+		await initAuthEnv();
 		assert.equal(process.env.OPENROUTER_API_KEY, undefined, "a reintroduced env key is re-deleted");
 		assert.equal(process.env.OPENAI_API_KEY, "sk-file-fresh-file-fresh", "the file reflection survives re-init");
 	});

@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import nodeCrypto from "node:crypto";
 import { describe, it } from "node:test";
-import { getHostBridge, setHostBridge, type FsMutationOp } from "../src/worker/host-bridge.ts";
-import * as memfs from "../src/worker/shims/fs.ts";
-import * as memfsPromises from "../src/worker/shims/fs-promises.ts";
+import { getHostBridge } from "../src/worker/host-bridge.ts";
 import * as shimCrypto from "../src/worker/shims/crypto.ts";
 import * as shimPath from "../src/worker/shims/path.ts";
 import { AsyncLocalStorage } from "../src/worker/shims/async_hooks.ts";
@@ -13,52 +11,13 @@ import {
 	net,
 	os,
 	readline,
+	setWorkerHomeDir,
 	url,
 	util,
 	workerThreads,
 } from "../src/worker/shims/node-stubs.ts";
 
-describe("Worker write-through memfs & node:* shims", () => {
-	it("normalizes '..' paths, supports atomic renameSync overwrite, lists Dirents, and flushes ordered FsMutationOps", async () => {
-		const ops: FsMutationOp[] = [];
-		setHostBridge({
-			hydrateFs: async () => ({ root: "/app", dataDir: "/app/data", authFile: "/app/auth.json", files: {}, dirs: ["/app/data"] }),
-			syncFs: async (op) => { ops.push(op); },
-			readExternalFile: async (p) => new TextEncoder().encode(`external:${p}`),
-			nativeFetch: (input, init) => fetch(input, init),
-		});
-		memfs.hydrateMemfs({
-			root: "/app",
-			dataDir: "/app/data",
-			authFile: "/app/auth.json",
-			files: { "/app/data/settings.json": Buffer.from('{"v":1}').toString("base64") },
-			dirs: ["/app/data", "/app/data/chats"],
-		});
-
-		assert.equal(memfs.readFileSync("/app/data/chats/../settings.json", "utf8"), '{"v":1}');
-		assert.equal(memfs.existsSync("/app/data/"), true);
-		assert.equal(memfs.statSync("/app/data/").isDirectory(), true);
-		memfs.writeFileSync("/app/data/settings.json.tmp", '{"v":2}');
-		memfs.renameSync("/app/data/settings.json.tmp", "/app/data/settings.json");
-		assert.equal(memfs.existsSync("/app/data/settings.json.tmp"), false);
-		assert.equal(memfs.readFileSync("/app/data/settings.json", "utf8"), '{"v":2}');
-
-		const entries = memfs.readdirSync("/app/data", { withFileTypes: true });
-		assert.deepEqual(
-			entries.map((e) => ({ name: e.name, dir: e.isDirectory(), file: e.isFile() })),
-			[
-				{ name: "chats", dir: true, file: false },
-				{ name: "settings.json", dir: false, file: true },
-			],
-		);
-
-		await memfs.flushFsQueue();
-		assert.deepEqual(ops.map((o) => o.type), ["writeFile", "rename"]);
-
-		const ext = await memfsPromises.readFile("/Users/demo/notes.pdf");
-		assert.equal(new TextDecoder().decode(ext), "external:/Users/demo/notes.pdf");
-	});
-
+describe("Worker node:* shims & runtime bridge", () => {
 	it("provides synchronous SHA-256 createHash/createHmac and AsyncLocalStorage context propagation", async () => {
 		const digest = shimCrypto.createHash("sha256").update("learnharness").digest("hex");
 		const expectedHash = nodeCrypto.createHash("sha256").update("learnharness").digest("hex");
@@ -101,30 +60,6 @@ describe("Worker write-through memfs & node:* shims", () => {
 		assert.equal(als.getStore(), undefined);
 	});
 
-	it("supports fs.promises.open with read() and close(), caching external files", async () => {
-		setHostBridge({
-			hydrateFs: async () => ({ root: "/app", dataDir: "/app/data", authFile: "/app/auth.json", files: {}, dirs: ["/app/data"] }),
-			syncFs: async () => {},
-			readExternalFile: async (p) => new TextEncoder().encode(`file-data-for:${p}`),
-			nativeFetch: (input, init) => fetch(input, init),
-		});
-		memfs.hydrateMemfs({
-			root: "/app",
-			dataDir: "/app/data",
-			authFile: "/app/auth.json",
-			files: {},
-			dirs: ["/app/data"],
-		});
-
-		const fh = await memfsPromises.open("/external/file.txt", "r");
-		const buf = new Uint8Array(9);
-		const { bytesRead } = await fh.read(buf, 0, 9, 0);
-		assert.equal(bytesRead, 9);
-		assert.equal(new TextDecoder().decode(buf), "file-data");
-		await fh.close();
-		assert.equal(memfs.existsSync("/external/file.txt"), true);
-	});
-
 	it("implements comprehensive POSIX path operations", () => {
 		assert.equal(shimPath.join("/a", "b", "c"), "/a/b/c");
 		assert.equal(shimPath.join("/a", "../b", "c"), "/b/c");
@@ -145,40 +80,6 @@ describe("Worker write-through memfs & node:* shims", () => {
 		assert.equal(shimPath.format(parsed), "/path/to/file.ext");
 		assert.equal(shimPath.sep, "/");
 		assert.equal(shimPath.delimiter, ":");
-	});
-
-	it("implements extended memfs operations: append, mkdir, rm, stat, chmod", async () => {
-		memfs.hydrateMemfs({
-			root: "/app",
-			dataDir: "/app/data",
-			authFile: "/app/auth.json",
-			files: {},
-			dirs: ["/app"],
-		});
-
-		memfs.mkdirSync("/app/nested/dir", { recursive: true });
-		assert.equal(memfs.existsSync("/app/nested/dir"), true);
-
-		memfs.appendFileSync("/app/log.txt", "line 1\n");
-		memfs.appendFileSync("/app/log.txt", "line 2\n");
-		assert.equal(memfs.readFileSync("/app/log.txt", "utf8"), "line 1\nline 2\n");
-
-		const st = memfs.statSync("/app/log.txt");
-		assert.equal(st.isFile(), true);
-		assert.equal(st.isDirectory(), false);
-		assert.equal(st.size, 14);
-
-		memfs.chmodSync("/app/log.txt", 0o600);
-		assert.equal(memfs.realpathSync("/app/log.txt"), "/app/log.txt");
-
-		const tempDir = memfs.mkdtempSync("/app/temp-");
-		assert.equal(memfs.existsSync(tempDir), true);
-
-		memfs.rmSync(tempDir, { recursive: true });
-		assert.equal(memfs.existsSync(tempDir), false);
-
-		memfs.unlinkSync("/app/log.txt");
-		assert.equal(memfs.existsSync("/app/log.txt"), false);
 	});
 
 	it("provides browser-safe node:* shims (os, url, util, worker_threads, child_process, http, net, readline)", () => {
@@ -208,34 +109,16 @@ describe("Worker write-through memfs & node:* shims", () => {
 		assert.equal(typeof rl.question, "function");
 
 		const defaultBridge = getHostBridge();
-		assert.equal(typeof defaultBridge.hydrateFs, "function");
+		assert.equal(typeof defaultBridge.initRuntime, "function");
 	});
 
-	it("exposes fs.realpathSync.native and updates os.homedir() upon hydrateMemfs", () => {
-		assert.equal(typeof (memfs.realpathSync as any).native, "function");
-		assert.equal((memfs.realpathSync as any).native, memfs.realpathSync);
-
+	it("updates os.homedir() via setWorkerHomeDir", () => {
 		try {
-			memfs.hydrateMemfs({
-				root: "/app",
-				dataDir: "/app/data",
-				authFile: "/app/auth.json",
-				homeDir: "/Users/alice",
-				files: {},
-				dirs: ["/app"],
-			});
+			setWorkerHomeDir("/Users/alice");
 			assert.equal(os.homedir(), "/Users/alice");
 			assert.equal(os.userInfo().homedir, "/Users/alice");
-			assert.equal(memfs.existsSync("/Users/alice"), true);
 		} finally {
-			memfs.hydrateMemfs({
-				root: "/app",
-				dataDir: "/app/data",
-				authFile: "/app/auth.json",
-				homeDir: "/home",
-				files: {},
-				dirs: ["/app"],
-			});
+			setWorkerHomeDir("/home");
 			assert.equal(os.homedir(), "/home");
 		}
 	});

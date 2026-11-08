@@ -20,5 +20,5 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
 	const fileAccessError = fileAccessConfigurationError();
-	return Response.json({ settings: settingsStore.readSettings(), ...(fileAccessError ? { fileAccessError } : {}) });
+	return Response.json({ settings: await settingsStore.readSettings(), ...(fileAccessError ? { fileAccessError } : {}) });
 }

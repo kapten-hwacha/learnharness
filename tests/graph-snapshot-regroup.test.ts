@@ -46,11 +46,11 @@ function fakeDeps(opts: {
 	regroups?: GraphRegroup[];
 }): GraphDeps {
 	const graphStore: GraphStore = {
-		readNodes: () => opts.nodes,
-		readChains: () => opts.chains ?? [],
-		readCheckpoints: () => [],
-		readCoverage: () => [],
-		readSources: () =>
+		readNodes: async () => opts.nodes,
+		readChains: async () => opts.chains ?? [],
+		readCheckpoints: async () => [],
+		readCoverage: async () => [],
+		readSources: async () =>
 			(opts.sources ?? []).map(
 				(s) =>
 					({
@@ -59,14 +59,14 @@ function fakeDeps(opts: {
 						extractions: [],
 					}) as unknown as NotesSource,
 			),
-		readPositions: () => ({}),
-		writePositions: () => {},
-		appendRegroup: () => {},
-		readRegroups: () => opts.regroups ?? [],
+		readPositions: async () => ({}),
+		writePositions: async () => {},
+		appendRegroup: async () => {},
+		readRegroups: async () => opts.regroups ?? [],
 	} as unknown as GraphStore;
 
 	const chatStore: ChatStore = {
-		listChats: () =>
+		listChats: async () =>
 			(opts.chats ?? []).map(
 				(c) =>
 					({
@@ -76,7 +76,7 @@ function fakeDeps(opts: {
 						messageCount: 1,
 					}) as unknown as ChatSummary,
 			),
-		getChat: (id: string) => {
+		getChat: async (id: string) => {
 			const found = (opts.chats ?? []).find((c) => c.id === id);
 			if (!found) return null;
 			return {
@@ -92,7 +92,7 @@ function fakeDeps(opts: {
 }
 
 describe("graphSnapshot regrouping", () => {
-	it("omits regroups field when store has no regroup entries", () => {
+	it("omits regroups field when store has no regroup entries", async () => {
 		const nodes = [
 			node("n1", "A", [pt("chat_1")]),
 			node("n2", "B", [pt("chat_1")]),
@@ -104,14 +104,14 @@ describe("graphSnapshot regrouping", () => {
 			regroups: [],
 		});
 
-		const snapshot = graphSnapshot(deps);
+		const snapshot = await graphSnapshot(deps);
 		assert.equal(snapshot.regroups, undefined);
 		assert.equal(snapshot.clusters.length, 1);
 		assert.equal(snapshot.clusters[0]?.id, "chat_1");
 		assert.deepEqual(snapshot.clusters[0]?.members, ["n1", "n2", "n3"]);
 	});
 
-	it("assembles snapshot with active regroups, overriding earlier entries for same node", () => {
+	it("assembles snapshot with active regroups, overriding earlier entries for same node", async () => {
 		// chat_1 birthed n1, n2, n3, n4 (size 4)
 		// chat_2 birthed n5, n6, n7 (size 3)
 		// chat_3 has no births originally
@@ -166,7 +166,7 @@ describe("graphSnapshot regrouping", () => {
 			regroups,
 		});
 
-		const snapshot = graphSnapshot(deps);
+		const snapshot = await graphSnapshot(deps);
 
 		// 1. snapshot.regroups mapping reflects latest entries
 		assert.deepEqual(snapshot.regroups, {
@@ -198,7 +198,7 @@ describe("graphSnapshot regrouping", () => {
 		assert.deepEqual(c2.members, ["n5", "n6", "n7"]);
 	});
 
-	it("resolves targetSessionId to fileSources when regrouped to notes source", () => {
+	it("resolves targetSessionId to fileSources when regrouped to notes source", async () => {
 		const nodes = [
 			node("n1", "N1", [pt("chat_1")]),
 			node("n2", "N2", [pt("chat_1")]),
@@ -236,7 +236,7 @@ describe("graphSnapshot regrouping", () => {
 			regroups,
 		});
 
-		const snapshot = graphSnapshot(deps);
+		const snapshot = await graphSnapshot(deps);
 
 		assert.equal(snapshot.fileSources.src_notes_1, "/docs/linalg.md");
 		const cNotes = snapshot.clusters.find((c) => c.id === "src_notes_1");
@@ -245,7 +245,7 @@ describe("graphSnapshot regrouping", () => {
 		assert.deepEqual(cNotes.members, ["n1", "n2", "n3"]);
 	});
 
-	it("attaches derived implication nodes to regrouped cluster according to premises' effective sessions", () => {
+	it("attaches derived implication nodes to regrouped cluster according to premises' effective sessions", async () => {
 		const nodes = [
 			node("p1", "Premise 1", [pt("chat_orig")]),
 			node("p2", "Premise 2", [pt("chat_orig")]),
@@ -275,7 +275,7 @@ describe("graphSnapshot regrouping", () => {
 			regroups,
 		});
 
-		const snapshot = graphSnapshot(deps);
+		const snapshot = await graphSnapshot(deps);
 
 		// chat_dest has p1, p2, p3 (3 propositions -> qualifies for hull).
 		// arg_imp should be attached to chat_dest because both premises are in chat_dest.

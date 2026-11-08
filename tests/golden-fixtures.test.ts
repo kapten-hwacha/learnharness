@@ -39,7 +39,18 @@ const { chatStore } = await import("../src/store/chats.ts");
 const { graphStore } = await import("../src/store/graph.ts");
 const { jobStore } = await import("../src/store/jobs.ts");
 const { settingsStore } = await import("../src/store/settings.ts");
-const { readRenderSettings } = await import("../src/store/render-settings.ts");
+const { readRenderSettings, writeRenderSettings } = await import("../src/store/render-settings.ts");
+const {
+	resetMemoryStores,
+	memorySaveChat,
+	memoryAppendNode,
+	memoryAppendChain,
+	memoryAppendCheckpoint,
+	memoryAppendCoverage,
+	memoryUpsertSource,
+	memoryWritePositions,
+	memorySaveJob,
+} = await import("../src/store/memory-backend.ts");
 const { getGraph, deriveView } = await import("../src/core/graph.ts");
 const { sanitizeRenderSettings } = await import("../src/core/render-settings.ts");
 const { toLlmMessages } = await import("../src/core/native-messages.ts");
@@ -61,20 +72,82 @@ function snapshotTree(dir: string): Map<string, Buffer> {
 }
 const BEFORE = snapshotTree(TMP);
 
+async function loadGoldenFixturesIntoMemory(dir: string): Promise<void> {
+	resetMemoryStores();
+	// load chats
+	const chatsDir = path.join(dir, "chats");
+	if (fs.existsSync(chatsDir)) {
+		for (const f of fs.readdirSync(chatsDir)) {
+			if (f.endsWith(".json")) {
+				const record = JSON.parse(fs.readFileSync(path.join(chatsDir, f), "utf8"));
+				await memorySaveChat(record);
+			}
+		}
+	}
+	// load graph
+	const graphDir = path.join(dir, "graph");
+	if (fs.existsSync(graphDir)) {
+		const readLines = (file: string) => {
+			const p = path.join(graphDir, file);
+			if (!fs.existsSync(p)) return [];
+			return fs
+				.readFileSync(p, "utf8")
+				.split("\n")
+				.filter((l) => l.trim().length > 0)
+				.map((l) => JSON.parse(l));
+		};
+		for (const n of readLines("nodes.jsonl")) await memoryAppendNode(n);
+		for (const c of readLines("chains.jsonl")) await memoryAppendChain(c);
+		for (const s of readLines("sessions.jsonl")) await memoryAppendCheckpoint(s);
+		for (const cov of readLines("coverage.jsonl")) await memoryAppendCoverage(cov);
+		const sourcesP = path.join(graphDir, "sources.json");
+		if (fs.existsSync(sourcesP)) {
+			const srcMap = JSON.parse(fs.readFileSync(sourcesP, "utf8"));
+			for (const src of Object.values(srcMap)) await memoryUpsertSource(src as any);
+		}
+		const posP = path.join(graphDir, "positions.json");
+		if (fs.existsSync(posP)) {
+			const pos = JSON.parse(fs.readFileSync(posP, "utf8"));
+			if (pos?.positions) await memoryWritePositions(pos.positions);
+		}
+		const renderP = path.join(graphDir, "render-settings.json");
+		if (fs.existsSync(renderP)) {
+			await writeRenderSettings(JSON.parse(fs.readFileSync(renderP, "utf8")));
+		}
+	}
+	// load jobs
+	const jobsDir = path.join(dir, "jobs");
+	if (fs.existsSync(jobsDir)) {
+		for (const f of fs.readdirSync(jobsDir)) {
+			if (f.endsWith(".json")) {
+				const job = JSON.parse(fs.readFileSync(path.join(jobsDir, f), "utf8"));
+				await memorySaveJob(job);
+			}
+		}
+	}
+	// load settings
+	const settingsP = path.join(dir, "settings.json");
+	if (fs.existsSync(settingsP)) {
+		await settingsStore.writeSettings(JSON.parse(fs.readFileSync(settingsP, "utf8")));
+	}
+}
+
+await loadGoldenFixturesIntoMemory(TMP);
+
 test.after(() => {
 	fs.rmSync(TMP, { recursive: true, force: true });
 });
 
 // ── chats: records, folds, and the wire ─────────────────────────────────────
 
-test("chats: both fixture records parse through the production read path", () => {
-	const list = chatStore.listChats();
+test("chats: both fixture records parse through the production read path", async () => {
+	const list = await chatStore.listChats();
 	const ids = new Set(list.map((c) => c.id));
 	assert.ok(ids.has(TEACH), "the teach master record lists");
 	assert.ok(ids.has(PRACTICE), "the practice lifecycle record lists");
 
 	for (const id of [TEACH, PRACTICE]) {
-		const r = chatStore.getChat(id);
+		const r = await chatStore.getChat(id);
 		assert.ok(r, `${id} reads`);
 		assert.ok(Array.isArray(r!.messages) && r!.messages.length > 0);
 		// the folds the app itself runs per render/turn:
@@ -84,9 +157,9 @@ test("chats: both fixture records parse through the production read path", () =>
 	}
 });
 
-test("chats: the LLM wire flattening turns each full record into a legal provider message list", () => {
+test("chats: the LLM wire flattening turns each full record into a legal provider message list", async () => {
 	for (const id of [TEACH, PRACTICE]) {
-		const r = chatStore.getChat(id)!;
+		const r = (await chatStore.getChat(id))!;
 		const wire = toLlmMessages(r.messages as never);
 		assert.ok(wire.length > 0);
 		for (const m of wire) {
@@ -111,7 +184,7 @@ test("chats: the LLM wire flattening turns each full record into a legal provide
 	}
 });
 
-test("markers: the fixture pair covers EVERY custom-marker kind of the current contract", () => {
+test("markers: the fixture pair covers EVERY custom-marker kind of the current contract", async () => {
 	// The coverage law: a new customType added to the contract without real
 	// fixture data fails here — extend the fixtures in the same commit.
 	const EXPECTED = [
@@ -127,26 +200,26 @@ test("markers: the fixture pair covers EVERY custom-marker kind of the current c
 	] as const;
 	const seen = new Set<string>();
 	for (const id of [TEACH, PRACTICE]) {
-		for (const m of chatStore.getChat(id)!.messages) {
+		for (const m of (await chatStore.getChat(id))!.messages) {
 			if ((m as { role?: string }).role === "custom") seen.add((m as { customType: string }).customType);
 		}
 	}
 	for (const kind of EXPECTED) assert.ok(seen.has(kind), `marker ${kind} appears in real fixture data`);
 });
 
-test("tools: the core tool surface appears in real fixture data", () => {
+test("tools: the core tool surface appears in real fixture data", async () => {
 	// A living inventory, not an exhaustive pin: teach tools in the teach
 	// record, practice tools in the practice record. New TOOLS don't fail
 	// this (they fail their own suites) — the pinned CORE set must simply
 	// stay representable in real records.
 	const teachTools = new Set<string>();
 	const practiceTools = new Set<string>();
-	for (const m of chatStore.getChat(TEACH)!.messages) {
+	for (const m of (await chatStore.getChat(TEACH))!.messages) {
 		for (const b of (m as { content?: Array<{ type?: string; name?: string }> }).content ?? []) {
 			if (b.type === "toolCall" && b.name) teachTools.add(b.name);
 		}
 	}
-	for (const m of chatStore.getChat(PRACTICE)!.messages) {
+	for (const m of (await chatStore.getChat(PRACTICE))!.messages) {
 		for (const b of (m as { content?: Array<{ type?: string; name?: string }> }).content ?? []) {
 			if (b.type === "toolCall" && b.name) practiceTools.add(b.name);
 		}
@@ -161,18 +234,18 @@ test("tools: the core tool surface appears in real fixture data", () => {
 
 // ── the graph: ledgers through the full derivation ──────────────────────────
 
-test("graph: the real ledgers parse through their shape guards", () => {
-	assert.ok(graphStore.readNodes().length >= 250, "nodes parse");
-	assert.ok(graphStore.readChains().length >= 150, "chains parse");
-	assert.ok(graphStore.readCheckpoints().length >= 5, "session checkpoints parse");
-	assert.ok(graphStore.readCoverage().length >= 90, "coverage entries parse");
-	assert.ok(graphStore.readSources().length >= 1, "imported-notes sources parse");
+test("graph: the real ledgers parse through their shape guards", async () => {
+	assert.ok((await graphStore.readNodes()).length >= 250, "nodes parse");
+	assert.ok((await graphStore.readChains()).length >= 150, "chains parse");
+	assert.ok((await graphStore.readCheckpoints()).length >= 5, "session checkpoints parse");
+	assert.ok((await graphStore.readCoverage()).length >= 90, "coverage entries parse");
+	assert.ok((await graphStore.readSources()).length >= 1, "imported-notes sources parse");
 });
 
-test("graph: getGraph + deriveView build the snapshot end-to-end", () => {
-	const derived = getGraph(graphStore);
+test("graph: getGraph + deriveView build the snapshot end-to-end", async () => {
+	const derived = await getGraph(graphStore);
 	assert.ok(derived.nodes.length >= 250, "merged nodes");
-assert.ok(derived.chains.length >= 150, "chains survive derivation");
+	assert.ok(derived.chains.length >= 150, "chains survive derivation");
 	const view = deriveView(derived);
 	assert.ok(view.nodes.length >= 250, "the view carries every proposition");
 	// chains are the stored truth; the view renders each as an implication
@@ -183,8 +256,8 @@ assert.ok(derived.chains.length >= 150, "chains survive derivation");
 	assert.ok(view.logicalEdges.length > 0, "logical edge contraction runs");
 });
 
-test("graph: render-settings sanitize and positions parse", () => {
-	const raw = readRenderSettings();
+test("graph: render-settings sanitize and positions parse", async () => {
+	const raw = await readRenderSettings();
 	assert.ok(raw, "render-settings.json reads");
 	const clean = sanitizeRenderSettings(raw);
 	assert.ok(clean.nodeSize > 0 && typeof clean.labelZoom === "number", "sanitizes to concrete knobs");
@@ -196,12 +269,12 @@ test("graph: render-settings sanitize and positions parse", () => {
 
 // ── jobs + settings ─────────────────────────────────────────────────────────
 
-test("jobs: the kind × status matrix parses through the job store", () => {
+test("jobs: the kind × status matrix parses through the job store", async () => {
 	const kinds = new Set<string>();
 	const statuses = new Set<string>();
 	for (const f of fs.readdirSync(path.join(GOLDEN, "jobs"))) {
 		const id = f.replace(/\.json$/, "");
-		const j = jobStore.getJob(id);
+		const j = await jobStore.getJob(id);
 		assert.ok(j, `${id} reads through the job store`);
 		assert.ok(["research", "demo", "visual", "pdf"].includes(j!.kind), `${id}: known kind`);
 		assert.ok(["done", "error"].includes(j!.status), `${id}: terminal status`);
@@ -212,8 +285,8 @@ test("jobs: the kind × status matrix parses through the job store", () => {
 	assert.deepEqual([...statuses].sort(), ["done", "error"], "both terminal statuses are fixture-d");
 });
 
-test("settings: the stamped record parses", () => {
-	const s = settingsStore.readSettings();
+test("settings: the stamped record parses", async () => {
+	const s = await settingsStore.readSettings();
 	assert.ok(s, "settings record reads");
 	assert.equal(s!.version, 1, "settings carry their version stamp");
 	assert.ok(s!.models && typeof s!.models === "object", "model slots present");

@@ -17,6 +17,7 @@ process.env.OPENROUTER_API_KEY = "offline-key-presence-only";
 fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
 after(() => fs.rmSync(scratch, { recursive: true, force: true }));
 
+const { resetMemoryStores } = await import("../src/store/memory-backend.ts");
 const { createTeacherAgent } = await import("../src/agent/teacher-agent.ts");
 const { handleChatRequest } = await import("../src/server/chat-handler.ts");
 const { runningTurn } = await import("../src/server/turn-runs.ts");
@@ -43,11 +44,11 @@ function scripted(steps: FauxResponseStep[]) {
 	return { engine: { model: faux.getModel(), streamFn: faux.streamSimple } as PiEngine, histories };
 }
 const replacement = () => fauxAssistantMessage([fauxToolCall("quiz", valid, { id: "replacement" })], { stopReason: "toolUse" });
-function configured(messages: LhMessage[] = []) {
-	const chat = chatStore.createChat("Offline malformed question");
-	chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
-	chatStore.saveTree(chat.id, { nodes: [{ id: "fixture", title: "Fixture" }], edges: [], version: 1 });
-	chatStore.saveMessages(chat.id, messages);
+async function configured(messages: LhMessage[] = []) {
+	const chat = await chatStore.createChat("Offline malformed question");
+	await chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
+	await chatStore.saveTree(chat.id, { nodes: [{ id: "fixture", title: "Fixture" }], edges: [], version: 1 });
+	await chatStore.saveMessages(chat.id, messages);
 	return chat.id;
 }
 function request(chatId: string, input: unknown) {
@@ -63,9 +64,9 @@ const recover = (messageId = "fixture-assistant", contentIndex = 0, toolCallId =
 for (const stopReason of ["error", "aborted"]) for (const input of [partial, valid]) {
 	test(`${stopReason} generation never owns a question, even with ${input === valid ? "valid-looking" : "partial"} arguments`, async () => {
 		const { engine } = scripted([() => ({ ...assistant(input, stopReason), errorMessage: "Offline interrupted response" })]);
-		const id = configured();
+		const id = await configured();
 		assert.equal((await turn(id, { type: "text", text: "offline fixture" }, engine)).status, 200);
-		const messages = chatStore.getChat(id)!.messages;
+		const messages = (await chatStore.getChat(id))!.messages;
 		assert.equal(messages.filter(m => m.role === "toolResult").length, 0);
 		assert.equal(pendingQuestionOf(messages), null);
 		assert.equal(findPendingToolCall(projectView(messages), pendingQuestionOf(messages)), null);
@@ -89,9 +90,9 @@ test("actual compatible adapter EOF → loop → settlement retains failure but 
 			return new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "bad", type: "function", function: { name: "quiz", arguments: '{"question":"unfinished' } }] }, finish_reason: null }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
 		},
 	}) };
-	const id = configured();
+	const id = await configured();
 	await turn(id, { type: "text", text: "offline fixture" }, engine);
-	const messages = chatStore.getChat(id)!.messages;
+	const messages = (await chatStore.getChat(id))!.messages;
 	assert.equal(requests, 1);
 	assert.match(JSON.stringify(messages.at(-1)), /Stream ended without finish_reason/);
 	assert.equal(messages.at(-1)?.role, "assistant");
@@ -108,9 +109,9 @@ for (const tool of ["quiz", "probe", "ask_user_question", "explain", "recall"]) 
 		if (tool !== "ask_user_question" && tool !== "quiz") return; // production registries covered by existing question-tool tests
 		const before = structuredClone(raw);
 		const { engine } = scripted([() => assistant(raw, "toolUse", "raw", "raw-call", tool)]);
-		const id = configured();
+		const id = await configured();
 		await turn(id, { type: "text", text: "offline fixture" }, engine);
-		const messages = chatStore.getChat(id)!.messages;
+		const messages = (await chatStore.getChat(id))!.messages;
 		const pending = pendingQuestionOf(messages)!;
 		assert.ok(pending);
 		assert.deepEqual(pending.input, before);
@@ -122,9 +123,9 @@ for (const tool of ["quiz", "probe", "ask_user_question", "explain", "recall"]) 
 for (const stopReason of ["toolUse", "length"]) {
 	test(`${stopReason}: invalid/length calls still return model-visible errors and retry normally`, async () => {
 		const { engine, histories } = scripted([() => assistant(stopReason === "length" ? valid : partial, stopReason), replacement]);
-		const id = configured();
+		const id = await configured();
 		await turn(id, { type: "text", text: "offline fixture" }, engine);
-		const messages = chatStore.getChat(id)!.messages;
+		const messages = (await chatStore.getChat(id))!.messages;
 		assert.equal(histories.length, 2);
 		assert.match(JSON.stringify(histories[1]), /"isError":true/);
 		assert.equal(pendingQuestionOf(messages)?.toolCallId, "replacement");
@@ -136,13 +137,13 @@ test("manual recovery preserves history and successful sibling tools, sends erro
 	const bad = assistant();
 	if (bad.role === "assistant") bad.content.push(fauxToolCall("save_note", {}, { id: "note" }));
 	const before: LhMessage[] = [newUserMessage("fixture"), bad, { id: "note-result", role: "toolResult", toolCallId: "note", toolName: "save_note", content: [{ type: "text", text: "Already saved" }], details: { saved: true }, isError: false, timestamp: 1 }];
-	const id = configured(before);
+	const id = await configured(before);
 	const { engine, histories } = scripted([replacement]);
 	assert.equal(pendingQuestionOf(before), null);
 	assert.equal(malformedQuestionsOf(before).length, 1);
 	assert.equal(needsContinuation(before), false);
 	assert.equal((await turn(id, recover(), engine)).status, 200);
-	const saved = chatStore.getChat(id)!.messages;
+	const saved = (await chatStore.getChat(id))!.messages;
 	assert.deepEqual(saved.slice(0, before.length), before);
 	const result = saved[before.length]!;
 	assert.equal(result.role, "toolResult");
@@ -160,29 +161,29 @@ test("malformed siblings share one recovery turn; valid siblings must be answere
 	const bad = assistant();
 	if (bad.role === "assistant") bad.content.push(fauxToolCall("quiz", valid, { id: "valid-sibling" }), fauxToolCall("quiz", partial, { id: "bad-sibling" }));
 	const before = [newUserMessage("fixture"), bad];
-	const id = configured(before);
+	const id = await configured(before);
 	const { engine, histories } = scripted([replacement]);
 	assert.equal(pendingQuestionOf(before)?.toolCallId, "valid-sibling");
 	assert.equal((await turn(id, recover(), engine)).status, 400);
 	assert.equal(histories.length, 0);
-	assert.deepEqual(chatStore.getChat(id)!.messages, before);
+	assert.deepEqual((await chatStore.getChat(id))!.messages, before);
 	assert.equal((await turn(id, { type: "answer", toolCallId: "valid-sibling", answer: { kind: "quiz", answers: [], dontKnow: true } }, engine)).status, 200);
 	assert.equal(histories.length, 0, "answering a valid sibling must not implicitly retry a malformed sibling");
 	assert.equal((await turn(id, recover(), engine)).status, 200);
 	assert.equal(histories.length, 1);
-	const saved = chatStore.getChat(id)!.messages;
+	const saved = (await chatStore.getChat(id))!.messages;
 	assert.equal(saved.filter(m => m.role === "toolResult" && m.isError).length, 2);
 	assert.equal(pendingQuestionOf(saved)?.toolCallId, "replacement");
 });
 
 test("interrupted recovery write-ahead stays paused on reopen until explicit input", async () => {
 	const before = [newUserMessage("fixture"), assistant()];
-	const id = configured(before);
+	const id = await configured(before);
 	// The POST durably records these results before starting the replacement.
 	// Model a server stop at exactly that boundary: no replacement output.
 	const checkpoint = [...before, ...inputAppends({ messages: before }, recover())];
-	chatStore.saveMessages(id, checkpoint);
-	const reopened = chatStore.getChat(id)!.messages;
+	await chatStore.saveMessages(id, checkpoint);
+	const reopened = (await chatStore.getChat(id))!.messages;
 	let posts = 0;
 	const model = new SessionModel({ chatId: id, initialMessages: reopened, fetch: async () => {
 		posts++;
@@ -196,8 +197,8 @@ test("interrupted recovery write-ahead stays paused on reopen until explicit inp
 	const { engine, histories } = scripted([replacement]);
 	assert.equal((await turn(id, { type: "text", text: "Please continue with a new question" }, engine)).status, 200);
 	assert.equal(histories.length, 1);
-	assert.deepEqual(chatStore.getChat(id)!.messages.slice(0, reopened.length), reopened);
-	assert.equal(pendingQuestionOf(chatStore.getChat(id)!.messages)?.toolCallId, "replacement");
+	assert.deepEqual((await chatStore.getChat(id))!.messages.slice(0, reopened.length), reopened);
+	assert.equal(pendingQuestionOf((await chatStore.getChat(id))!.messages)?.toolCallId, "replacement");
 });
 
 test("ordinary answer and validation/length error result batches still owe continuation", () => {
@@ -214,11 +215,11 @@ test("ordinary answer and validation/length error result batches still owe conti
 
 test("exact occurrence, current authority, and recoverable status are checked before writes or calls", async () => {
 	const before = [newUserMessage("fixture"), assistant(), assistant(partial, "toolUse", "newer", "bad")];
-	const id = configured(before);
+	const id = await configured(before);
 	const { engine, histories } = scripted([replacement]);
 	for (const input of [recover(), recover("newer", 1), recover("newer", 0, "other")]) {
 		assert.equal((await turn(id, input, engine)).status, 400);
-		assert.deepEqual(chatStore.getChat(id)!.messages, before);
+		assert.deepEqual((await chatStore.getChat(id))!.messages, before);
 	}
 	for (const stop of ["error", "aborted", "pending"]) assert.throws(() => questionRecoveryAppends([assistant(partial, stop)], recover()));
 	assert.throws(() => questionRecoveryAppends([assistant(valid)], recover()));
@@ -229,7 +230,7 @@ test("exact occurrence, current authority, and recoverable status are checked be
 
 test("reload offers recovery without generating; ordinary composer input also works", async () => {
 	const before = [newUserMessage("fixture"), assistant()];
-	const id = configured(before);
+	const id = await configured(before);
 	let posts = 0;
 	const model = new SessionModel({ chatId: id, initialMessages: before, fetch: async () => { posts++; throw new Error("Unexpected automatic request"); } });
 	await model.continueIfOwed(before);
@@ -238,5 +239,5 @@ test("reload offers recovery without generating; ordinary composer input also wo
 	const { engine, histories } = scripted([replacement]);
 	assert.equal((await turn(id, { type: "text", text: "Let's take another approach" }, engine)).status, 200);
 	assert.match(JSON.stringify(histories[0]), /Let's take another approach/);
-	assert.deepEqual(chatStore.getChat(id)!.messages.slice(0, before.length), before);
+	assert.deepEqual((await chatStore.getChat(id))!.messages.slice(0, before.length), before);
 });

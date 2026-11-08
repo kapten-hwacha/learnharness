@@ -18,6 +18,7 @@ globalThis.fetch = async () => { throw new Error("CLOSED: unexpected network req
 const { piModels, piEngineForSpec, configureProviderSource } = await import("../src/agent/models.ts");
 const { clampModelsLevels, catalogSlots } = await import("../src/server/model-catalog.ts");
 const { readSettings, writeSettings } = await import("../src/store/settings.ts");
+const { effectiveSettings } = await import("../src/server/stores.ts");
 const { PUT } = await import("../app/api/settings/[section]/route.ts");
 const { handleChatInput } = await import("../src/server/chat-handler.ts");
 const { chatStore } = await import("../src/store/chats.ts");
@@ -46,18 +47,18 @@ for (const cacheRetention of CACHE_RETENTIONS) test(`slot ${cacheRetention} surv
 	assert.equal(clampModelsLevels(parsed.settings).strong?.cacheRetention, cacheRetention);
 	const response = await PUT(new Request("http://localhost/api/settings/models", { method: "PUT", body: JSON.stringify(body) }), { params: Promise.resolve({ section: "models" }) });
 	assert.equal(response.status, 200, await response.clone().text());
-	assert.equal(readSettings()?.models?.strong?.cacheRetention, cacheRetention);
-	assert.equal(catalogSlots().strong?.cacheRetention, cacheRetention);
-	assert.ok(!Object.hasOwn(readSettings()!.models!.cheap!, "cacheRetention"));
+	assert.equal((await readSettings())?.models?.strong?.cacheRetention, cacheRetention);
+	assert.equal((await catalogSlots()).strong?.cacheRetention, cacheRetention);
+	assert.ok(!Object.hasOwn((await readSettings())!.models!.cheap!, "cacheRetention"));
 });
 
 test("unset remains absent through storage/resolution; Pi default clears rather than serializes a new default", async () => {
 	const before = { version: 1, models: { strong: { model, thinkingLevel: "high" } } };
 	assert.deepEqual(sanitizeUserSettings(before), before);
-	writeSettings(before);
-	assert.deepEqual(readSettings(), before);
-	assert.ok(!Object.hasOwn(resolveSettings(readSettings()).models.strong!, "cacheRetention"));
-	assert.ok(!Object.hasOwn(catalogSlots().strong!, "cacheRetention"));
+	await writeSettings(before);
+	assert.deepEqual(await readSettings(), before);
+	assert.ok(!Object.hasOwn(resolveSettings((await readSettings())!).models.strong!, "cacheRetention"));
+	assert.ok(!Object.hasOwn((await catalogSlots()).strong!, "cacheRetention"));
 	const parsed = parseModelsSettingsBody({ strong: { model, cacheRetention: "default" } });
 	assert.equal(parsed.ok, false, "default is UI-only; omitted is the native default");
 });
@@ -124,9 +125,9 @@ test("real conversation wiring inherits live Strong retention without changing t
 	};
 	piModels().setProvider(createProvider({ id, models: [entry, { ...entry, id: "strong-model" }], auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: {} }) } }, api: { stream, streamSimple: stream } }));
 	const record: UserSettings = { version: 1, graph: { enabled: false }, models: { strong: { model: { provider: id, id: "strong-model" }, cacheRetention: "long" } } };
-	writeSettings(record);
-	const chat = chatStore.createChat("Synthetic cache-retention test");
-	chatStore.saveSettings(chat.id, { model: { provider: id, id: "chat-model" } });
+	await writeSettings(record);
+	const chat = await chatStore.createChat("Synthetic cache-retention test");
+	await chatStore.saveSettings(chat.id, { model: { provider: id, id: "chat-model" } });
 	faux.setResponses([
 		fauxAssistantMessage([fauxToolCall("again", {}, { id: "cache-again" })], { stopReason: "toolUse" }),
 		fauxAssistantMessage([fauxText("done")]),
@@ -134,7 +135,8 @@ test("real conversation wiring inherits live Strong retention without changing t
 	const response = await handleChatInput(chat.id, { type: "text", text: "offline" }, (options) => createTeacherAgent(undefined, {
 		...options,
 		tools: { again: { name: "again", label: "again", description: "fixture", parameters: Type.Object({}), execute: async () => {
-			writeSettings({ ...record, models: { strong: { ...record.models!.strong, cacheRetention: "short" } } });
+			await writeSettings({ ...record, models: { strong: { ...record.models!.strong, cacheRetention: "short" } } });
+			await effectiveSettings();
 			return { content: [{ type: "text", text: "done" }], details: {} };
 		} } },
 	}));
@@ -142,7 +144,7 @@ test("real conversation wiring inherits live Strong retention without changing t
 	const handle = runningTurn(chat.id);
 	if (handle) await new Response(handle.subscribe()).text();
 	assert.deepEqual(seen.map((call) => [call.model, call.options.cacheRetention]), [["chat-model", "long"], ["chat-model", "short"]]);
-	assert.deepEqual(chatStore.getChat(chat.id)?.settings?.model, { provider: id, id: "chat-model" });
+	assert.deepEqual((await chatStore.getChat(chat.id))?.settings?.model, { provider: id, id: "chat-model" });
 	piModels().deleteProvider(id);
 });
 

@@ -1,6 +1,7 @@
 /** Child-process fixture: owned profile only; every upstream fetch is synthetic. */
 import fs from "node:fs";
 import { AUTH_FILE, SETTINGS_FILE } from "../../config.ts";
+
 const [mode, action = "key", fault = "none"] = process.argv.slice(2);
 const requests: { url: string; authorization: string | null }[] = [];
 globalThis.fetch = async (url, init) => {
@@ -27,7 +28,46 @@ fs.readFileSync = ((...args: Parameters<typeof read>) => {
 	if (args[0] === AUTH_FILE && fault === "unreadable") throw Object.assign(new Error("fixture unreadable auth"), { code: "EACCES" });
 	return read(...args);
 }) as typeof read;
-await import("../../src/server/keys.ts");
+
+(globalThis as any).__TAURI_INTERNALS__ = {
+	invoke: async (cmd: string, args?: any) => {
+		if (cmd === "lh_auth_read") {
+			if (!fs.existsSync(AUTH_FILE)) return null;
+			return fs.readFileSync(AUTH_FILE, "utf-8");
+		}
+		if (cmd === "lh_auth_write") {
+			const tmp = `${AUTH_FILE}.tmp.${Date.now()}`;
+			fs.writeFileSync(tmp, args.content, "utf-8");
+			fs.renameSync(tmp, AUTH_FILE);
+			return;
+		}
+		if (cmd === "lh_kv_get") {
+			if (args?.key === "settings") {
+				if (!fs.existsSync(SETTINGS_FILE)) return null;
+				return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
+			}
+			return null;
+		}
+		if (cmd === "lh_kv_set") {
+			if (args?.key === "settings") {
+				const tmp = `${SETTINGS_FILE}.tmp.${Date.now()}`;
+				fs.writeFileSync(tmp, JSON.stringify(args.value, null, "\t"), "utf-8");
+				fs.renameSync(tmp, SETTINGS_FILE);
+			}
+			return;
+		}
+		if (cmd === "lh_init_runtime") {
+			return { homeDir: process.env.LH_DATA_DIR || "/home", authVars: {} };
+		}
+		return null;
+	},
+};
+
+const { initAuthEnv, keyStatuses } = await import("../../src/server/keys.ts");
+await initAuthEnv();
+const { syncCustomProvider } = await import("../../src/server/custom-provider.ts");
+await syncCustomProvider();
+
 if (mode === "inspect") {
 	const { piModels, piEngineForSpec } = await import("../../src/agent/models.ts");
 	const { normalizeContext } = await import("@earendil-works/pi-ai");
@@ -37,11 +77,11 @@ if (mode === "inspect") {
 		const engine = piEngineForSpec({ provider: "custom", id: "m" });
 		reason = (await engine.streamFn(engine.model, normalizeContext({ messages: [{ role: "user", content: "fixture", timestamp: 0 }] }), {}).result()).stopReason;
 	} catch { reason = "refused"; }
-	const { keyStatuses } = await import("../../src/server/keys.ts");
-	console.log(JSON.stringify({ enabled, reason, requests, statusIds: keyStatuses().map(row => row.id), metadataInEnv: process.env.__learnharness_custom_provider_binding !== undefined }));
+	const statuses = await keyStatuses();
+	console.log(JSON.stringify({ enabled, reason, requests, statusIds: statuses.map(row => row.id), metadataInEnv: process.env.__learnharness_custom_provider_binding !== undefined }));
 } else {
 	const route = await import("../../app/api/custom-provider/route.ts");
-	const get = route.GET(new Request("http://localhost/api/custom-provider"));
+	const get = await route.GET(new Request("http://localhost/api/custom-provider"));
 	const payload = action === "keyless" ? { baseUrl: "http://second.invalid/v1", authMode: "keyless" }
 		: action === "envMove" ? { baseUrl: "http://second.invalid/v1", authMode: "apiKey", reuseKey: true }
 		: action === "reuse" ? { baseUrl: "http://first.invalid/v1", authMode: "apiKey", reuseKey: true }

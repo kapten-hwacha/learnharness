@@ -42,21 +42,21 @@ function fakeStores(
 ): { chatStore: ChatStore; graphStore: GraphStore } {
 	const chains: GraphChain[] = over.chains ?? [];
 	const graphStore: GraphStore = {
-		readNodes: () => nodes,
-		readChains: () => chains,
-		readCheckpoints: () => [],
-		readCoverage: () => [],
-		readSources: () => [],
-		readPositions: () => ({}),
-		writePositions: () => {},
-		readClusterLabels: () => [],
-		appendClusterLabel: () => {},
-		appendNamingRun: () => {},
+		readNodes: async () => nodes,
+		readChains: async () => chains,
+		readCheckpoints: async () => [],
+		readCoverage: async () => [],
+		readSources: async () => [],
+		readPositions: async () => ({}),
+		writePositions: async () => {},
+		readClusterLabels: async () => [],
+		appendClusterLabel: async () => {},
+		appendNamingRun: async () => {},
 	} as unknown as GraphStore;
 	const chatStore: ChatStore = {
-		listChats: () =>
+		listChats: async () =>
 			(over.chats ?? []).map((c) => ({ ...c, messageCount: 0 }) as unknown as ChatSummary),
-		getChat: (id: string) =>
+		getChat: async (id: string) =>
 			((over.chats ?? []).find((c) => c.id === id) as unknown as ChatSummary) ?? undefined,
 	} as unknown as ChatStore;
 	return { chatStore, graphStore };
@@ -224,7 +224,7 @@ describe("auditor graph tools", () => {
 	const { chatStore, graphStore } = fakeStores(nodes);
 
 	it("find_candidates uses the actual findings and returns full deduplicated statements, aliases and source pointers", async () => {
-		const { tools, initialCandidates } = prepareAuditorReview({ chatStore, graphStore }, [
+		const { tools, initialCandidates } = await prepareAuditorReview({ chatStore, graphStore }, [
 			{ id: "p1", name: "Power drive", statement: "power drive", aliases: [] },
 			{ id: "p2", name: "Power", statement: "Nietzsche's central drive", aliases: [] },
 		]);
@@ -244,8 +244,8 @@ describe("auditor graph tools", () => {
 	});
 
 	it("a candidate tool instance never reuses another audit's graph or findings", async () => {
-		const first = prepareAuditorReview({ chatStore, graphStore }, [{ id: "p1", name: "Recurrence", statement: "living again", aliases: [] }]).tools;
-		const second = prepareAuditorReview(fakeStores([]), [{ id: "p2", name: "Recurrence", statement: "living again", aliases: [] }]).tools;
+		const first = (await prepareAuditorReview({ chatStore, graphStore }, [{ id: "p1", name: "Recurrence", statement: "living again", aliases: [] }])).tools;
+		const second = (await prepareAuditorReview(fakeStores([]), [{ id: "p2", name: "Recurrence", statement: "living again", aliases: [] }])).tools;
 		const one = (await first.find_candidates!.execute!("tc", { propositions: [{ id: "p1" }] })).details as AuditorCandidateBatch;
 		const two = (await second.find_candidates!.execute!("tc", { propositions: [{ id: "p2" }] })).details as AuditorCandidateBatch;
 		assert.equal(one.candidates[0]!.id, "n2");
@@ -257,7 +257,7 @@ describe("auditor graph tools", () => {
 		const graph = [...Array.from({ length: 7 }, (_, i) => ({ ...node(`n${i}`, "Amber", [pt("c1")]), statement: "Amber canoe", aliases: [] })),
 			{ ...node("violet", "Other", [pt("c1")]), statement: "Violet kayak", aliases: [] }];
 		const findings = [{ id: "p", name: "Amber", statement: "Amber canoe", aliases: [] }];
-		const review = prepareAuditorReview(fakeStores(graph), findings);
+		const review = await prepareAuditorReview(fakeStores(graph), findings);
 		const cursor = review.initialCandidates.matches[0]!.nextCursor!;
 		assert.ok(cursor);
 		const tool = review.tools.find_candidates!;
@@ -269,21 +269,21 @@ describe("auditor graph tools", () => {
 		assert.ok(fresh.matches[0]!.candidateIds.includes("violet"), "new wording cannot accidentally skip its first page");
 		assert.deepEqual((await tool.execute!("repeat", { propositions: [{ id: "p", cursor }] })).details, next);
 		assert.deepEqual((await tool.execute!("first-again", { propositions: [{ id: "p" }] })).details, review.initialCandidates);
-		const other = prepareAuditorReview(fakeStores(graph), findings);
+		const other = await prepareAuditorReview(fakeStores(graph), findings);
 		await assert.rejects(other.tools.find_candidates!.execute!("foreign", { propositions: [{ id: "p", cursor }] }), /Unknown cursor/);
 	});
 
 	it("a continuation cannot be used for another finding", async () => {
 		const graph = Array.from({ length: 6 }, (_, i) => ({ ...node(`n${i}`, "Amber", [pt("c1")]), statement: "Amber canoe", aliases: [] }));
-		const review = prepareAuditorReview(fakeStores(graph), [
+		const review = await prepareAuditorReview(fakeStores(graph), [
 			{ id: "p1", name: "Amber", statement: "Amber canoe", aliases: [] },
 			{ id: "p2", name: "Amber", statement: "Amber canoe", aliases: [] },
 		]);
 		await assert.rejects(review.tools.find_candidates!.execute!("wrong-id", { propositions: [{ id: "p2", cursor: review.initialCandidates.matches[0]!.nextCursor }] }), /Unknown cursor/);
 	});
 
-	it("initial preparation deduplicates finding ids with the merger's first-occurrence meaning", () => {
-		const review = prepareAuditorReview({ chatStore, graphStore }, [
+	it("initial preparation deduplicates finding ids with the merger's first-occurrence meaning", async () => {
+		const review = await prepareAuditorReview({ chatStore, graphStore }, [
 			{ id: "p1", name: "Power", statement: "power drive", aliases: [] },
 			{ id: "p1", name: "Recurrence", statement: "living again", aliases: [] },
 		]);
@@ -295,7 +295,7 @@ describe("auditor graph tools", () => {
 		const { chatStore: cs, graphStore: gs } = fakeStores(nodes, {
 			chats: [{ id: "c1", title: "Nietzsche seminar", createdAt: "2026-09-20T10:00:00.000Z", updatedAt: "2026-09-21T10:00:00.000Z" }],
 		});
-		const { tools } = prepareAuditorReview({ chatStore: cs, graphStore: gs });
+		const { tools } = await prepareAuditorReview({ chatStore: cs, graphStore: gs });
 		const out = (await tools.list_sessions!.execute!("tc", {})).details as string;
 		assert.match(out, /1 session\(s\):/);
 		assert.match(out, /Nietzsche seminar \(chat, 2 propositions\) — id: c1/);
@@ -304,7 +304,7 @@ describe("auditor graph tools", () => {
 
 	it("list_propositions: FULL statement text (identity work), no dates", async () => {
 		const { chatStore: cs, graphStore: gs } = fakeStores(nodes);
-		const { tools } = prepareAuditorReview({ chatStore: cs, graphStore: gs });
+		const { tools } = await prepareAuditorReview({ chatStore: cs, graphStore: gs });
 		const out = (await tools.list_propositions!.execute!("tc", { session: "c1" })).details as string;
 		assert.match(out, /2 proposition\(s\) born in this session:/);
 		assert.match(out, /- n1 :: Will to power/);

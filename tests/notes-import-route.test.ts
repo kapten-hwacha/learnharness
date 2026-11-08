@@ -8,7 +8,7 @@ import { createExtractionPipeline, NotesImportError } from "../src/agent/subagen
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { stores } from "../src/server/stores.ts";
 import type { GraphStore } from "../src/core/ports.ts";
-import type { GraphNode, GraphChain, NotesSource, SessionCheckpoint } from "../src/core/contracts.ts";
+import type { GraphNode, GraphChain, NotesSource, SessionCheckpoint, ExtractionRunUsage } from "../src/core/contracts.ts";
 import { tinyPdf } from "./helpers/tiny-pdf.ts";
 import { MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES } from "../lib/notes-import-limits.ts";
 
@@ -63,17 +63,17 @@ it("real route plus in-memory ledgers and faux stages reprocess identical import
 	const checkpoints: SessionCheckpoint[] = [];
 	const sources = new Map<string, NotesSource>();
 	const graphStore: GraphStore = {
-		appendNode: (node) => { nodes.push(node); }, readNodes: () => [...nodes],
-		appendChain: (chain) => { chains.push(chain); }, readChains: () => [...chains],
-		appendCheckpoint: (checkpoint) => { checkpoints.push(checkpoint); }, readCheckpoints: () => [...checkpoints],
-		appendCoverage: () => {}, readCoverage: () => [],
-		appendRegroup: () => {}, readRegroups: () => [],
-		upsertSource: (source) => { sources.set(source.id, { ...source, extractions: sources.get(source.id)?.extractions ?? [] }); },
-		readSources: () => [...sources.values()],
-		deleteSources: (ids) => [...ids].reduce((count, id) => count + Number(sources.delete(id)), 0),
-		appendSourceUsage: (id, usage) => { sources.get(id)!.extractions!.push(usage); },
-		readPositions: () => ({}), writePositions: () => {}, rewriteLedgers: () => {},
-	};
+		appendNode: async (node: GraphNode) => { nodes.push(node); }, readNodes: async () => [...nodes],
+		appendChain: async (chain: GraphChain) => { chains.push(chain); }, readChains: async () => [...chains],
+		appendCheckpoint: async (checkpoint: SessionCheckpoint) => { checkpoints.push(checkpoint); }, readCheckpoints: async () => [...checkpoints],
+		appendCoverage: async () => {}, readCoverage: async () => [],
+		appendRegroup: async () => {}, readRegroups: async () => [],
+		upsertSource: async (source: NotesSource) => { sources.set(source.id, { ...source, extractions: sources.get(source.id)?.extractions ?? [] }); },
+		readSources: async () => [...sources.values()],
+		deleteSources: async (ids: ReadonlySet<string>) => [...ids].reduce((count, id) => count + Number(sources.delete(id)), 0),
+		appendSourceUsage: async (id: string, usage: ExtractionRunUsage) => { sources.get(id)!.extractions!.push(usage); },
+		readPositions: async () => ({}), writePositions: async () => {}, rewriteLedgers: async () => {},
+	} as unknown as GraphStore;
 	let calls = 0;
 	const pipeline = createExtractionPipeline({ chatStore: stores.chatStore, graphStore,
 		engineFor: (role) => {

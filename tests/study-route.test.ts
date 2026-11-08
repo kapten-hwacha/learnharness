@@ -7,13 +7,18 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { after, describe, it } from "node:test";
+import { after, beforeEach, describe, it } from "node:test";
+import { resetMemoryStores } from "../src/store/memory-backend.ts";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lh-study-route-"));
 process.env.LH_DATA_DIR = dir;
 const { GET, POST } = await import("../app/api/study/route.ts");
 const { stores } = await import("../src/server/stores.ts");
 const { newUserMessage } = await import("../src/core/native-messages.ts");
+
+beforeEach(() => {
+	resetMemoryStores();
+});
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -35,12 +40,12 @@ describe("POST /api/study", () => {
 		assert.equal(missing.status, 404);
 		assert.deepEqual(await missing.json(), { error: "chat_not_found" });
 
-		const chat = stores.chatStore.createChat("c");
+		const chat = await stores.chatStore.createChat("c");
 		const unstarted = await post({ input: { type: "active", chatId: chat.id, windowId: "w" } });
 		assert.equal(unstarted.status, 400);
 		assert.deepEqual(await unstarted.json(), { error: "chat_not_started" });
 
-		stores.chatStore.saveMessages(chat.id, [newUserMessage("hi")]);
+		await stores.chatStore.saveMessages(chat.id, [newUserMessage("hi")]);
 		const ok = await post({ input: { type: "active", chatId: chat.id, windowId: "w" } });
 		assert.equal(ok.status, 200);
 		assert.deepEqual(await ok.json(), { ok: true });

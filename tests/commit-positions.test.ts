@@ -8,31 +8,23 @@
  * a payload covering the whole view runs NO settle (the file equals the
  * payload exactly); a payload missing a view node (a merge landed
  * mid-drag) triggers exactly one absorbing settle.
- *
- * Hermetic: LH_DATA_DIR → a temp dir, set BEFORE the first import of
- * the server modules (the seam is env-at-module-load, see
- * tests/data-dir-seam.test.ts).
  */
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { before, describe, it } from "node:test";
+import { resetMemoryStores } from "../src/store/memory-backend.ts";
 
-process.env.LH_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "lh-pos-commit-"));
-
-let commitPositions: (input: unknown) => Record<string, { x: number; y: number }>;
-let readPositions: () => Record<string, { x: number; y: number }>;
-let appendNode: (node: unknown) => void;
-let appendChain: (assertion: unknown) => void;
+let commitPositions: (input: unknown) => Promise<Record<string, { x: number; y: number }>>;
+let readPositions: () => Promise<Record<string, { x: number; y: number }>>;
+let appendNode: (node: unknown) => Promise<void>;
+let appendChain: (assertion: unknown) => Promise<void>;
 
 before(async () => {
+	resetMemoryStores();
 	({ commitPositions } = await import("../src/server/commit-positions.ts"));
 	const { stores } = await import("../src/server/stores.ts");
-	const positionsFile = path.join(process.env.LH_DATA_DIR!, "graph", "positions.json");
-	readPositions = () => JSON.parse(fs.readFileSync(positionsFile, "utf8")).positions as Record<string, { x: number; y: number }>;
-	appendNode = stores.graphStore.appendNode as (node: unknown) => void;
-	appendChain = stores.graphStore.appendChain as (assertion: unknown) => void;
+	readPositions = () => stores.graphStore.readPositions();
+	appendNode = (node: unknown) => stores.graphStore.appendNode(node as any);
+	appendChain = (assertion: unknown) => stores.graphStore.appendChain(assertion as any);
 
 	// Two propositions + one two-premise chain → the derived view is
 	// 2 props + 1 arg_ node.
@@ -44,10 +36,10 @@ before(async () => {
 		createdAt: "2026-10-06T00:00:00.000Z",
 		provenance: [],
 	});
-	appendNode(node("n_a"));
-	appendNode(node("n_b"));
-	appendNode(node("n_c"));
-	appendChain({
+	await appendNode(node("n_a"));
+	await appendNode(node("n_b"));
+	await appendNode(node("n_c"));
+	await appendChain({
 		id: "arg_chain1",
 		premises: ["n_a", "n_b"],
 		conclusion: "n_c",
@@ -57,8 +49,8 @@ before(async () => {
 });
 
 describe("commitPositions (the arg_ fix)", () => {
-	it("persists arg_ implication ids alongside propositions — the canvas's whole world", () => {
-		const persisted = commitPositions({
+	it("persists arg_ implication ids alongside propositions — the canvas's whole world", async () => {
+		const persisted = await commitPositions({
 			n_a: { x: 10, y: 20 },
 			n_b: { x: 30, y: 40 },
 			n_c: { x: 50, y: 60 },
@@ -66,18 +58,19 @@ describe("commitPositions (the arg_ fix)", () => {
 			garbage_id: { x: 1, y: 1 },
 		});
 		assert.deepEqual(Object.keys(persisted).sort(), ["arg_chain1", "n_a", "n_b", "n_c"]);
-		assert.deepEqual(readPositions().arg_chain1, { x: 34.5, y: 44.5 });
-		assert.ok(!("garbage_id" in readPositions()), "unknown ids still discarded");
+		const current = await readPositions();
+		assert.deepEqual(current.arg_chain1, { x: 34.5, y: 44.5 });
+		assert.ok(!("garbage_id" in current), "unknown ids still discarded");
 	});
 
-	it("a payload covering the whole view runs NO settle — the file equals the payload exactly", () => {
-		commitPositions({
+	it("a payload covering the whole view runs NO settle — the file equals the payload exactly", async () => {
+		await commitPositions({
 			n_a: { x: 100, y: 200 },
 			n_b: { x: 300, y: 400 },
 			n_c: { x: 500, y: 600 },
 			arg_chain1: { x: 350, y: 450 },
 		});
-		assert.deepEqual(readPositions(), {
+		assert.deepEqual(await readPositions(), {
 			n_a: { x: 100, y: 200 },
 			n_b: { x: 300, y: 400 },
 			n_c: { x: 500, y: 600 },
@@ -85,21 +78,21 @@ describe("commitPositions (the arg_ fix)", () => {
 		}, "no settle recomputation — the client's rest state is the ledger");
 	});
 
-	it("a payload missing a view node (a merge landed mid-drag) triggers the absorbing settle", () => {
+	it("a payload missing a view node (a merge landed mid-drag) triggers the absorbing settle", async () => {
 		// The client never knew arg_chain1 (it merged after the drag began).
-		commitPositions({
+		await commitPositions({
 			n_a: { x: 1, y: 2 },
 			n_b: { x: 3, y: 4 },
 			n_c: { x: 5, y: 6 },
 		});
-		const after = readPositions();
+		const after = await readPositions();
 		assert.ok("arg_chain1" in after, "the settle laid out the node the client missed");
 		// The client's anchors are honored (warm start), not clobbered to 0.
 		assert.ok(Math.abs(after.n_a!.x - 1) < 50, `anchor n_a near its committed rest (got ${after.n_a!.x})`);
 	});
 
-	it("garbage still sanitizes: non-finite drops, absurd clamps, nothing throws", () => {
-		const persisted = commitPositions({
+	it("garbage still sanitizes: non-finite drops, absurd clamps, nothing throws", async () => {
+		const persisted = await commitPositions({
 			n_a: { x: Number.NaN, y: 1 },
 			n_b: { x: 5, y: Number.POSITIVE_INFINITY },
 			n_c: { x: 1e9, y: 0 },

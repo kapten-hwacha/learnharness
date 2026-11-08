@@ -57,28 +57,28 @@ after(() => {
 });
 
 describe("session kind (practice sessions, 2026-10-04)", () => {
-	it("createChat default carries NO kind field — absence reads as teach", () => {
-		const chat = chatStore.createChat("plain session");
+	it("createChat default carries NO kind field — absence reads as teach", async () => {
+		const chat = await chatStore.createChat("plain session");
 		assert.equal("kind" in chat, false, "teach records carry no kind marker");
 	});
 
-	it("createChat(kind: 'practice') stamps the marker on record + list", () => {
-		const chat = chatStore.createChat("practice session", "practice");
+	it("createChat(kind: 'practice') stamps the marker on record + list", async () => {
+		const chat = await chatStore.createChat("practice session", "practice");
 		assert.equal(chat.kind, "practice");
-		const listed = chatStore.listChats().find((c) => c.id === chat.id);
+		const listed = (await chatStore.listChats()).find((c) => c.id === chat.id);
 		assert.equal(listed?.kind, "practice");
 	});
 
-	it("the summary projection NORMALIZES: absent record field reads as teach", () => {
-		const chat = chatStore.createChat("another plain one");
-		const listed = chatStore.listChats().find((c) => c.id === chat.id);
+	it("the summary projection NORMALIZES: absent record field reads as teach", async () => {
+		const chat = await chatStore.createChat("another plain one");
+		const listed = (await chatStore.listChats()).find((c) => c.id === chat.id);
 		assert.equal(listed?.kind, "teach");
 	});
 
 	it("the summary projection marks a practice session with a posed problem as pendingProblem", async () => {
 		const { PRACTICE_PROBLEM_TOOL } = await import("../src/core/native-messages.ts");
-		const waiting = chatStore.createChat("problem waiting", "practice");
-		chatStore.saveMessages(waiting.id, [
+		const waiting = await chatStore.createChat("problem waiting", "practice");
+		await chatStore.saveMessages(waiting.id, [
 			{
 				id: "msg_a_call_p1",
 				role: "assistant",
@@ -101,19 +101,19 @@ describe("session kind (practice sessions, 2026-10-04)", () => {
 				timestamp: 2,
 			},
 		]);
-		const idle = chatStore.createChat("no problem yet", "practice");
-		const listed = chatStore.listChats();
+		const idle = await chatStore.createChat("no problem yet", "practice");
+		const listed = await chatStore.listChats();
 		assert.equal(listed.find((c) => c.id === waiting.id)?.pendingProblem, true);
 		assert.equal(listed.find((c) => c.id === idle.id)?.pendingProblem, false);
 	});
 
-	it("teaching summaries carry false without persisting the derived field", () => {
-		const chat = chatStore.createChat("teaching conversation");
-		chatStore.saveMessages(chat.id, [newUserMessage("Explain the material")]);
-		const listed = chatStore.listChats().find((c) => c.id === chat.id);
+	it("teaching summaries carry false without persisting the derived field", async () => {
+		const chat = await chatStore.createChat("teaching conversation");
+		await chatStore.saveMessages(chat.id, [newUserMessage("Explain the material")]);
+		const listed = (await chatStore.listChats()).find((c) => c.id === chat.id);
 		assert.equal(listed?.kind, "teach");
 		assert.equal(listed?.pendingProblem, false);
-		assert.equal("pendingProblem" in chatStore.getChat(chat.id)!, false);
+		assert.equal("pendingProblem" in (await chatStore.getChat(chat.id))!, false);
 	});
 
 	const pose = () => practicePair(PRACTICE_PROBLEM_TOOL, "p1");
@@ -131,22 +131,22 @@ describe("session kind (practice sessions, 2026-10-04)", () => {
 	];
 
 	for (const { name, messages, pending } of cases) {
-		it(`the list projection: ${name}`, () => {
-			const chat = chatStore.createChat(name, "practice");
-			chatStore.saveMessages(chat.id, messages);
-			const listed = chatStore.listChats().find((c) => c.id === chat.id);
+		it(`the list projection: ${name}`, async () => {
+			const chat = await chatStore.createChat(name, "practice");
+			await chatStore.saveMessages(chat.id, messages);
+			const listed = (await chatStore.listChats()).find((c) => c.id === chat.id);
 			assert.equal(listed?.pendingProblem, pending);
 			assert.equal(listed?.pendingQuestion, false, "practice status does not manufacture a teaching question");
 		});
 	}
 
 	for (const stopReason of ["aborted", "error"] as const) {
-		it(`an ${stopReason} generation with no pose acknowledgement never waits for input`, () => {
-			const chat = chatStore.createChat(stopReason, "practice");
+		it(`an ${stopReason} generation with no pose acknowledgement never waits for input`, async () => {
+			const chat = await chatStore.createChat(stopReason, "practice");
 			const [call] = pose();
 			assert.ok(call?.role === "assistant");
-			chatStore.saveMessages(chat.id, [{ ...call, stopReason }]);
-			assert.equal(chatStore.listChats().find((c) => c.id === chat.id)?.pendingProblem, false);
+			await chatStore.saveMessages(chat.id, [{ ...call, stopReason }]);
+			assert.equal((await chatStore.listChats()).find((c) => c.id === chat.id)?.pendingProblem, false);
 		});
 	}
 });

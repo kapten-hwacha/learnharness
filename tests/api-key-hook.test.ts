@@ -36,9 +36,13 @@ function fauxEngine(): PiEngine {
 	return { model: faux.getModel(), streamFn: faux.streamSimple };
 }
 
+import { resetMemoryStores } from "../src/store/memory-backend.ts";
+
 describe("the getApiKey-hook fix (native per-provider key resolution)", () => {
-	it("teacher and prober builds expose NO getApiKey hook — pi-ai resolves keys natively", () => {
-		const chatId = chatStore.createChat("getApiKey pin").id;
+	it("teacher and prober builds expose NO getApiKey hook — pi-ai resolves keys natively", async () => {
+		resetMemoryStores();
+		const chat = await chatStore.createChat("getApiKey pin");
+		const chatId = chat.id;
 		const ctx: ProberToolContext = { chatId, chatStore, deliver: () => {}, jobStore, spawn: () => {} };
 		const builds: TeachingAgent[] = [
 			createTeacherAgent(undefined, { engine: fauxEngine() }),

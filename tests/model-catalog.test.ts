@@ -31,6 +31,7 @@ const { readSettings, writeSettings } = await import("../src/store/settings.ts")
 const { SETTINGS_FILE } = await import("../config.ts");
 const { effectiveSettings } = await import("../src/server/stores.ts");
 const { providerKeyPresent } = await import("../src/server/keys.ts");
+const { updateClaudeCodeEnabled } = await import("../src/server/claude-code-config.ts");
 
 // The model-control wave (2026-09-12): pi-ai owns the registry — these pins
 // hold our projection + validation honest against the shipped catalog, and
@@ -59,8 +60,8 @@ function qwenModel() {
 }
 
 describe("the model catalog projection", () => {
-	it("serves the keyed providers' catalogs with the picker's DTO shape", () => {
-		const { models, defaults, providers, slots } = modelCatalog();
+	it("serves the keyed providers' catalogs with the picker's DTO shape", async () => {
+		const { models, defaults, providers, slots } = await modelCatalog();
 		// 0.85.1 ships 366 OpenRouter models — the exact count is pi's, but
 		// the shape and the config models' presence are ours to pin.
 		assert.ok(models.length > 300, `expected a full catalog, got ${models.length}`);
@@ -96,8 +97,8 @@ describe("the model catalog projection", () => {
 		// resolved truth here instead of pinning it: on a scratch worktree
 		// the record is empty (defaults/slots NULL), on the owner's machine
 		// configured slots must surface exactly as configured.
-		const record = readSettings();
-		const strong = effectiveSettings().models.strong;
+		const record = await readSettings();
+		const strong = (await effectiveSettings()).models.strong;
 		if (strong) {
 			assert.ok(defaults, "a configured strong slot yields a default");
 			assert.deepEqual(defaults!.model, { provider: strong.provider, id: strong.id });
@@ -159,8 +160,8 @@ describe("the background roles' resolved pins (rolePins)", () => {
 		assert.equal(pins.visualMaker, null, "vision tier untouched");
 	});
 
-	it("catalogRolePins matches the same resolution the engine wiring uses", () => {
-		const pins = catalogRolePins();
+	it("catalogRolePins matches the same resolution the engine wiring uses", async () => {
+		const pins = await catalogRolePins();
 		for (const role of BACKGROUND_MODEL_ROLES) {
 			assert.ok(pins[role] === null || typeof pins[role]!.model.id === "string");
 		}
@@ -168,10 +169,10 @@ describe("the background roles' resolved pins (rolePins)", () => {
 });
 
 describe("the model slots surface (model slots wave, 2026-09-20)", () => {
-	it("catalogSlots projects the record's tiers — NULL only where a tier holds no model", () => {
+	it("catalogSlots projects the record's tiers — NULL only where a tier holds no model", async () => {
 		// machine-aware (one-fs-owner: READ the record, never pin it)
-		const record = readSettings();
-		const slots = catalogSlots();
+		const record = await readSettings();
+		const slots = await catalogSlots();
 		for (const name of ["strong", "cheap", "vision"] as const) {
 			const stored = record?.models?.[name];
 			if (stored?.model) {
@@ -183,13 +184,13 @@ describe("the model slots surface (model slots wave, 2026-09-20)", () => {
 		}
 	});
 
-	it("catalogProviders reads keys env-wins, fresh per call", () => {
-		const before = catalogProviders().find((p) => p.id === "zai");
+	it("catalogProviders reads keys env-wins, fresh per call", async () => {
+		const before = (await catalogProviders()).find((p) => p.id === "zai");
 		assert.equal(before?.keyPresent, false);
 		const saved = process.env.ZAI_API_KEY;
 		process.env.ZAI_API_KEY = "test-zai-key-1234567890";
 		try {
-			assert.equal(catalogProviders().find((p) => p.id === "zai")?.keyPresent, true);
+			assert.equal((await catalogProviders()).find((p) => p.id === "zai")?.keyPresent, true);
 		} finally {
 			if (saved === undefined) delete process.env.ZAI_API_KEY;
 			else process.env.ZAI_API_KEY = saved;
@@ -341,11 +342,12 @@ describe("pi thinking truth (pinned against pi-ai upgrades)", () => {
 });
 /** Runs fn with PATH and HOME pointed at a temp dir, so the CLI lookup only
  *  finds a claude binary when installed is true. */
-function withClaudeInstalled(installed: boolean, fn: () => void, enabled = true): void {
+async function withClaudeInstalled(installed: boolean, fn: () => void | Promise<void>, enabled = true): Promise<void> {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-catalog-"));
 	const saved = { PATH: process.env.PATH, HOME: process.env.HOME, npm_config_prefix: process.env.npm_config_prefix };
-	const settings = readSettings();
-	writeSettings({ ...(settings ?? { version: 1 }), claudeCode: { enabled } });
+	const settings = await readSettings();
+	await writeSettings({ ...(settings ?? { version: 1 }), claudeCode: { enabled } });
+	updateClaudeCodeEnabled(enabled);
 
 	if (installed) fs.writeFileSync(path.join(dir, "claude"), "#!/bin/sh\n", { mode: 0o755 });
 	process.env.PATH = dir;
@@ -353,49 +355,54 @@ function withClaudeInstalled(installed: boolean, fn: () => void, enabled = true)
 	delete process.env.npm_config_prefix;
 
 	try {
-		fn();
+		await fn();
 	} finally {
 		for (const [name, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[name];
 			else process.env[name] = value;
 		}
-		if (settings) writeSettings(settings);
-		else fs.rmSync(SETTINGS_FILE, { force: true });
+		if (settings) {
+			await writeSettings(settings);
+			updateClaudeCodeEnabled(settings.claudeCode?.enabled === true);
+		} else {
+			await writeSettings({ version: 1 });
+			updateClaudeCodeEnabled(false);
+		}
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 }
 
 describe("the claude-code provider (native CLI authentication, no LearnHarness key)", () => {
-	it("modelCatalog() lists claude-code opus/sonnet/haiku when the CLI is installed", () => {
-		withClaudeInstalled(true, () => {
-			const ids = modelCatalog()
+	it("modelCatalog() lists claude-code opus/sonnet/haiku when the CLI is installed", async () => {
+		await withClaudeInstalled(true, async () => {
+			const ids = (await modelCatalog())
 				.models.filter((m) => m.provider === "claude-code")
 				.map((m) => m.id);
 			assert.deepEqual(ids, ["haiku", "opus", "sonnet"]);
 		});
 	});
 
-	it("catalogProviders() marks claude-code present when the CLI is installed", () => {
-		withClaudeInstalled(true, () => {
-			const row = catalogProviders().find((p) => p.id === "claude-code");
+	it("catalogProviders() marks claude-code present when the CLI is installed", async () => {
+		await withClaudeInstalled(true, async () => {
+			const row = (await catalogProviders()).find((p) => p.id === "claude-code");
 			assert.deepEqual(row, { id: "claude-code", envVar: "", keyPresent: true });
 		});
 	});
 
-	it("catalogProviders() marks claude-code absent and modelCatalog() hides it when the CLI is missing", () => {
-		withClaudeInstalled(false, () => {
-			const row = catalogProviders().find((p) => p.id === "claude-code");
+	it("catalogProviders() marks claude-code absent and modelCatalog() hides it when the CLI is missing", async () => {
+		await withClaudeInstalled(false, async () => {
+			const row = (await catalogProviders()).find((p) => p.id === "claude-code");
 			assert.equal(row?.keyPresent, false);
 			assert.equal(
-				modelCatalog().models.some((m) => m.provider === "claude-code"),
+				(await modelCatalog()).models.some((m) => m.provider === "claude-code"),
 				false,
 			);
 		});
 	});
 
-	it("catalogContextLimits() never advertises placeholder CLI limits, even when installed", () => {
-		withClaudeInstalled(true, () => {
-			assert.equal(catalogContextLimits().has("claude-code:opus"), false);
+	it("catalogContextLimits() never advertises placeholder CLI limits, even when installed", async () => {
+		await withClaudeInstalled(true, async () => {
+			assert.equal((await catalogContextLimits()).has("claude-code:opus"), false);
 		});
 	});
 
@@ -405,13 +412,13 @@ describe("the claude-code provider (native CLI authentication, no LearnHarness k
 		assert.equal(engine.model.id, "sonnet");
 	});
 
-	it('providerKeyPresent("claude-code") requires both explicit opt-in and executable presence', () => {
-		withClaudeInstalled(true, () => assert.equal(providerKeyPresent("claude-code"), true));
-		withClaudeInstalled(false, () => assert.equal(providerKeyPresent("claude-code"), false));
-		withClaudeInstalled(true, () => {
+	it('providerKeyPresent("claude-code") requires both explicit opt-in and executable presence', async () => {
+		await withClaudeInstalled(true, () => assert.equal(providerKeyPresent("claude-code"), true));
+		await withClaudeInstalled(false, () => assert.equal(providerKeyPresent("claude-code"), false));
+		await withClaudeInstalled(true, async () => {
 			assert.equal(providerKeyPresent("claude-code"), false);
-			assert.equal(catalogProviders().find((p) => p.id === "claude-code")?.keyPresent, false);
-			assert(!modelCatalog().models.some((m) => m.provider === "claude-code"));
+			assert.equal((await catalogProviders()).find((p) => p.id === "claude-code")?.keyPresent, false);
+			assert(!(await modelCatalog()).models.some((m) => m.provider === "claude-code"));
 			assert.equal(validateChatSettings({ model: { provider: "claude-code", id: "sonnet" } }).ok, false);
 		}, false);
 	});

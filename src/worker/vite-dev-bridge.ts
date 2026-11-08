@@ -1,9 +1,7 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
-import type { FsMutationOp, HydratedFsSnapshot } from "./host-bridge.ts";
 import { realSourcePath, resolvePolicy } from "../agent/tools/file-access.ts";
 import { resolveSourcePath } from "../agent/tools/fs-shared.ts";
 import { fileAccessPolicy } from "../server/file-access.ts";
@@ -75,34 +73,122 @@ function readBody(req: IncomingMessage): Promise<string> {
 	});
 }
 
-function collectDirFiles(dir: string, baseDir: string, files: Record<string, string>, dirs: string[]) {
-	if (!fs.existsSync(dir)) return;
-	dirs.push(path.posix.normalize(dir));
-	const entries = fs.readdirSync(dir, { withFileTypes: true });
-	for (const entry of entries) {
-		const fullPath = path.join(dir, entry.name);
-		const posixPath = path.posix.normalize(fullPath);
-		if (entry.isDirectory()) {
-			collectDirFiles(fullPath, baseDir, files, dirs);
-		} else if (entry.isFile()) {
-			try {
-				const content = fs.readFileSync(fullPath);
-				files[posixPath] = content.toString("base64");
-			} catch {
-				// Ignore unreadable files
-			}
-		}
-	}
-}
+const FS_MODULE_IDS = new Set(["node:fs", "fs", "node:fs/promises", "fs/promises"]);
+const VIRTUAL_FS_ID = "\0virtual:lh-fs-stub";
+
+const VIRTUAL_FS_CODE = `
+export const existsSync = () => false;
+export const readdirSync = () => [];
+export const readFileSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const writeFileSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const mkdirSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const rmSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const unlinkSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const statSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const lstatSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const realpathSync = (p) => p;
+realpathSync.native = realpathSync;
+export const openSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const readSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const closeSync = () => {};
+export const chmodSync = () => {};
+export const renameSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const accessSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const appendFileSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+export const mkdtempSync = () => { throw new Error("fs is not supported in browser/worker runtime"); };
+
+export const constants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 };
+
+export const readFile = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const writeFile = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const mkdir = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const rm = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const stat = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const readdir = async () => [];
+export const open = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const unlink = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const rename = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const appendFile = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const access = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const realpath = async (p) => p;
+export const lstat = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+export const chmod = async () => {};
+export const mkdtemp = async () => { throw new Error("fs/promises is not supported in browser/worker runtime"); };
+
+export const promises = {
+	readFile,
+	writeFile,
+	mkdir,
+	rm,
+	stat,
+	readdir,
+	open,
+	unlink,
+	rename,
+	appendFile,
+	access,
+	realpath,
+	lstat,
+	chmod,
+	mkdtemp,
+};
+
+const defaultExport = {
+	existsSync,
+	readFileSync,
+	writeFileSync,
+	mkdirSync,
+	rmSync,
+	unlinkSync,
+	readdirSync,
+	statSync,
+	lstatSync,
+	realpathSync,
+	openSync,
+	readSync,
+	closeSync,
+	chmodSync,
+	renameSync,
+	accessSync,
+	appendFileSync,
+	mkdtempSync,
+	constants,
+	promises,
+	readFile,
+	writeFile,
+	mkdir,
+	rm,
+	stat,
+	readdir,
+	open,
+	unlink,
+	rename,
+	appendFile,
+	access,
+	realpath,
+	lstat,
+	chmod,
+	mkdtemp,
+};
+
+export default defaultExport;
+`;
 
 export function lhViteDevBridgePlugin(): Plugin {
 	return {
 		name: "lh-vite-dev-bridge",
+		enforce: "pre",
+		resolveId(id) {
+			if (FS_MODULE_IDS.has(id)) {
+				return VIRTUAL_FS_ID;
+			}
+		},
+		load(id) {
+			if (id === VIRTUAL_FS_ID) {
+				return VIRTUAL_FS_CODE;
+			}
+		},
 		configureServer(server) {
-			const root = path.posix.normalize(process.cwd());
-			const dataDir = path.posix.normalize(process.env.LH_DATA_DIR || path.resolve(root, "data"));
-			const authFile = path.posix.normalize(process.env.LH_AUTH_FILE || path.resolve(root, "auth.json"));
-
 			server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
 				const url = req.url?.split("?")[0];
 
@@ -113,113 +199,6 @@ export function lhViteDevBridgePlugin(): Plugin {
 						res.end(JSON.stringify({ error: "Forbidden dev bridge request" }));
 						return;
 					}
-				}
-
-				if (url === "/__lh_dev/fs-hydrate" && req.method === "GET") {
-					try {
-						const files: Record<string, string> = {};
-						const dirs: string[] = [];
-
-						collectDirFiles(dataDir, dataDir, files, dirs);
-
-						if (fs.existsSync(authFile)) {
-							files[authFile] = fs.readFileSync(authFile).toString("base64");
-						}
-
-						const candidatePaths = [
-							path.resolve(root, "package.json"),
-							path.resolve(root, "src/agent/system-prompt.md"),
-							path.resolve(root, "src/agent/prompts"),
-							path.resolve(root, "skills"),
-						];
-
-						for (const p of candidatePaths) {
-							if (fs.existsSync(p)) {
-								const stat = fs.statSync(p);
-								if (stat.isDirectory()) {
-									collectDirFiles(p, p, files, dirs);
-								} else {
-									files[path.posix.normalize(p)] = fs.readFileSync(p).toString("base64");
-								}
-							}
-						}
-
-						const snapshot: HydratedFsSnapshot = {
-							root,
-							dataDir,
-							authFile,
-							homeDir: os.homedir(),
-							files,
-							dirs,
-						};
-
-						res.setHeader("Content-Type", "application/json");
-						res.statusCode = 200;
-						res.end(JSON.stringify(snapshot));
-					} catch (err) {
-						res.statusCode = 500;
-						res.end(JSON.stringify({ error: String(err) }));
-					}
-					return;
-				}
-
-				if (url === "/__lh_dev/fs-sync" && req.method === "POST") {
-					try {
-						const bodyStr = await readBody(req);
-						const op = JSON.parse(bodyStr) as FsMutationOp;
-
-						const pathsToCheck: string[] = [];
-						if ("path" in op) pathsToCheck.push(op.path);
-						if ("oldPath" in op) pathsToCheck.push(op.oldPath);
-						if ("newPath" in op) pathsToCheck.push(op.newPath);
-
-						for (const p of pathsToCheck) {
-							if (!isAllowedSyncPath(p, dataDir, authFile)) {
-								res.statusCode = 403;
-								res.setHeader("Content-Type", "application/json");
-								res.end(JSON.stringify({ error: `Forbidden path: ${p}` }));
-								return;
-							}
-						}
-
-						switch (op.type) {
-							case "writeFile": {
-								fs.mkdirSync(path.dirname(op.path), { recursive: true });
-								fs.writeFileSync(op.path, Buffer.from(op.dataBase64, "base64"), { mode: op.mode });
-								break;
-							}
-							case "appendFile": {
-								fs.mkdirSync(path.dirname(op.path), { recursive: true });
-								fs.appendFileSync(op.path, Buffer.from(op.dataBase64, "base64"), { mode: op.mode });
-								break;
-							}
-							case "rename": {
-								fs.mkdirSync(path.dirname(op.newPath), { recursive: true });
-								fs.renameSync(op.oldPath, op.newPath);
-								break;
-							}
-							case "unlink": {
-								if (fs.existsSync(op.path)) fs.unlinkSync(op.path);
-								break;
-							}
-							case "mkdir": {
-								fs.mkdirSync(op.path, { recursive: op.recursive, mode: op.mode });
-								break;
-							}
-							case "rm": {
-								if (fs.existsSync(op.path)) fs.rmSync(op.path, { recursive: op.recursive, force: op.force });
-								break;
-							}
-						}
-
-						res.setHeader("Content-Type", "application/json");
-						res.statusCode = 200;
-						res.end(JSON.stringify({ ok: true }));
-					} catch (err) {
-						res.statusCode = 500;
-						res.end(JSON.stringify({ error: String(err) }));
-					}
-					return;
 				}
 
 				if (url === "/__lh_dev/fs-read-external" && req.method === "POST") {

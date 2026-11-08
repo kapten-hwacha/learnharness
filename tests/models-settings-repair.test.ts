@@ -24,6 +24,7 @@ const { piModels, piEngineForSpec } = await import("../src/agent/models.ts");
 const { refreshSubscriptionModels } = await import("../src/agent/subscription-bridge.ts");
 const { modelCatalog, validateModelsSettings } = await import("../src/server/model-catalog.ts");
 const { readSettings: readSettingsRecord, writeSettings: writeSettingsRecord } = await import("../src/store/settings.ts");
+const { resetMemoryStores } = await import("../src/store/memory-backend.ts");
 const { PUT } = await import("../app/api/settings/[section]/route.ts");
 const { clampThinkingLevel, normalizeContext } = await import("@earendil-works/pi-ai");
 const native = piModels().getModels("github-copilot")[0]!;
@@ -49,7 +50,8 @@ async function put(body: unknown) {
 }
 beforeEach(async () => {
 	await connection(false);
-	writeSettingsRecord({ version: 1, models: initial, general: {}, graph: { rendering: false } });
+	resetMemoryStores();
+	await writeSettingsRecord({ version: 1, models: initial, general: {}, graph: { rendering: false } });
 });
 after(() => {
 	if (originalSend) Object.defineProperty(process, "send", originalSend); else delete process.send;
@@ -63,21 +65,21 @@ after(() => {
 for (const slot of slots) test(`${slot} can be replaced while the other disconnected slots remain saved`, async () => {
 	const response = await put({ ...initial, [slot]: { model: replacement, thinkingLevel: "xhigh" } });
 	assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
-	const stored = readSettingsRecord()!;
+	const stored = (await readSettingsRecord())!;
 	assert.deepEqual(stored.models?.[slot], { model: replacement, thinkingLevel: "max" });
 	for (const other of slots.filter((name) => name !== slot)) assert.deepEqual(stored.models?.[other], initial[other]);
 	assert.deepEqual(stored.general, {});
 	assert.deepEqual(stored.graph, { rendering: false });
 	assert.deepEqual((await response.json()).settings, stored);
-	assert(!modelCatalog().models.some((model) => model.provider === copilot.provider), "saving stale pins must not make them available choices");
+	assert(!(await modelCatalog()).models.some((model) => model.provider === copilot.provider), "saving stale pins must not make them available choices");
 });
 
 test("all three slots can be repaired successively without reconnecting", async () => {
 	for (const slot of slots) {
-		const response = await put({ ...readSettingsRecord()!.models, [slot]: { model: replacement } });
+		const response = await put({ ...(await readSettingsRecord())!.models, [slot]: { model: replacement } });
 		assert.equal(response.status, 200);
 	}
-	assert.deepEqual(readSettingsRecord()!.models, Object.fromEntries(slots.map((slot) => [slot, { model: replacement }])));
+	assert.deepEqual((await readSettingsRecord())!.models, Object.fromEntries(slots.map((slot) => [slot, { model: replacement }])));
 });
 
 test("thinking preferences on unchanged disconnected models can be changed, removed, and restored", async () => {
@@ -85,13 +87,13 @@ test("thinking preferences on unchanged disconnected models can be changed, remo
 		const strong = { model: copilot, ...(thinkingLevel ? { thinkingLevel } : {}) };
 		const response = await put({ ...initial, strong });
 		assert.equal(response.status, 200);
-		assert.deepEqual(readSettingsRecord()!.models?.strong, strong);
+		assert.deepEqual((await readSettingsRecord())!.models?.strong, strong);
 	}
 	await connection(true);
 	const engine = piEngineForSpec({ ...copilot, thinkingLevel: "minimal" }, false);
 	assert.equal(engine.level, clampThinkingLevel(native, "minimal"), "reconnected runtime clamps the saved preference");
-	assert.equal((await put(readSettingsRecord()!.models)).status, 200);
-	assert.equal(readSettingsRecord()!.models?.strong?.thinkingLevel, engine.level, "known metadata still clamps on write");
+	assert.equal((await put((await readSettingsRecord())!.models)).status, 200);
+	assert.equal((await readSettingsRecord())!.models?.strong?.thinkingLevel, engine.level, "known metadata still clamps on write");
 });
 
 test("introduced or replaced unknown models still reject, without writing any section", async () => {
@@ -101,32 +103,32 @@ test("introduced or replaced unknown models still reject, without writing any se
 		{ provider: "fixture-unknown-provider", id: copilot.id },
 		{ provider: replacement.provider, id: "fixture-not-in-catalog" },
 	]) {
-		const before = readSettingsRecord();
+		const before = await readSettingsRecord();
 		assert.equal((await put({ ...initial, strong: { model } })).status, 400);
-		assert.deepEqual(readSettingsRecord(), before);
+		assert.deepEqual(await readSettingsRecord(), before);
 	}
-	writeSettingsRecord({ version: 1, models: { strong: initial.strong } });
+	await writeSettingsRecord({ version: 1, models: { strong: initial.strong } });
 	assert.equal((await put({ strong: initial.strong, cheap: initial.strong })).status, 400, "a pin saved in one slot cannot authorize another slot");
 	assert.equal((await put(initial)).status, 400, "missing slots cannot introduce disconnected models");
 });
 
 test("a first models write cannot introduce disconnected selections", async () => {
-	fs.unlinkSync(path.join(directory, "settings.json"));
+	resetMemoryStores();
 	assert.equal((await put(initial)).status, 400);
-	assert.equal(readSettingsRecord(), null);
+	assert.equal(await readSettingsRecord(), null);
 });
 
 test("a replaced stale selection cannot be reintroduced without availability", async () => {
 	assert.equal((await put({ ...initial, strong: { model: replacement } })).status, 200);
 	assert.equal((await put(initial)).status, 400);
-	assert.deepEqual(readSettingsRecord()!.models?.strong?.model, replacement);
+	assert.deepEqual((await readSettingsRecord())!.models?.strong?.model, replacement);
 });
 
 test("slot removal still replaces the whole section, including clearing all slots", async () => {
 	assert.equal((await put({ cheap: initial.cheap })).status, 200);
-	assert.deepEqual(readSettingsRecord()!.models, { cheap: initial.cheap });
+	assert.deepEqual((await readSettingsRecord())!.models, { cheap: initial.cheap });
 	assert.equal((await put({})).status, 200);
-	assert.deepEqual(readSettingsRecord()!.models, {});
+	assert.deepEqual((await readSettingsRecord())!.models, {});
 });
 
 test("unchanged model identity does not bypass body shape validation", async () => {
@@ -135,7 +137,7 @@ test("unchanged model identity does not bypass body shape validation", async () 
 		{ ...initial, strong: { thinkingLevel: "high" } },
 		{ ...initial, strong: { model: { provider: copilot.provider } } },
 	]) assert.equal((await put(body)).status, 400);
-	assert.deepEqual(readSettingsRecord()!.models, initial);
+	assert.deepEqual((await readSettingsRecord())!.models, initial);
 });
 
 test("standalone catalog validation stays strict without a stored section", () => {

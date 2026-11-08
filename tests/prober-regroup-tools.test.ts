@@ -38,29 +38,29 @@ function fakeStores(
 	const sources = [...(over.sources ?? [])];
 
 	const graphStore: GraphStore = {
-		readNodes: () => nodes,
-		appendNode: (n: GraphNode) => nodes.push(n),
-		readChains: () => chains,
-		appendChain: (c: GraphChain) => chains.push(c),
-		readCheckpoints: () => [],
-		appendCheckpoint: () => {},
-		readCoverage: () => [],
-		appendCoverage: () => {},
-		readRegroups: () => regroups,
-		appendRegroup: (r: GraphRegroup) => regroups.push(r),
-		readSources: () => sources,
-		upsertSource: (s: NotesSource) => sources.push(s),
-		deleteSources: () => 0,
-		appendSourceUsage: () => {},
-		readPositions: () => ({}),
-		writePositions: () => {},
-		rewriteLedgers: () => {},
+		readNodes: async () => nodes,
+		appendNode: async (n: GraphNode) => { nodes.push(n); },
+		readChains: async () => chains,
+		appendChain: async (c: GraphChain) => { chains.push(c); },
+		readCheckpoints: async () => [],
+		appendCheckpoint: async () => {},
+		readCoverage: async () => [],
+		appendCoverage: async () => {},
+		readRegroups: async () => regroups,
+		appendRegroup: async (r: GraphRegroup) => { regroups.push(r); },
+		readSources: async () => sources,
+		upsertSource: async (s: NotesSource) => { sources.push(s); },
+		deleteSources: async () => 0,
+		appendSourceUsage: async () => {},
+		readPositions: async () => ({}),
+		writePositions: async () => {},
+		rewriteLedgers: async () => {},
 	} as unknown as GraphStore;
 
 	const chatStore: ChatStore = {
-		listChats: () =>
+		listChats: async () =>
 			(over.chats ?? []).map((c) => ({ ...c, messageCount: 0 }) as unknown as ChatSummary),
-		getChat: (id: string) =>
+		getChat: async (id: string) =>
 			((over.chats ?? []).find((c) => c.id === id) as unknown as ChatRecord) ?? null,
 	} as unknown as ChatStore;
 
@@ -68,10 +68,10 @@ function fakeStores(
 }
 
 const stubJobStore = {
-	createJob: (() => ({})) as never,
-	getJob: (() => undefined) as never,
-	listJobs: (() => []) as never,
-	updateJob: (() => {}) as never,
+	createJob: (async () => ({})) as never,
+	getJob: (async () => undefined) as never,
+	listJobs: (async () => []) as never,
+	updateJob: (async () => {}) as never,
 } as unknown as JobStore;
 
 const baseCtx = {
@@ -389,7 +389,7 @@ describe("regroup_propositions tool", () => {
 
 		assert.equal(res, expected);
 
-		const appended = graphStore.readRegroups();
+		const appended = await graphStore.readRegroups();
 		assert.equal(appended.length, 2);
 		assert.equal(appended[0]?.nodeId, "n_123");
 		assert.equal(appended[0]?.targetSessionId, "chat_la");
@@ -459,7 +459,7 @@ describe("regroup_propositions tool", () => {
 
 		assert.match(res, /No propositions regrouped\./);
 		assert.match(res, /Already in "Linear Algebra": Vector Space \(n_la_1\)/);
-		assert.equal(graphStore.readRegroups().length, 0);
+		assert.equal((await graphStore.readRegroups()).length, 0);
 	});
 
 	it("reports unknown node IDs gracefully", async () => {
@@ -473,7 +473,7 @@ describe("regroup_propositions tool", () => {
 
 		assert.match(res, /No propositions regrouped\./);
 		assert.match(res, /Unknown proposition ID\(s\): n_ghost/);
-		assert.equal(graphStore.readRegroups().length, 0);
+		assert.equal((await graphStore.readRegroups()).length, 0);
 	});
 
 	it("handles mixed valid, already-current, and unknown node IDs", async () => {
@@ -500,7 +500,7 @@ describe("regroup_propositions tool", () => {
 		assert.match(res, /- Valid Node \(n_valid\)/);
 		assert.match(res, /Already in "Linear Algebra": Current Node \(n_curr\)/);
 		assert.match(res, /Unknown proposition ID\(s\): n_missing/);
-		assert.equal(graphStore.readRegroups().length, 1);
+		assert.equal((await graphStore.readRegroups()).length, 1);
 	});
 });
 
@@ -529,6 +529,6 @@ describe("prober tools plumbing via createProberTools", () => {
 		})).details as string;
 
 		assert.match(regroupRes, /Regrouped 1 proposition\(s\) to "Linear Algebra":/);
-		assert.equal(graphStore.readRegroups()[0]?.targetSessionId, "chat_la");
+		assert.equal((await graphStore.readRegroups())[0]?.targetSessionId, "chat_la");
 	});
 });

@@ -104,7 +104,7 @@ describe("incrementalLayout", () => {
 });
 
 describe("settleGraphLayout", () => {
-	it("dedupes repeated node lines, runs, and writes the whole ledger", () => {
+	it("dedupes repeated node lines, runs, and writes the whole ledger", async () => {
 		const written: Record<string, Position>[] = [];
 		const lines = [node("a"), node("b"), node("c"), node("d"), node("a")]; // "a" appended twice
 		const store = {
@@ -113,16 +113,16 @@ describe("settleGraphLayout", () => {
 			readPositions: () => ({} as Record<string, Position>),
 			writePositions: (p: Record<string, Position>) => void written.push(p),
 		};
-		settleGraphLayout(store);
+		await settleGraphLayout(store);
 		assert.equal(written.length, 1);
 		// arg_ab is single-premise → collapsed to a direct arrow, NO imp
 		// node; arg_bcd is multi-premise → its imp node joins the layout.
 		assert.deepEqual(Object.keys(written[0]!).sort(), ["a", "arg_bcd", "b", "c", "d"], "positions for the unique nodes and ONLY the multi-premise chain's imp node");
 	});
 
-	it("does nothing on an empty graph", () => {
+	it("does nothing on an empty graph", async () => {
 		const written: Record<string, Position>[] = [];
-		settleGraphLayout({
+		await settleGraphLayout({
 			readNodes: () => [],
 			readChains: () => [],
 			readPositions: () => ({} as Record<string, Position>),
