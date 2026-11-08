@@ -266,8 +266,8 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 		}
 	};
 	requestCycle?.bindRelease(handle);
-	agent.subscribe((event) => {
-		if (!requestCycle?.hold(event)) void handle(event);
+	agent.subscribe(async (event) => {
+		if (!requestCycle?.hold(event)) await handle(event);
 	});
 
 	void (async () => {
