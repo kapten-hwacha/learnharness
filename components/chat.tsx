@@ -278,7 +278,7 @@ export function Chat({
 	// (core/view.ts projectView); sends are ONE explicit input event each
 	// ({chatId, input} — the stash indirection died with the SDK), and the
 	// turn stream is the VERBATIM AgentEvent passthrough the server emits.
-	const { messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, setMessages, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled, localStreamRef: sessionLocalStreamRef } =
+	const { messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, setMessages, adoptRecord, status, error, stop, settle, clearError, resumeStream, setReattachSettled, localStreamRef: sessionLocalStreamRef } =
 		useChatSession({ chatId, initialMessages, initialError, initiallyInFlight });
 	const router = useRouter();
 	useStudyTracker(chatId, chatHasStarted(nativeMessages));
@@ -955,6 +955,16 @@ export function Chat({
 	// tab) is now ANNOUNCED on the events channel — the turn-started
 	// subscription (below the jobs poll) attaches to it live. No polling
 	// window can expire; the freeze class is gone.
+	const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(() => {
+		return () => {
+			if (settleTimerRef.current !== null) {
+				clearTimeout(settleTimerRef.current);
+				settleTimerRef.current = null;
+			}
+		};
+	}, []);
+
 	const prevStatusRef = useRef(status);
 	useEffect(() => {
 		const transitioned = prevStatusRef.current !== "ready" && status === "ready";
@@ -962,6 +972,10 @@ export function Chat({
 		// branch — the re-fire-on-dep-churn wart, fixed S3).
 		prevStatusRef.current = status;
 		if (!transitioned) return;
+		if (settleTimerRef.current !== null) {
+			clearTimeout(settleTimerRef.current);
+			settleTimerRef.current = null;
+		}
 		setTurnInFlight(false);
 		// immediate: turns-only refetch — the stats bar updates even while
 		// the server's persist/endTurn lags the client by milliseconds
@@ -1154,7 +1168,26 @@ export function Chat({
 			// the record. (If [DONE] somehow won this race instead, this branch
 			// didn't run and the fully-idle branch below already synced.)
 			settleAnnouncedRef.current = true;
+			// FALLBACK SAFETY NET (Option A): allow 500ms grace period for the stream's
+			// natural [DONE] to flip status to ready. If the stream stalls or drops without
+			// [DONE], force settlement so the client never stays trapped in thinking.
+			if (settleTimerRef.current === null) {
+				settleTimerRef.current = setTimeout(() => {
+					settleTimerRef.current = null;
+					if (statusRef.current !== "ready") {
+						setTurnInFlight(false);
+						settle();
+						settleAnnouncedRef.current = false;
+						if (statusRef.current === "error") clearError();
+						void syncFromServer();
+					}
+				}, 500);
+			}
 			return;
+		}
+		if (settleTimerRef.current !== null) {
+			clearTimeout(settleTimerRef.current);
+			settleTimerRef.current = null;
 		}
 		setTurnInFlight(false);
 		if (statusRef.current === "error") {
