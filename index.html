@@ -55,12 +55,15 @@
 			})();
 			window.addEventListener("error", function (e) {
 				var msg = e.error ? (e.error.stack || e.error.message) : (e.message || String(e));
+				if (!msg || msg.indexOf("ResizeObserver") !== -1) {
+					return;
+				}
 				if (e.filename) {
 					msg += "\n\nSource: " + e.filename + ":" + e.lineno + (e.colno ? ":" + e.colno : "");
 				}
 				console.error("[LH Boot Error]", msg);
 				var root = document.getElementById("root");
-				if (msg === "Script error." && root && root.children.length > 0) {
+				if (root && root.children.length > 0) {
 					return;
 				}
 				var el = document.getElementById("lh-boot-error-overlay");
@@ -77,6 +80,9 @@
 			});
 			window.addEventListener("unhandledrejection", function (e) {
 				var msg = e.reason ? (e.reason.stack || e.reason.message || String(e.reason)) : String(e);
+				if (!msg || msg.indexOf("ResizeObserver") !== -1) {
+					return;
+				}
 				console.error("[LH Boot Unhandled Rejection]", msg);
 				var root = document.getElementById("root");
 				if (root && root.children.length > 0) {
