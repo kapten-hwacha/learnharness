@@ -17,6 +17,7 @@ import {
 	isImpNodeId,
 	boxBlurRound,
 	fitTransform,
+	isCameraInBounds,
 	labelAlpha,
 	pickNearest,
 	wrapRegionLabel,
@@ -412,5 +413,42 @@ describe("applyClusterLabels (the label-only rename channel)", () => {
 			W, MAXL, measure,
 		);
 		assert.equal(changed, false);
+	});
+});
+
+describe("isCameraInBounds (defensive camera validation against graph bounds)", () => {
+	const bbox = { minX: -28, maxX: 607, minY: -1810, maxY: -798 };
+	const viewW = 1000;
+	const viewH = 800;
+
+	it("returns true for a normal framed camera", () => {
+		const t = fitTransform(bbox, viewW, viewH, 40);
+		assert.equal(isCameraInBounds(bbox, t, viewW, viewH), true);
+	});
+
+	it("returns true when zoomed into a node within the graph", () => {
+		// Zoomed in 20x onto (300, -1200)
+		const k = 20;
+		const t = { k, x: viewW / 2 - 300 * k, y: viewH / 2 - (-1200) * k };
+		assert.equal(isCameraInBounds(bbox, t, viewW, viewH), true);
+	});
+
+	it("returns false for a legacy / out-of-bounds camera millions of pixels away", () => {
+		// Legacy coordinates stored from previous graph layout (over 3 million pixels away)
+		const staleCamera = { k: 40, x: -3291276.033455208, y: -4680922.027423826 };
+		assert.equal(isCameraInBounds(bbox, staleCamera, viewW, viewH), false);
+	});
+
+	it("returns false for invalid, NaN or non-positive k values", () => {
+		assert.equal(isCameraInBounds(bbox, { k: 0, x: 0, y: 0 }, viewW, viewH), false);
+		assert.equal(isCameraInBounds(bbox, { k: -1, x: 0, y: 0 }, viewW, viewH), false);
+		assert.equal(isCameraInBounds(bbox, { k: Number.NaN, x: 0, y: 0 }, viewW, viewH), false);
+		assert.equal(isCameraInBounds(bbox, { k: 1, x: Number.NaN, y: 0 }, viewW, viewH), false);
+	});
+
+	it("returns true if viewport dimensions are unmeasured (< 10px)", () => {
+		// Viewport not ready yet; defer check so it does not falsely trigger
+		const staleCamera = { k: 40, x: -3291276, y: -4680922 };
+		assert.equal(isCameraInBounds(bbox, staleCamera, 0, 0), true);
 	});
 });

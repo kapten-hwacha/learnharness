@@ -435,6 +435,44 @@ export function fitTransform(
 	return { x: w / 2 - cx * k, y: h / 2 - cy * k, k };
 }
 
+/**
+ * Bounds check for persisted or restored camera transforms.
+ * Returns true if the camera's viewport in world coordinates overlaps
+ * with the graph's bounding box (expanded by a generous padding margin).
+ * Returns false if the camera is pointing into empty space far outside
+ * the graph (e.g. legacy coordinate space or corrupted state).
+ */
+export function isCameraInBounds(
+	bbox: { minX: number; maxX: number; minY: number; maxY: number },
+	transform: { x: number; y: number; k: number },
+	viewW: number,
+	viewH: number,
+): boolean {
+	if (viewW < 10 || viewH < 10) return true; // Viewport not measured yet; defer check
+	const { x: tx, y: ty, k } = transform;
+	if (!Number.isFinite(k) || k <= 0 || !Number.isFinite(tx) || !Number.isFinite(ty)) {
+		return false;
+	}
+	const graphW = Math.max(bbox.maxX - bbox.minX, 100);
+	const graphH = Math.max(bbox.maxY - bbox.minY, 100);
+	const viewWorldW = viewW / k;
+	const viewWorldH = viewH / k;
+	const marginX = Math.max(graphW * 3, viewWorldW * 3);
+	const marginY = Math.max(graphH * 3, viewWorldH * 3);
+
+	const expandedMinX = bbox.minX - marginX;
+	const expandedMaxX = bbox.maxX + marginX;
+	const expandedMinY = bbox.minY - marginY;
+	const expandedMaxY = bbox.maxY + marginY;
+
+	const vMinX = -tx / k;
+	const vMaxX = (viewW - tx) / k;
+	const vMinY = -ty / k;
+	const vMaxY = (viewH - ty) / k;
+
+	return vMaxX >= expandedMinX && vMinX <= expandedMaxX && vMaxY >= expandedMinY && vMinY <= expandedMaxY;
+}
+
 /** The arrowhead geometry for a directed edge a→b: shaft endpoints
  *  (clear of both node discs) and the head triangle (tip on the target
  *  disc edge, wideness = 0.8 × head length — the sigma arrow shape). */
@@ -694,6 +732,7 @@ export class GraphCanvasRenderer {
 		canvas.addEventListener("pointerdown", this.onPointerDown);
 		canvas.addEventListener("pointerup", this.onPointerUp);
 		canvas.addEventListener("pointerleave", this.onPointerLeave);
+		canvas.addEventListener("dblclick", this.onDoubleClick);
 		// Right-click → the caller's context menu (node interlude). Always
 		// preventDefault: the native menu on a full-bleed custom canvas is
 		// never useful; the caller decides what (if anything) opens.
@@ -726,7 +765,12 @@ export class GraphCanvasRenderer {
 			const wx = (prevW / 2 - tx) / k;
 			const wy = (prevH / 2 - ty) / k;
 			this.syncSize();
-			if (!this.hasFit) this.fit(); // first real size → fit once
+			const outOfBounds =
+				this.worldBBox !== null &&
+				this.viewW >= 10 &&
+				this.viewH >= 10 &&
+				!isCameraInBounds(this.worldBBox, this.transform, this.viewW, this.viewH);
+			if (!this.hasFit || outOfBounds) this.fit(); // first real size or out-of-bounds camera → fit
 			else {
 				this.refreshFitZoom(); // the gate's "1×" is viewport-bound
 				// Center-anchor (2026-09-17, owner): same world point under
@@ -765,7 +809,11 @@ export class GraphCanvasRenderer {
 			if (n.y > maxY) maxY = n.y;
 		}
 		this.worldBBox = { minX, maxX, minY, maxY };
-		if (!this.hasFit && data.nodes.length > 0) this.fit();
+		const w = this.canvas.clientWidth;
+		const h = this.canvas.clientHeight;
+		const outOfBounds =
+			w >= 10 && h >= 10 && !isCameraInBounds(this.worldBBox, this.transform, w, h);
+		if ((!this.hasFit || outOfBounds) && data.nodes.length > 0) this.fit();
 		// The camera may be user-restored (constructor initialCamera) — the
 		// gate's "1×" reference still needs the fresh bbox's fit zoom.
 		else this.refreshFitZoom();
@@ -908,6 +956,7 @@ export class GraphCanvasRenderer {
 		this.canvas.removeEventListener("pointerdown", this.onPointerDown);
 		this.canvas.removeEventListener("pointerup", this.onPointerUp);
 		this.canvas.removeEventListener("pointerleave", this.onPointerLeave);
+		this.canvas.removeEventListener("dblclick", this.onDoubleClick);
 		this.canvas.removeEventListener("contextmenu", this.onContextMenu);
 		this.canvas.style.cursor = "";
 	}
@@ -1039,6 +1088,15 @@ export class GraphCanvasRenderer {
 		const pos = this.eventPos(e);
 		const node = this.pickAt(pos.x, pos.y);
 		this.callbacks.onContext(node?.id ?? null, pos);
+	};
+
+	/** Double-click on empty stage: re-center and frame the graph. */
+	private onDoubleClick = (e: MouseEvent) => {
+		const pos = this.eventPos(e);
+		const node = this.pickAt(pos.x, pos.y);
+		if (!node) {
+			this.fit();
+		}
 	};
 
 	private onPointerLeave = () => {
