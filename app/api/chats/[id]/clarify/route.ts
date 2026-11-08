@@ -4,7 +4,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 	const { id } = await params;
 	const toolCallId = new URL(req.url).searchParams.get("toolCallId") ?? "";
 	if (!toolCallId) return Response.json({ error: "toolCallId is required" }, { status: 400 });
-	const thread = clarifyThread(id, toolCallId);
+	const thread = await clarifyThread(id, toolCallId);
 	if (thread === null) return Response.json({ error: "Not found" }, { status: 404 });
 	return Response.json({ thread });
 }

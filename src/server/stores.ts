@@ -13,7 +13,12 @@ import { jobStore } from "../store/jobs.ts";
 import { settingsStore } from "../store/settings.ts";
 import { studyStore } from "../store/study.ts";
 import { resolveSettings, type EffectiveSettings } from "../core/settings-resolution.ts";
+import type { UserSettings } from "../core/settings.ts";
 import { syncCustomProvider } from "./custom-provider.ts";
+import { updateClaudeCodeEnabled } from "./claude-code-config.ts";
+import { updateCliproxyEnabled } from "./cliproxy-config.ts";
+import { refreshFileAccessSettings } from "./file-access.ts";
+import { updateCachedSearchEngine } from "./search.ts";
 /** The wired adapters. Satisfies core/graph.ts's GraphDeps structurally. */
 export const stores = {
 	chatStore,
@@ -26,6 +31,12 @@ export const stores = {
 
 export type Stores = typeof stores;
 
+let cachedSettings: UserSettings | null = null;
+
+export function currentSettings(): UserSettings | null {
+	return cachedSettings;
+}
+
 /**
  * The resolved view of the settings record (core/settings-resolution.ts):
  * every knob concrete over its factory default — EXCEPT MODELS (BYOK all
@@ -34,11 +45,19 @@ export type Stores = typeof stores;
  * fresh on every call — the record is a small file and turns are rare, so
  * no caching layer (stale toggles after a settings PUT would be worse).
  */
-export function effectiveSettings(): EffectiveSettings {
-	return resolveSettings(settingsStore.readSettings());
+export async function effectiveSettings(): Promise<EffectiveSettings> {
+	const raw = await settingsStore.readSettings();
+	cachedSettings = raw;
+	updateClaudeCodeEnabled(raw?.claudeCode?.enabled === true);
+	updateCliproxyEnabled(raw?.cliproxy?.enabled === true);
+	updateCachedSearchEngine(raw?.agent?.search?.engine);
+	void refreshFileAccessSettings();
+	return resolveSettings(raw);
 }
+
+void settingsStore.readSettings().then((s) => { cachedSettings = s; });
 
 // Boot: register the custom endpoint (when configured) into piModels(); the
 // POST /api/custom-provider route re-syncs after every connect.
-syncCustomProvider();
-purgeLegacyLedgers();
+void syncCustomProvider();
+void purgeLegacyLedgers();

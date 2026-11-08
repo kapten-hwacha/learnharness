@@ -33,12 +33,13 @@ import { healEncodedArguments, healToolRecord } from "./heal.ts";
 /** The record-reading context the gates need (the plan-tools idiom). */
 export interface PracticeToolContext {
 	chatId: string;
-	chatStore: { getChat(id: string): { messages: LhMessage[]; kind?: string } | null };
+	chatStore?: { getChat(id: string): unknown };
+	record?: { messages: LhMessage[]; kind?: string } | null;
 	/** The WHOLE-graph node list, read fresh per pose (owner round 9 — the
 	 *  mastery-trace contract): targets validate against every proposition,
 	 *  not just the session's picks, so pickless sessions and future
 	 *  graph-tools poses stay valid. Absent (tests) = no validation. */
-	graphNodes?: () => ReadonlyArray<Pick<import("../../core/contracts/graph.ts").GraphNode, "id" | "name">>;
+	graphNodes?: () => Promise<ReadonlyArray<Pick<import("../../core/contracts/graph.ts").GraphNode, "id" | "name">>> | ReadonlyArray<Pick<import("../../core/contracts/graph.ts").GraphNode, "id" | "name">>;
 	/** THE RARELY-NEEDED SET (owner round 10, 2026-10-05): the map readers
 	 *  behind the SAME settings gate as the prober's (graphToolsEnabled at
 	 *  the composition root); the research + pdf jobs (both keyless).
@@ -65,7 +66,8 @@ export interface PracticeGate {
 /** Seed the turn's gate from the record (result-aware activeProblemOf —
  *  only a cleanly-posed problem counts). */
 export function createPracticeGate(ctx: PracticeToolContext): PracticeGate {
-	const record = ctx.chatStore.getChat(ctx.chatId);
+	const raw = ctx.record ?? (typeof ctx.chatStore?.getChat === "function" ? ctx.chatStore.getChat(ctx.chatId) : null);
+	const record = raw && typeof raw === "object" && "messages" in raw ? (raw as { messages: LhMessage[] }) : null;
 	const active = record ? activeProblemOf(record.messages) : null;
 	return { problemActive: active !== null, targets: active && Array.isArray((active.input as { target?: unknown }).target) ? ((active.input as { target: string[] }).target) : [] };
 }
@@ -130,6 +132,9 @@ export function problemTool(
 				return { ...(healed as Record<string, unknown>), target: undefined } as never;
 			}
 			const list = graphNodes();
+			if (list instanceof Promise) {
+				return healed as never;
+			}
 			const normalized = target.map((t) =>
 				typeof t === "string" ? (resolveTargetId(t, list) ?? t) : t,
 			);
@@ -148,9 +153,10 @@ export function problemTool(
 			// freely. A one-line rejection — the proposition list already
 			// sits in the agent's context (the [id] marker); no re-listing.
 			// The message teaches the exit: omitting always works.
+			let list: ReadonlyArray<Pick<import("../../core/contracts/graph.ts").GraphNode, "id" | "name">> | undefined;
 			if (graphNodes && input.target && input.target.length > 0) {
-				const list = graphNodes();
-				const unknown = input.target.filter((t) => resolveTargetId(t, list) === null);
+				list = await graphNodes();
+				const unknown = input.target.filter((t) => resolveTargetId(t, list!) === null);
 				if (unknown.length > 0) {
 					return invalidInputResult("problem", [
 						`target ${JSON.stringify(unknown)} is not a known proposition — targets must be proposition ids from the session context; if the material is not in the map, omit target entirely`,
@@ -158,7 +164,9 @@ export function problemTool(
 				}
 			}
 			gate.problemActive = true;
-			gate.targets = Array.isArray(input.target) ? [...input.target] : [];
+			gate.targets = Array.isArray(input.target)
+				? (list ? input.target.map((t) => resolveTargetId(t, list!) ?? t) : [...input.target])
+				: [];
 			return problemResult();
 		},
 	};

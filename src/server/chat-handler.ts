@@ -32,7 +32,7 @@ import { setFileAccessPolicy } from "../agent/tools/file-access.ts";
 import { fileAccessPolicy } from "./file-access.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
-import { effectiveSettings, stores } from "./stores.ts";
+import { currentSettings, effectiveSettings, stores } from "./stores.ts";
 import { searchAvailable, searchProvider } from "./search.ts";
 import { providerKeyPresent } from "./keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
@@ -183,14 +183,14 @@ setTurnRunner(async (chatId, input) => {
  *  flows through to the per-need refusal gates (runner/extraction), read
  *  FRESH so a settings PUT between dispatch and spawn lands. */
 function resolveEngine(role: ModelRole): PiEngine | undefined {
-	const spec = resolveRoleSpec(role, stores.settingsStore.readSettings());
+	const spec = resolveRoleSpec(role, currentSettings());
 	return spec ? piEngineForSpec(spec, true, undefined, retentionForSlot(ROLE_SLOT[role])) : undefined;
 }
 
 /** Slot policy is independent of model overrides. Read fresh per operation,
  * including parked conversations, background loops and compaction. */
 function retentionForSlot(slot: ModelSlotName) {
-	return () => stores.settingsStore.readSettings()?.models?.[slot]?.cacheRetention;
+	return () => currentSettings()?.models?.[slot]?.cacheRetention;
 }
 
 setJobRespawn((jobId) => void jobRunner.runJob(jobId));
@@ -237,7 +237,7 @@ export async function handleChatInput(
 	input: TurnInput,
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
 ): Promise<Response> {
-	let record = stores.chatStore.getChat(chatId);
+	let record = await stores.chatStore.getChat(chatId);
 	if (!record) {
 		return Response.json({ error: "Unknown chat" }, { status: 404 });
 	}
@@ -298,7 +298,7 @@ export async function handleChatInput(
 	// Placement is deliberate: BEFORE beginTurn (no liveness effects), the
 	// write-ahead persist (nothing durable changes), and every downstream
 	// resolution (jobs/extraction gate per-need on their own tiers).
-	const effective = effectiveSettings();
+	const effective = await effectiveSettings();
 	const conversation = resolveConversationSpec(record.settings, effective.models.strong);
 	if (!conversation) {
 		const envelope = modelsNotConfigured(["strong"]);
@@ -353,6 +353,7 @@ export async function handleChatInput(
 		preparedAttachments = preparedAttachments.map(({ renderedImages: _ignored, ...rest }) => rest);
 	}
 	const modelIdForCompaction = `${conversationEngine.model.provider}:${conversationEngine.model.id}`;
+	const limits = await catalogContextLimits();
 	await ensureCompacted(
 		{
 			chatStore: stores.chatStore,
@@ -362,13 +363,13 @@ export async function handleChatInput(
 			kind: record.kind === "practice" ? "practice" : hasProbeDone(record.messages) ? "teach" : "probe",
 			thresholdTokens: effectiveThresholdTokens(
 				effective.compaction?.thresholdTokens,
-				catalogContextLimits().get(modelIdForCompaction),
+				limits.get(modelIdForCompaction),
 			),
 			systemPromptTokens: Math.ceil(composeInstructions(record.kind === "practice" ? "practice" : "teacher").length / 4),
 		},
 		chatId,
 	);
-	const compactedRecord = stores.chatStore.getChat(chatId);
+	const compactedRecord = await stores.chatStore.getChat(chatId);
 	if (!compactedRecord) return Response.json({ error: "Unknown chat" }, { status: 404 });
 	record = compactedRecord;
 	// Recompute Retry eligibility on current truth, still before beginTurn.
@@ -416,7 +417,7 @@ export async function handleChatInput(
 	// the composer gates), so adjacency holds by construction.
 	if (input.type === "answer" && hasUnresolvedQuestion([...record.messages, ...appends])) {
 		const merged = [...record.messages, ...appends];
-		try { stores.chatStore.saveMessages(chatId, merged); }
+		try { await stores.chatStore.saveMessages(chatId, merged); }
 		catch (err) {
 			console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
 			return new Response("Your input could not be saved. Please try again.", { status: 500 });
@@ -449,7 +450,7 @@ export async function handleChatInput(
 	const stagedAutomatic = isSubscriptionProvider(conversation.provider) && input.type === "steers";
 	let persistBaseCount = stagedAutomatic ? record.messages.length : agentMessages.length;
 	try {
-		if (!stagedAutomatic) stores.chatStore.saveMessages(chatId, merged);
+		if (!stagedAutomatic) await stores.chatStore.saveMessages(chatId, merged);
 	} catch (err) {
 		console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
 		endTurn(chatId);
@@ -520,7 +521,7 @@ export async function handleChatInput(
 	let softCapReached = false;
 	if (record.kind !== "practice" && teaching) {
 		try {
-			const studyStatus = getChatStudyStatus(chatId);
+			const studyStatus = await getChatStudyStatus(chatId);
 			softCapReached = studyStatus.softCapReached;
 		} catch {
 			// Minimal test environments without study store wired
@@ -558,6 +559,7 @@ export async function handleChatInput(
 			? createPracticeAgent(
 					{
 						chatId,
+						record,
 						chatStore: stores.chatStore,
 						// TARGET VALIDATION (owner round 9): the practice tools read the
 						// WHOLE graph fresh per pose — targets validate against every
@@ -657,7 +659,7 @@ export async function handleChatInput(
 				return "An error occurred.";
 			},
 			onSettleError: settlementErrorText,
-			onSettleFailure: (error, reportedErrorText) => {
+			onSettleFailure: async (error, reportedErrorText) => {
 				// POST only acknowledges acceptance; the submitter may attach
 				// after this turn has already failed and left the registry.
 				rememberTurnFailure(chatId, reportedErrorText ?? settlementErrorText(error));
@@ -667,21 +669,21 @@ export async function handleChatInput(
 				// The canonical save may have succeeded before later bookkeeping
 				// threw. Reconcile against actual durability, never replay input
 				// merely because usage/extraction/other settlement work failed.
-				const persisted = stores.chatStore.getChat(chatId)?.messages ?? [];
+				const persisted = (await stores.chatStore.getChat(chatId))?.messages ?? [];
 				reconcileUserSteers(chatId, persisted);
 				settleSteers(chatId, persisted, true, constructed);
 			},
-			onFinish: (turnMessages, isAborted) => {
+			onFinish: async (turnMessages, isAborted) => {
 				// Wave B: append only messages past the temporary agent prefix.
 				// Retry's saved record still includes its earlier failed attempts.
-				const stamped = persistTurn(stores.chatStore, chatId, persistBaseCount, turnMessages, isAborted);
-				noteSteersDurable(chatId, stores.chatStore.getChat(chatId)?.messages ?? stamped);
+				const stamped = await persistTurn(stores.chatStore, chatId, persistBaseCount, turnMessages, isAborted);
+				noteSteersDurable(chatId, (await stores.chatStore.getChat(chatId))?.messages ?? stamped);
 				// usage log append (idempotent per turn id) — the stats bar
 				// refolds this on the client after the turn settles. The
 				// provenance message is the turn's FIRST new assistant message.
 				const response = stamped.find((m) => (m as { role?: string }).role === "assistant");
 				if (response && steps.length > 0) {
-					stores.chatStore.appendTurnUsage(chatId, {
+					await stores.chatStore.appendTurnUsage(chatId, {
 						id: turnUsageId,
 						messageId: response.id,
 						at: new Date().toISOString(),
@@ -698,7 +700,7 @@ export async function handleChatInput(
 					// Fresh per-turn read of the graph section's chunk budget
 					// (extraction-UX redesign, 2026-09-24): the trigger compares
 					// against it and the pipeline's batches share it.
-					triggerExtraction(stores, extraction, chatId, effective.graph.extractionChunkTokens);
+					await triggerExtraction(stores, extraction, chatId, effective.graph.extractionChunkTokens);
 				}
 				// PARKED DISMISSAL (owner, 2026-10-04): a dismissal that arrived
 				// mid-turn was parked by the dismiss route (202); now that
@@ -706,7 +708,7 @@ export async function handleChatInput(
 				// real truth — BEFORE endTurn, so "turn-settled" guarantees a
 				// subsequent fetch reads the dismissal already in the record
 				// (the same ordering law as persistTurn itself).
-				applyParkedDismissal(stores.chatStore, chatId);
+				await applyParkedDismissal(stores.chatStore, chatId);
 				// LAST: a poller that sees not-in-flight must read an already-persisted
 				// record — endTurn only after persistTurn has done its job.
 				endTurn(chatId);
@@ -737,15 +739,16 @@ export async function handleChatInput(
 				// tests (the extraction precedent — scripted chats are
 				// fixtures; the service itself is pinned directly).
 				if (process.env.NODE_ENV !== "test" && (!requestCycle || requestCycle.dispatched))
-					kickCompaction(() => {
-						const fresh = effectiveSettings();
-						const spec = resolveConversationSpec(stores.chatStore.getChat(chatId)?.settings, fresh.models.strong);
+					void kickCompaction(async () => {
+						const fresh = await effectiveSettings();
+						const spec = resolveConversationSpec((await stores.chatStore.getChat(chatId))?.settings, fresh.models.strong);
 						if (!spec || !connectionBackgroundAllowed(spec.provider)) return null;
 						let kickEngine: PiEngine;
 						try { kickEngine = piEngineForSpec(spec, true, undefined, retentionForSlot("strong")); } catch { return null; }
 						const kickModelId = `${kickEngine.model.provider}:${kickEngine.model.id}`;
-						const freshRecord = stores.chatStore.getChat(chatId);
+						const freshRecord = await stores.chatStore.getChat(chatId);
 						if (!freshRecord) return null;
+						const limits = await catalogContextLimits();
 						return {
 							chatStore: stores.chatStore,
 							engine: kickEngine,
@@ -754,7 +757,7 @@ export async function handleChatInput(
 							kind: freshRecord.kind === "practice" ? "practice" : hasProbeDone(freshRecord.messages) ? "teach" : "probe",
 							thresholdTokens: effectiveThresholdTokens(
 								fresh.compaction?.thresholdTokens,
-								catalogContextLimits().get(kickModelId),
+								limits.get(kickModelId),
 							),
 							systemPromptTokens: Math.ceil(composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher").length / 4),
 						};

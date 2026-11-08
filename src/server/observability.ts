@@ -66,16 +66,16 @@ export interface ActivityExtraction {
  *  graph changed underneath me" (a merge landed, a deletion purged) and
  *  refetch clusters/layout. Reads never move it; the DELETE response
  *  returns the same stamp. */
-export function activityFeed(): {
+export async function activityFeed(): Promise<{
 	jobs: ActivityJob[];
 	extractions: ActivityExtraction[];
 	graphRevision: number;
-} {
-	const chats = chatStore.listChats();
-	const limits = catalogContextLimits();
+}> {
+	const chats = await chatStore.listChats();
+	const limits = await catalogContextLimits();
 	const jobs: ActivityJob[] = [];
 	for (const chat of chats) {
-		for (const job of listJobs(chat.id)) {
+		for (const job of await listJobs(chat.id)) {
 			if (job.status === "running") {
 				jobs.push({
 					...job,
@@ -86,24 +86,26 @@ export function activityFeed(): {
 			}
 		}
 	}
-	const extractions: ActivityExtraction[] = extractionStatuses().map((run) => ({
-		id: run.part ? `${run.chatId}#${run.part.i}` : run.chatId,
-		chatId: run.chatId,
-		part: run.part,
-		// The run's own label never reaches this feed (unlike the graph
-		// status route) — the chat store's title, or the bare id for notes
-		// sources, plus the chunk suffix when the source fanned out.
-		title:
-			(run.label ?? chatStore.getChat(run.chatId)?.title ?? run.chatId) +
-			(run.part ? ` · ${run.part.i}/${run.part.n}` : ""),
-		phase: run.phase,
-		startedAt: run.startedAt,
-	}));
+	const extractions: ActivityExtraction[] = await Promise.all(
+		extractionStatuses().map(async (run) => {
+			const chat = await chatStore.getChat(run.chatId);
+			return {
+				id: run.part ? `${run.chatId}#${run.part.i}` : run.chatId,
+				chatId: run.chatId,
+				part: run.part,
+				title:
+					(run.label ?? chat?.title ?? run.chatId) +
+					(run.part ? ` · ${run.part.i}/${run.part.n}` : ""),
+				phase: run.phase,
+				startedAt: run.startedAt,
+			};
+		}),
+	);
 	// oldest-first on last activity: the stable blob order (ISO strings sort chronologically)
 	jobs.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
 	return {
 		jobs,
 		extractions: extractions.sort((a, b) => a.startedAt - b.startedAt),
-		graphRevision: graphRevision(),
+		graphRevision: await graphRevision(),
 	};
 }

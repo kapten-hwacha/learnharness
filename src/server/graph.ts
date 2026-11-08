@@ -1,14 +1,12 @@
-import * as fs from "node:fs";
-import { LEDGER_FILES, POSITIONS_FILE } from "../../config.ts";
 import type { GraphSnapshot } from "../core/contracts.ts";
 import type { GraphCostSummary } from "../core/cost-summary.ts";
 import { graphCostSummary } from "../core/cost-summary.ts";
 import { graphSnapshot } from "../core/graph.ts";
-import { birthSessionPartition } from "../core/session-clusters.ts";
 import {
 	deleteNodeTraces,
 	type NodeDeletionStats,
 } from "../core/graph-deletion.ts";
+import type { ChatRecord } from "../core/contracts/chat.ts";
 import { extractionStatuses } from "../agent/subagents/extraction.ts";
 import { stores } from "./stores.ts";
 import { callCost } from "./pricing.ts";
@@ -19,9 +17,13 @@ import { callCost } from "./pricing.ts";
  * answers in sessions (turn-service), never from here — the home view
  * reflects whatever the pipeline has merged so far.
  */
-export function graphView(): GraphSnapshot {
-	const organization = stores.sourceOrganizationStore.read();
-	const names = Object.fromEntries(Object.entries(organization.placements).flatMap(([id, p]) => p.name === undefined ? [] : [[id, p.name]]));
+export async function graphView(): Promise<GraphSnapshot> {
+	const organization = await stores.sourceOrganizationStore.read();
+	const names = Object.fromEntries(
+		Object.entries(organization.placements).flatMap(([id, p]) =>
+			p.name === undefined ? [] : [[id, p.name]],
+		),
+	);
 	return graphSnapshot(stores, names);
 }
 
@@ -31,45 +33,26 @@ export function graphView(): GraphSnapshot {
  *  (notes-front-door runs), and the naming ledger (graph-global runs);
  *  dollars are inferred by the pure core fold (core/cost-summary.ts +
  *  prices.ts) — nothing here stores or caches money. */
-export function graphCosts(): GraphCostSummary {
-	const chats = stores.chatStore
-		.listChats()
-		.flatMap((summary) => {
-			const record = stores.chatStore.getChat(summary.id);
-			return record?.extractions?.length
-				? [{ title: record.title ?? summary.id, extractions: record.extractions }]
-				: [];
-		});
-	const sources = stores.graphStore
-		.readSources()
+export async function graphCosts(): Promise<GraphCostSummary> {
+	const summaries = await stores.chatStore.listChats();
+	const chats: Array<{ title: string; extractions: NonNullable<ChatRecord["extractions"]> }> = [];
+	for (const summary of summaries) {
+		const record = await stores.chatStore.getChat(summary.id);
+		if (record?.extractions?.length) {
+			chats.push({ title: record.title ?? summary.id, extractions: record.extractions });
+		}
+	}
+	const sources = (await stores.graphStore.readSources())
 		.filter((s) => s.extractions?.length)
 		.map((s) => ({ filePath: s.filePath, extractions: s.extractions! }));
 	return graphCostSummary({ chats, sources }, callCost);
 }
 
-/** The graph's version stamp (session-deletion wave 6): the max mtime
- * across every graph data file — ledgers, positions. Moves on ANY
- * graph write (merge append, settle, or a deletion's atomic rewrite),
- * never moves on reads, and needs no bookkeeping of its own: the fs
- * IS the counter. Consumers poll it (the activity feed
- *  carries it; the DELETE response returns it) to know clusters/layout
- *  must refetch — the "graph changed underneath me" signal. */
-export function graphRevision(): number {
-	let revision = 0;
-	for (const file of [
-		LEDGER_FILES.nodes,
-		LEDGER_FILES.chains,
-		LEDGER_FILES.sessions,
-		LEDGER_FILES.coverage,
-		POSITIONS_FILE,
-	]) {
-		try {
-			revision = Math.max(revision, fs.statSync(file).mtimeMs);
-		} catch {
-			/* absent — nothing has ever written it */
-		}
-	}
-	return revision;
+/** The graph's version stamp (session-deletion wave 6): stored in the SQLite engine.
+ * Moves on ANY graph write (merge append, settle, or a deletion's atomic rewrite),
+ * never moves on reads, and needs no bookkeeping of its own. */
+export async function graphRevision(): Promise<number> {
+	return stores.graphStore.revision();
 }
 
 // ─── single-node deletion (node interlude, owner-locked full-death) ──────────
@@ -103,7 +86,7 @@ export type NodeDeleteOutcome =
  *     mergeFindings ignores linkTo ids that no longer exist (the
  *     existingIds guard) — no dangling edges, no resurrection.
  */
-export function deleteGraphNode(nodeId: string): NodeDeleteOutcome {
+export async function deleteGraphNode(nodeId: string): Promise<NodeDeleteOutcome> {
 	if (extractionStatuses().length > 0) {
 		return {
 			ok: false,
@@ -112,12 +95,9 @@ export function deleteGraphNode(nodeId: string): NodeDeleteOutcome {
 			error: "An extraction is running — try again when it finishes",
 		};
 	}
-	// THE SYNC BLOCK — no awaits below (the doc above): the gate and the
-	// rewrite are one atomic stretch of the event loop.
-	const stats = deleteNodeTraces(stores.graphStore, nodeId);
+	const stats = await deleteNodeTraces(stores.graphStore, nodeId);
 	if (stats === null) {
 		return { ok: false, status: 404, code: "not_found", error: "No such node" };
 	}
-	return { ok: true, stats, graphRevision: graphRevision() };
+	return { ok: true, stats, graphRevision: await graphRevision() };
 }
-

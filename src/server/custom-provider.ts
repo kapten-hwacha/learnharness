@@ -20,6 +20,7 @@ import {
 	normalizeBaseUrl,
 	type CustomModel,
 	type CustomModelOverride,
+	type CustomProviderSettings,
 } from "../core/settings.ts";
 
 
@@ -30,23 +31,26 @@ const KEYLESS_PLACEHOLDER = "not-needed";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
+import type { CustomAuthState } from "./custom-provider-auth.ts";
+
+let cachedCustomProvider: CustomProviderSettings | undefined;
+let cachedAuth: CustomAuthState = { readable: true, source: "none" };
+
 /** Install the sole custom source: donor settings + explicit authentication.
  * Publication captures a consistent snapshot; an already-started operation
  * cannot acquire a later endpoint's key. No file configuration source exists. */
-export function installCustomProviderSource(readAuth = customAuthState): void {
+export function installCustomProviderSource(): void {
 	let fingerprint: string | undefined;
 	configureProviderSource({
 		isCustom: (id) => id === CUSTOM_PROVIDER.id,
 		sync(models) {
-			const cp = readSettings()?.customProvider;
-			// Validate the durable nonce/URL/mode before resolving ANY credential.
-			// Keyless reads only the nonsecret marker, never a file/env key.
-			const auth = readAuth(cp?.authMode === "apiKey", cp);
+			const cp = cachedCustomProvider;
+			const auth = cachedAuth;
 			const key = auth.key;
-			const ready = customProviderUsable(cp) && auth.readable && customBindingMatches(cp, auth.binding) && (cp.authMode === "keyless" || customKeyAuthorized(cp, auth));
+			const ready = customProviderUsable(cp) && auth.readable && customBindingMatches(cp, auth.binding) && (cp?.authMode === "keyless" || customKeyAuthorized(cp, auth));
 			const next = JSON.stringify([cp, auth]); // Private in-memory fingerprint, never a public revision.
 			if (next === fingerprint) return;
-			if (ready) models.setProvider(buildOpenAiCompatibleProvider({ ...cp, baseUrl: cp.baseUrl, models: cp.models ?? [], apiKey: key }));
+			if (ready && cp) models.setProvider(buildOpenAiCompatibleProvider({ ...cp, baseUrl: cp.baseUrl, models: cp.models ?? [], apiKey: key }));
 			else models.deleteProvider(CUSTOM_PROVIDER.id);
 			fingerprint = next;
 		},
@@ -112,7 +116,11 @@ export function buildOpenAiCompatibleProvider(input: {
 
 /** Re-sync the provider into piModels() (idempotent): usable → rebuild;
  *  not usable → remove. Never throws. */
-export function syncCustomProvider(): void {
+export async function syncCustomProvider(): Promise<void> {
+	const settings = await readSettings();
+	const cp = settings?.customProvider;
+	cachedCustomProvider = cp;
+	cachedAuth = await customAuthState(cp?.authMode === "apiKey", cp);
 	piModels();
 }
 

@@ -93,8 +93,8 @@ export function catalogDefaultsFor(
 
 /** The conversation agents' resolved default — what a settings-less chat
  *  runs: the strong slot, i.e. the birth-default for new sessions. */
-export function catalogDefaults(): CatalogDefaults | null {
-	return catalogDefaultsFor(effectiveSettings().models.strong);
+export async function catalogDefaults(): Promise<CatalogDefaults | null> {
+	return catalogDefaultsFor((await effectiveSettings()).models.strong);
 }
 
 /** Project the resolved per-role specs to the client DTO (pure — the
@@ -121,16 +121,16 @@ export function rolePinsFor(
  *  override → tier slot → nothing — the same resolution the agent wiring
  *  uses (src/server/stores.ts effectiveSettings), so the caption can
  *  never drift from what actually runs. */
-export function catalogRolePins(): RolePins {
-	return rolePinsFor(effectiveSettings().agent.models);
+export async function catalogRolePins(): Promise<RolePins> {
+	return rolePinsFor((await effectiveSettings()).agent.models);
 }
 
 /** The three slot tiers' RESOLVED pins — effectiveSettings().models
  *  verbatim: the same resolution the engine wiring uses, so the Models
  *  settings page's captions cannot drift from what actually runs. NULL
  *  per tier that holds no model. */
-export function catalogSlots(): SlotPins {
-	const slots = effectiveSettings().models;
+export async function catalogSlots(): Promise<SlotPins> {
+	const slots = (await effectiveSettings()).models;
 	const pins = {} as SlotPins;
 	for (const name of ["strong", "cheap", "vision"] as const) {
 		const slot: EffectiveSlot | null = slots[name];
@@ -149,8 +149,9 @@ export function catalogSlots(): SlotPins {
  *  plain-key model provider (core/auth-keys.ts's pi-ai-derived table),
  *  with keyPresent read env-wins through the keys seam, fresh per call —
  *  saving a key immediately federates the provider into the picker. */
-export function catalogProviders(): CatalogProvider[] {
+export async function catalogProviders(): Promise<CatalogProvider[]> {
 	piModels();
+	const settings = await effectiveSettings();
 	return AUTH_PROVIDER_KEYS.map((p) => ({
 		id: p.id,
 		envVar: p.envVar,
@@ -162,7 +163,7 @@ export function catalogProviders(): CatalogProvider[] {
 		...NATIVE_SUBSCRIPTIONS.map((p) => ({ id: p.logicalId, envVar: "", keyPresent: nativeSubscriptionConnected(p.providerId) })),
 		// The custom endpoint: a row only when usable (base URL set). keyPresent
 		// reflects usability, not key presence (keyless local servers are allowed).
-		...(customProviderUsable(effectiveSettings().customProvider)
+		...(customProviderUsable(settings.customProvider)
 			? [{ id: CUSTOM_PROVIDER.id, envVar: CUSTOM_PROVIDER.envVar, keyPresent: customProviderAvailable() }]
 			: []),
 	]).sort((a, b) => a.id.localeCompare(b.id));
@@ -171,8 +172,8 @@ export function catalogProviders(): CatalogProvider[] {
 /** The providers whose key is present — the picker federates exactly
  *  these (a keyless provider's models are unreachable by design; the
  *  Keys page is the discovery surface, same discipline as search). */
-function keyedProviderIds(): Set<string> {
-	return new Set(catalogProviders().filter((p) => p.keyPresent).map((p) => p.id));
+async function keyedProviderIds(): Promise<Set<string>> {
+	return new Set((await catalogProviders()).filter((p) => p.keyPresent).map((p) => p.id));
 }
 
 /** Project one catalog model to the client DTO. */
@@ -203,8 +204,8 @@ export function toModelDto(model: Model<Api>): ModelDto {
  *  and the activity feed (observability.ts) resolves job limits
  *  server-side through this. No hardcoded fallback exists anywhere:
  *  a model missing here reads limit-null (usage-only, honest render). */
-export function catalogContextLimits(): Map<string, number> {
-	const keyed = keyedProviderIds();
+export async function catalogContextLimits(): Promise<Map<string, number>> {
+	const keyed = await keyedProviderIds();
 	const index = new Map<string, number>();
 	for (const provider of piModels().getProviders()) {
 		if (!keyed.has(provider.id) || provider.id === CLAUDE_CODE_PROVIDER) continue;
@@ -220,8 +221,14 @@ export function catalogContextLimits(): Map<string, number> {
  *  (sorted by provider then id — stable, diff-friendly) + the config
  *  defaults a settings-less chat runs + the background roles' resolved
  *  pins (the settings UI's per-role default captions). */
-export function modelCatalog(): ModelCatalogResponse {
-	const keyed = keyedProviderIds();
+export async function modelCatalog(): Promise<ModelCatalogResponse> {
+	const [keyed, defaults, rolePins, slots, providers] = await Promise.all([
+		keyedProviderIds(),
+		catalogDefaults(),
+		catalogRolePins(),
+		catalogSlots(),
+		catalogProviders(),
+	]);
 	const models = piModels()
 		.getProviders()
 		.filter((p) => keyed.has(p.id))
@@ -231,10 +238,10 @@ export function modelCatalog(): ModelCatalogResponse {
 		.concat([...chatGPTModels(), ...nativeSubscriptionModels()].map(toModelDto));
 	return {
 		models,
-		defaults: catalogDefaults(),
-		rolePins: catalogRolePins(),
-		slots: catalogSlots(),
-		providers: catalogProviders(),
+		defaults,
+		rolePins,
+		slots,
+		providers,
 	};
 }
 

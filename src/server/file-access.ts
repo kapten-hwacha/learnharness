@@ -13,15 +13,28 @@ export function expandFolder(folder: string, home: string = os.homedir()): strin
 	return path.resolve(folder);
 }
 
+let cachedPolicy: FileAccessPolicy = { restricted: false, folders: [] };
+let cachedError: string | null = null;
+
+export async function refreshFileAccessSettings(): Promise<void> {
+	const result = await readFileAccessSettings();
+	if (!result.ok) {
+		cachedPolicy = { restricted: true, folders: [], error: result.error };
+		cachedError = result.error;
+	} else {
+		cachedPolicy = { restricted: result.settings.restricted, folders: result.settings.folders.map((folder) => expandFolder(folder)) };
+		cachedError = null;
+	}
+}
+
 export function fileAccessPolicy(): FileAccessPolicy {
-	const result = readFileAccessSettings();
-	if (!result.ok) return { restricted: true, folders: [], error: result.error };
-	return { restricted: result.settings.restricted, folders: result.settings.folders.map((folder) => expandFolder(folder)) };
+	return cachedPolicy;
 }
 
 /** Safe UI diagnostic, no raw JSON/file contents. A corrupt record must
  * not make the restriction toggle appear safely OFF while reads are blocked. */
 export function fileAccessConfigurationError(): string | null {
-	const result = readFileAccessSettings();
-	return result.ok ? null : result.error;
+	return cachedError;
 }
+
+void refreshFileAccessSettings();

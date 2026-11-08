@@ -174,7 +174,7 @@ export function projectedContextTokens(messages: readonly LhMessage[], systemPro
  *  appends the marker, records usage, notifies. Never throws upward
  *  past the registry cleanup. */
 async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
-	const record = deps.chatStore.getChat(chatId);
+	const record = await deps.chatStore.getChat(chatId);
 	if (!record) return;
 	const messages = record.messages;
 	const tokensBefore = projectedContextTokens(messages, deps.systemPromptTokens);
@@ -186,7 +186,7 @@ async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
 	// The previous compaction's kept boundary (chained compactions
 	// summarize the old summary + what rode after it).
 	const previous = activeCompactionOf(messages);
-	const prevKept = previous ? messages.findIndex((m) => m.id === previous.details.firstKeptMessageId) : -1;
+	const prevKept = previous ? messages.findIndex((m: LhMessage) => m.id === previous.details.firstKeptMessageId) : -1;
 	// ANTI-CHURN GUARD: when the cut cannot advance past the previous
 	// kept boundary, the span is empty (or repeats it) — the kept tail
 	// alone carries the projection and re-summarizing the same span
@@ -212,7 +212,7 @@ async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
 	// in this span. Without a resolved prior boundary, retain the existing
 	// legacy fallback rather than silently discarding summary-only context.
 	const summaryMessages = priorSummary
-		? span.filter((m) => m.role !== "custom" || m.customType !== "compaction")
+		? span.filter((m: LhMessage) => m.role !== "custom" || m.customType !== "compaction")
 		: span;
 	const spanText = serializeForSummary(summaryMessages);
 	const fullSpan = priorSummary ? `[SYSTEM NOTE — prior compaction summary, still authoritative where not superseded]\n${priorSummary}\n\n${spanText}` : spanText;
@@ -238,11 +238,11 @@ async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
 			at: new Date().toISOString(),
 		};
 		const marker = newCompactionMarker(trimmed, details);
-		deps.chatStore.saveMessages(chatId, [...messages, marker]);
+		await deps.chatStore.saveMessages(chatId, [...messages, marker]);
 		// The money channel: the summary is a real model call on the
 		// session's own engine — its usage keys to the marker (provenance:
 		// the transcript shows the compaction divider at the marker).
-		deps.chatStore.appendTurnUsage(chatId, {
+		await deps.chatStore.appendTurnUsage(chatId, {
 			id: crypto.randomUUID(),
 			messageId: marker.id,
 			at: details.at,
@@ -284,7 +284,7 @@ export async function ensureCompacted(deps: CompactionDeps, chatId: string): Pro
 	if (process.env.NODE_ENV === "test" && !deps.summarize) return;
 	await awaitCompaction(chatId);
 	if (deps.canStart?.() === false) return;
-	const record = deps.chatStore.getChat(chatId);
+	const record = await deps.chatStore.getChat(chatId);
 	if (!record) return;
 	if (projectedContextTokens(record.messages, deps.systemPromptTokens) <= deps.thresholdTokens) return;
 	if (state().inFlight.has(chatId)) return; // a concurrent caller started it while we awaited
@@ -305,11 +305,11 @@ export async function ensureCompacted(deps: CompactionDeps, chatId: string): Pro
  * are silent no-ops. The next turn's ensureCompacted gate picks up
  * whatever this leaves running.
  */
-export function kickCompaction(buildDeps: () => CompactionDeps | null, chatId: string): void {
+export async function kickCompaction(buildDeps: () => CompactionDeps | null | Promise<CompactionDeps | null>, chatId: string): Promise<void> {
 	if (state().inFlight.has(chatId)) return;
-	const deps = buildDeps();
+	const deps = await buildDeps();
 	if (!deps || deps.canStart?.() === false) return;
-	const record = deps.chatStore.getChat(chatId);
+	const record = await deps.chatStore.getChat(chatId);
 	if (!record) return;
 	if (projectedContextTokens(record.messages, deps.systemPromptTokens) <= deps.thresholdTokens) return;
 	const run = compact(deps, chatId);

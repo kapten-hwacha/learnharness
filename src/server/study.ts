@@ -21,17 +21,18 @@ import { effectiveSettings, stores } from "./stores.ts";
 const { studyStore, chatStore } = stores;
 
 /** Append what closed (history first), then rewrite open.json if it changed. */
-function persist(before: OpenStudyTimers, after: OpenStudyTimers, closed: StudyInterval[]): void {
-	studyStore.appendIntervals(closed);
-	if (after !== before) studyStore.writeOpen(after);
+async function persist(before: OpenStudyTimers, after: OpenStudyTimers, closed: StudyInterval[]): Promise<void> {
+	await studyStore.appendIntervals(closed);
+	if (after !== before) await studyStore.writeOpen(after);
 	for (const i of closed) {
 		console.info(`[study] ${i.chatId} ${Math.round((Date.parse(i.end) - Date.parse(i.start)) / 1000)}s ${i.endReason}`);
 	}
 }
 
-export function recordStudy(input: StudyInput, now = new Date()): StudyResult {
-	const idleMs = effectiveSettings().studyTime.idleMinutes * 60_000;
-	const original = studyStore.readOpen();
+export async function recordStudy(input: StudyInput, now = new Date()): Promise<StudyResult> {
+	const eff = await effectiveSettings();
+	const idleMs = eff.studyTime.idleMinutes * 60_000;
+	const original = await studyStore.readOpen();
 	const stale = closeStale(original, now, idleMs);
 	let open = stale.open;
 	const closed = [...stale.closed];
@@ -56,7 +57,7 @@ export function recordStudy(input: StudyInput, now = new Date()): StudyResult {
 			const took = closeAtLastPing(open, input.chatId);
 			open = took.open;
 			closed.push(...took.closed);
-			const chat = chatStore.getChat(input.chatId);
+			const chat = await chatStore.getChat(input.chatId);
 			if (!chat) {
 				result = { ok: false, status: 404, error: "chat_not_found" };
 			} else if (!chatHasStarted(chat.messages)) {
@@ -69,42 +70,46 @@ export function recordStudy(input: StudyInput, now = new Date()): StudyResult {
 		}
 	}
 
-	persist(original, open, closed);
+	await persist(original, open, closed);
 	if (!result.ok) console.info(`[study] refused ${input.type} ${result.error}`);
 	return result;
 }
 
-export function studyHistory(tz: string, range: StudyRangeKey, now = new Date()): StudySummary {
-	const { idleMinutes, weekStart, teachSoftCapMinutes } = effectiveSettings().studyTime;
-	const original = studyStore.readOpen();
+export async function studyHistory(tz: string, range: StudyRangeKey, now = new Date()): Promise<StudySummary> {
+	const eff = await effectiveSettings();
+	const { idleMinutes, weekStart, teachSoftCapMinutes } = eff.studyTime;
+	const original = await studyStore.readOpen();
 	const stale = closeStale(original, now, idleMinutes * 60_000);
-	persist(original, stale.open, stale.closed);
-	const summary = summarizeStudy({ intervals: studyStore.readIntervals(), tz, weekStart, range, now, idleMinutes });
+	await persist(original, stale.open, stale.closed);
+	const intervals = await studyStore.readIntervals();
+	const summary = summarizeStudy({ intervals, tz, weekStart, range, now, idleMinutes });
 	return { ...summary, teachSoftCapMinutes };
 }
 
-export function getChatStudyStatus(
+export async function getChatStudyStatus(
 	chatId: string,
 	now = new Date(),
-): { chatMs: number; teachSoftCapMinutes: number; softCapReached: boolean } {
-	const settings = effectiveSettings().studyTime;
+): Promise<{ chatMs: number; teachSoftCapMinutes: number; softCapReached: boolean }> {
+	const eff = await effectiveSettings();
+	const settings = eff.studyTime;
 	const idleMinutes = settings.idleMinutes;
 	const teachSoftCapMinutes = settings.teachSoftCapMinutes;
-	const intervals = studyStore.readIntervals();
-	const open = studyStore.readOpen();
+	const intervals = await studyStore.readIntervals();
+	const open = await studyStore.readOpen();
 	const chatMs = chatStudyMs(intervals, open, chatId, now.getTime(), idleMinutes);
 	const softCapReached = teachSoftCapMinutes > 0 && chatMs >= teachSoftCapMinutes * 60_000;
 	return { chatMs, teachSoftCapMinutes, softCapReached };
 }
 
 /** SIGTERM/SIGINT: close every open timer at shutdown time. Never throws. */
-export function closeStudyOnShutdown(now = new Date()): void {
+export async function closeStudyOnShutdown(now = new Date()): Promise<void> {
 	try {
-		const idleMs = effectiveSettings().studyTime.idleMinutes * 60_000;
-		const original = studyStore.readOpen();
+		const eff = await effectiveSettings();
+		const idleMs = eff.studyTime.idleMinutes * 60_000;
+		const original = await studyStore.readOpen();
 		const stale = closeStale(original, now, idleMs);
 		const all = closeAllOpen(stale.open, now, "shutdown");
-		persist(original, all.open, [...stale.closed, ...all.closed]);
+		await persist(original, all.open, [...stale.closed, ...all.closed]);
 	} catch (err) {
 		console.error("[study] shutdown close failed:", err);
 	}
@@ -116,8 +121,8 @@ export function registerStudyShutdown(): void {
 	const g = globalThis as { __lhStudySignals?: boolean };
 	if (process.env.NODE_ENV === "test" || g.__lhStudySignals) return;
 	g.__lhStudySignals = true;
-	process.on("SIGTERM", () => closeStudyOnShutdown());
-	process.on("SIGINT", () => closeStudyOnShutdown());
+	process.on("SIGTERM", () => void closeStudyOnShutdown());
+	process.on("SIGINT", () => void closeStudyOnShutdown());
 }
 
 registerStudyShutdown();

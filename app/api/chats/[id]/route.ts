@@ -2,7 +2,7 @@ import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sessionC
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
-	const chat = getChat(id);
+	const chat = await getChat(id);
 	if (!chat) return Response.json({ error: "Not found" }, { status: 404 });
 	// turnInFlight lets a returning client re-attach to a running turn
 	// (chat-handler write-ahead + registry — see src/server/turn-liveness.ts).
@@ -37,13 +37,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
  */
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
-	if (!getChat(id)) return Response.json({ error: "Not found" }, { status: 404 });
+	if (!(await getChat(id))) return Response.json({ error: "Not found" }, { status: 404 });
 	const body = (await req.json().catch(() => null)) as { title?: unknown } | null;
 	if (typeof body?.title !== "string" || body.title.trim() === "") {
 		return Response.json({ error: "title must be a non-empty string" }, { status: 400 });
 	}
 	const title = body.title.trim();
-	const record = stores.chatStore.renameChat(id, title);
+	const record = await stores.chatStore.renameChat(id, title);
 	return Response.json({ title: record.title });
 }
 

@@ -1,6 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
-import { PATHS } from "../../config.ts";
 import { effectivePromptSegments } from "../agent/prompt-segments.ts";
 import {
 	buildDeterministicLearnerProfile,
@@ -19,26 +16,28 @@ import {
 import type { UserSettings } from "../core/settings.ts";
 import { promptOverrides } from "../store/prompt-overrides.ts";
 import { settingsStore } from "../store/settings.ts";
+import { getTauriInvoke } from "../worker/host-bridge.ts";
+import { getMemoryKv, setMemoryKv } from "../store/memory-backend.ts";
 import * as reviewModule from "./review.ts";
 import { stores } from "./stores.ts";
 
-function profilerStateFile(): string {
-	const dataDir = (PATHS as { dataDir?: string }).dataDir ?? PATHS.data;
-	return path.join(dataDir, "profiler-state.json");
-}
-
-export function readProfilerState(): ProfilerState {
-	const file = profilerStateFile();
+export async function readProfilerState(): Promise<ProfilerState> {
 	try {
-		const raw = fs.readFileSync(file, "utf-8");
-		const parsed = JSON.parse(raw);
-		if (parsed && typeof parsed === "object") {
+		const invoke = getTauriInvoke();
+		let raw: unknown = null;
+		if (invoke) {
+			raw = await invoke<unknown | null>("lh_kv_get", { key: "profiler_state" });
+		} else {
+			raw = await getMemoryKv("profiler_state");
+		}
+		if (raw && typeof raw === "object") {
+			const parsed = raw as Record<string, unknown>;
 			return {
 				lastAnalyzedSessionCount:
 					typeof parsed.lastAnalyzedSessionCount === "number" ? parsed.lastAnalyzedSessionCount : 0,
 				lastRunAt: typeof parsed.lastRunAt === "string" ? parsed.lastRunAt : null,
-				metrics: parsed.metrics ?? null,
-				pendingProposal: parsed.pendingProposal ?? null,
+				metrics: (parsed.metrics as MetacognitiveMetrics) ?? null,
+				pendingProposal: (parsed.pendingProposal as ProfilerProposal) ?? null,
 			};
 		}
 	} catch {
@@ -47,28 +46,31 @@ export function readProfilerState(): ProfilerState {
 	return emptyProfilerState();
 }
 
-export function writeProfilerState(state: ProfilerState): void {
-	const file = profilerStateFile();
-	fs.mkdirSync(path.dirname(file), { recursive: true });
-	fs.writeFileSync(file, JSON.stringify(state, null, 2), "utf-8");
+export async function writeProfilerState(state: ProfilerState): Promise<void> {
+	const invoke = getTauriInvoke();
+	if (invoke) {
+		await invoke("lh_kv_set", { key: "profiler_state", value: state });
+	} else {
+		await setMemoryKv("profiler_state", state);
+	}
 }
 
-function readAllChats(): ChatRecord[] {
+async function readAllChats(): Promise<ChatRecord[]> {
 	const chatStore = stores.chatStore;
 	const summaries =
 		typeof chatStore.listChats === "function"
-			? chatStore.listChats()
-			: typeof (chatStore as unknown as { list?: () => Array<{ id: string }> }).list === "function"
-				? (chatStore as unknown as { list: () => Array<{ id: string }> }).list()
+			? await chatStore.listChats()
+			: typeof (chatStore as unknown as { list?: () => Promise<Array<{ id: string }>> | Array<{ id: string }> }).list === "function"
+				? await (chatStore as unknown as { list: () => Promise<Array<{ id: string }>> | Array<{ id: string }> }).list()
 				: [];
 
 	const records: ChatRecord[] = [];
 	for (const summary of summaries) {
 		const record =
 			typeof chatStore.getChat === "function"
-				? chatStore.getChat(summary.id)
-				: typeof (chatStore as unknown as { get?: (id: string) => ChatRecord | null }).get === "function"
-					? (chatStore as unknown as { get: (id: string) => ChatRecord | null }).get(summary.id)
+				? await chatStore.getChat(summary.id)
+				: typeof (chatStore as unknown as { get?: (id: string) => Promise<ChatRecord | null> | ChatRecord | null }).get === "function"
+					? await (chatStore as unknown as { get: (id: string) => Promise<ChatRecord | null> | ChatRecord | null }).get(summary.id)
 					: null;
 		if (record) {
 			records.push(record);
@@ -77,10 +79,10 @@ function readAllChats(): ChatRecord[] {
 	return records;
 }
 
-export function readReviewLedger(): ReviewCard[] {
+export async function readReviewLedger(): Promise<ReviewCard[]> {
 	try {
 		if (typeof reviewModule.readPracticeHistory === "function") {
-			const history = reviewModule.readPracticeHistory();
+			const history = await reviewModule.readPracticeHistory();
 			const byTarget = new Map<string, Array<{ rating?: number }>>();
 			for (const rec of history.records) {
 				if (rec.outcome === "dismissed") continue;
@@ -99,21 +101,21 @@ export function readReviewLedger(): ReviewCard[] {
 	return [];
 }
 
-function readCurrentSettings(): UserSettings | null {
+async function readCurrentSettings(): Promise<UserSettings | null> {
 	if (typeof settingsStore.readSettings === "function") {
-		return settingsStore.readSettings();
+		return await settingsStore.readSettings();
 	}
-	if (typeof (settingsStore as unknown as { read?: () => UserSettings | null }).read === "function") {
-		return (settingsStore as unknown as { read: () => UserSettings | null }).read();
+	if (typeof (settingsStore as unknown as { read?: () => Promise<UserSettings | null> | UserSettings | null }).read === "function") {
+		return await (settingsStore as unknown as { read: () => Promise<UserSettings | null> | UserSettings | null }).read();
 	}
 	return null;
 }
 
-function writeCurrentSettings(settings: UserSettings): void {
+async function writeCurrentSettings(settings: UserSettings): Promise<void> {
 	if (typeof settingsStore.writeSettings === "function") {
-		settingsStore.writeSettings(settings);
-	} else if (typeof (settingsStore as unknown as { write?: (s: unknown) => void }).write === "function") {
-		(settingsStore as unknown as { write: (s: unknown) => void }).write(settings);
+		await settingsStore.writeSettings(settings);
+	} else if (typeof (settingsStore as unknown as { write?: (s: unknown) => Promise<void> | void }).write === "function") {
+		await (settingsStore as unknown as { write: (s: unknown) => Promise<void> | void }).write(settings);
 	}
 }
 
@@ -129,12 +131,12 @@ export interface ProfilerDeps {
 }
 
 export async function getProfilerStatus(deps?: ProfilerDeps): Promise<ProfilerStatusResponse> {
-	const state = deps?.state ?? readProfilerState();
-	const chats = deps?.chats ?? readAllChats();
-	const reviews = deps?.reviews ?? readReviewLedger();
+	const state = deps?.state ?? (await readProfilerState());
+	const chats = deps?.chats ?? (await readAllChats());
+	const reviews = deps?.reviews ?? (await readReviewLedger());
 	const metrics = computeMetacognitiveMetrics(chats, reviews);
 
-	const settings = deps?.settings !== undefined ? deps.settings : readCurrentSettings();
+	const settings = deps?.settings !== undefined ? deps.settings : (await readCurrentSettings());
 	const intervalSessions =
 		typeof settings?.agent?.profilerIntervalSessions === "number"
 			? settings.agent.profilerIntervalSessions
@@ -142,7 +144,7 @@ export async function getProfilerStatus(deps?: ProfilerDeps): Promise<ProfilerSt
 	const autoApply = settings?.agent?.profilerAutoApply === true;
 
 	const switches = settings?.agent?.prompts ?? {};
-	const overrideText = promptOverrides.readOverride(LEARNER_PROFILE_SEGMENT_PATH);
+	const overrideText = await promptOverrides.readOverride(LEARNER_PROFILE_SEGMENT_PATH);
 	const overrideEnabled = switches[LEARNER_PROFILE_SEGMENT_PATH] === true && overrideText !== null;
 
 	let sourceText = "";
@@ -172,12 +174,12 @@ export async function getProfilerStatus(deps?: ProfilerDeps): Promise<ProfilerSt
 }
 
 export async function runMetacognitiveProfiler(deps?: ProfilerDeps): Promise<ProfilerStatusResponse> {
-	const state = deps?.state ?? readProfilerState();
-	const chats = deps?.chats ?? readAllChats();
-	const reviews = deps?.reviews ?? readReviewLedger();
+	const state = deps?.state ?? (await readProfilerState());
+	const chats = deps?.chats ?? (await readAllChats());
+	const reviews = deps?.reviews ?? (await readReviewLedger());
 	const metrics = computeMetacognitiveMetrics(chats, reviews);
 
-	const settings = deps?.settings !== undefined ? deps.settings : readCurrentSettings();
+	const settings = deps?.settings !== undefined ? deps.settings : (await readCurrentSettings());
 	const autoApply = settings?.agent?.profilerAutoApply === true;
 
 	const currentStatus = await getProfilerStatus({ ...deps, state, chats, reviews, settings });
@@ -196,7 +198,7 @@ export async function runMetacognitiveProfiler(deps?: ProfilerDeps): Promise<Pro
 	state.metrics = metrics;
 
 	if (autoApply) {
-		promptOverrides.writeOverride(LEARNER_PROFILE_SEGMENT_PATH, proposedText);
+		await promptOverrides.writeOverride(LEARNER_PROFILE_SEGMENT_PATH, proposedText);
 
 		const current = settings ?? ({} as UserSettings);
 		const updated: UserSettings = {
@@ -209,10 +211,10 @@ export async function runMetacognitiveProfiler(deps?: ProfilerDeps): Promise<Pro
 				},
 			},
 		};
-		writeCurrentSettings(updated);
+		await writeCurrentSettings(updated);
 
 		state.pendingProposal = null;
-		writeProfilerState(state);
+		await writeProfilerState(state);
 		return getProfilerStatus({ ...deps, state, chats, reviews, settings: updated });
 	}
 
@@ -223,19 +225,19 @@ export async function runMetacognitiveProfiler(deps?: ProfilerDeps): Promise<Pro
 		createdAt: new Date().toISOString(),
 		basedOnSessions: metrics.eligibleSessions,
 	};
-	writeProfilerState(state);
+	await writeProfilerState(state);
 
 	return getProfilerStatus({ ...deps, state, chats, reviews, settings });
 }
 
 export async function approveProfilerProposal(customText?: string): Promise<ProfilerStatusResponse> {
-	const state = readProfilerState();
+	const state = await readProfilerState();
 	const textToApply = (customText?.trim() || state.pendingProposal?.proposedText || "").trim();
 
 	if (textToApply) {
-		promptOverrides.writeOverride(LEARNER_PROFILE_SEGMENT_PATH, textToApply);
+		await promptOverrides.writeOverride(LEARNER_PROFILE_SEGMENT_PATH, textToApply);
 
-		const current = readCurrentSettings() ?? ({} as UserSettings);
+		const current = (await readCurrentSettings()) ?? ({} as UserSettings);
 		const updated: UserSettings = {
 			...current,
 			agent: {
@@ -246,18 +248,18 @@ export async function approveProfilerProposal(customText?: string): Promise<Prof
 				},
 			},
 		};
-		writeCurrentSettings(updated);
+		await writeCurrentSettings(updated);
 	}
 
 	state.pendingProposal = null;
-	writeProfilerState(state);
+	await writeProfilerState(state);
 	return getProfilerStatus();
 }
 
 export async function dismissProfilerProposal(): Promise<ProfilerStatusResponse> {
-	const state = readProfilerState();
+	const state = await readProfilerState();
 	state.pendingProposal = null;
-	writeProfilerState(state);
+	await writeProfilerState(state);
 	return getProfilerStatus();
 }
 

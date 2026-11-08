@@ -26,7 +26,7 @@ import type { ChatSettings } from "@/src/core";
  */
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
-	if (!getChat(id)) return Response.json({ error: "Not found" }, { status: 404 });
+	if (!(await getChat(id))) return Response.json({ error: "Not found" }, { status: 404 });
 
 	const body = await req.json().catch(() => null);
 	const parsed = parseSettingsBody(body);
@@ -42,7 +42,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 	// Clamp-on-write (owner, interlude 2026-09-22): a pinned thinking
 	// level never rejects — it clamps to the named model's nearest
 	// supported (body model, else the record's strong slot).
-	const settings = clampChatLevel(parsed.settings, effectiveSettings().models.strong);
-	stores.chatStore.saveSettings(id, settings);
+	const eff = await effectiveSettings();
+	const settings = clampChatLevel(parsed.settings, eff.models.strong);
+	await stores.chatStore.saveSettings(id, settings);
 	return Response.json({ settings });
 }

@@ -30,7 +30,7 @@ async function main() {
 	const pipeline = createExtractionPipeline({
 		...stores,
 		// Live budget: the graph section's setting, same as the app's trigger
-		getChunkTokens: () => effectiveSettings().graph.extractionChunkTokens,
+		getChunkTokens: async () => (await effectiveSettings()).graph.extractionChunkTokens,
 	});
 	const queue = [...files];
 	const totals = { nodes: 0, chains: 0, failed: 0 };
@@ -55,7 +55,7 @@ async function main() {
 	});
 	await Promise.all(workers);
 
-	const graph = getGraph(stores.graphStore);
+	const graph = await getGraph(stores.graphStore);
 	console.log(
 		`[import-notes] done: +${totals.nodes} nodes, +${totals.chains} chains, ${totals.failed} failed — ` +
 			`graph now ${graph.nodes.length} nodes, ${graph.chains.length} chains`,

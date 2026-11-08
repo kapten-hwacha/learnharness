@@ -23,16 +23,16 @@ import { deriveView, getGraph } from "./graph.ts";
  * Server code imports it DIRECTLY; it is never re-exported through
  * src/core/index.ts.
  */
-export function settleGraphLayout(graphStore: {
-	readNodes(): GraphNode[];
-	readChains(): GraphChain[];
-	readPositions(): Record<string, Position>;
-	writePositions(positions: Record<string, Position>): void;
-}): void {
-	const graph = getGraph(graphStore);
+export async function settleGraphLayout(graphStore: {
+	readNodes(): GraphNode[] | Promise<GraphNode[]>;
+	readChains(): GraphChain[] | Promise<GraphChain[]>;
+	readPositions(): Record<string, Position> | Promise<Record<string, Position>>;
+	writePositions(positions: Record<string, Position>): void | Promise<void>;
+}): Promise<void> {
+	const graph = await getGraph(graphStore);
 	if (graph.nodes.length === 0) return;
 	const view = deriveView(graph);
-	const previous = new Map(Object.entries(graphStore.readPositions()));
+	const previous = new Map(Object.entries(await graphStore.readPositions()));
 	// The cluster partition for the centroid pull: the SAME birth-session
 	// partition the snapshot renders (derived from provenance on read —
 	// core/session-clusters.ts, wave 7) — one cluster concept everywhere.
@@ -50,5 +50,5 @@ export function settleGraphLayout(graphStore: {
 		logicalEdges: view.logicalEdges,
 		impLinks: view.impLinks,
 	});
-	graphStore.writePositions(Object.fromEntries(next));
+	await graphStore.writePositions(Object.fromEntries(next));
 }

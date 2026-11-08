@@ -24,7 +24,7 @@ import type {
 	SessionFindings,
 } from "../../core/contracts.ts";
 import { getGraph, mergeFindings, type DerivedGraph, type EmissionStats, type GraphDeps } from "../../core/graph.ts";
-import type { GraphStore } from "../../core/ports.ts";
+import type { ChatStore, GraphStore } from "../../core/ports.ts";
 import { emit } from "../../core/events.ts";
 import { settleGraphLayout } from "../../core/layout-settle.ts";
 import { batchRuns, coverageOf, messageViewLines } from "../../core/coverage.ts";
@@ -740,14 +740,16 @@ export interface ExtractionModels {
 	providerKeyMissing?: (provider: string, tier: ModelSlotName) => ProviderKeyMissing | null;
 }
 
-export interface ExtractionPipelineDeps extends GraphDeps, ExtractionModels {
+export interface ExtractionPipelineDeps extends ExtractionModels {
+	chatStore: ChatStore;
+	graphStore: GraphStore;
 	/** The chunk budget — the transcript-token share of the extractor's
 	 *  context; batches fill to it (the trigger fires on the same number,
 	 *  read fresh per turn by the composition root). OPTIONAL with the
 	 *  factory default (4096) so test fixtures stay minimal; the server
 	 *  callers wire the live effective settings (extraction-UX redesign,
 	 *  2026-09-24). */
-	getChunkTokens?: () => number;
+	getChunkTokens?: () => number | Promise<number>;
 }
 
 export interface NotesImportInput {
@@ -936,7 +938,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// on it. Serialized batches make this read the post-merge graph of
 		// every earlier batch (cross-source runs stay parallel — the
 		// digest is source-scoped, so only SAME-source order matters).
-		const graph = getGraph(graphStore);
+		const graph = await getGraph(graphStore);
 		const digest = sourceDigest(graph, sourceId);
 		const prompt = digest === "" ? view : `${digest}\n\n${view}`;
 		console.info(
@@ -964,7 +966,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	async function audit(jobKey: string, sourceId: string, findings: SessionFindings): Promise<AuditVerdicts> {
 		const signal = runningExtractions.get(jobKey)?.controller.signal;
 		signal?.throwIfAborted(); // an abort during the extract→audit gap ends here
-		const graph = getGraph(graphStore);
+		const graph = await getGraph(graphStore);
 		console.info(
 			`[extraction ${jobKey}] auditor starting (${findings.propositions.length} propositions, ` +
 				`${graph.nodes.length} graph nodes)`,
@@ -977,7 +979,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// projection omits messageId (2026-10-13): the auditor is
 		// IDENTITY-only and never sees the passages, so anchors are useless
 		// to it — they add cognitive load, not signal.
-		const review = prepareAuditorReview({ chatStore, graphStore }, findings.propositions);
+		const review = await prepareAuditorReview({ chatStore, graphStore }, findings.propositions);
 		const auditResult = await runAuditor(
 			stageEngine("auditor", deps.auditor),
 			sourceId,
@@ -1026,7 +1028,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	 *  or failure: a failed run still spent money, and its partial usage is
 	 *  exactly what the record should show (stats absent = never merged).
 	 *  Idempotent per startedAt (the store dedupes). */
-	function persistRunUsage(jobKey: string, durationMs: number, stats: EmissionStats | undefined): void {
+	async function persistRunUsage(jobKey: string, durationMs: number, stats: EmissionStats | undefined): Promise<void> {
 		const run = runningExtractions.get(jobKey);
 		if (!run) return; // not running (tests driving stages directly)
 		// PER-CHUNK JOBS (owner, 2026-09-28): the registry KEY may carry a
@@ -1036,7 +1038,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// usage log to append to — the record's death is the user's choice
 		// and its partial spend logs with it (appendSourceUsage below
 		// already no-ops for a vanished source; the chat path guards here).
-		if (run.kind === "chat" && !chatStore.getChat(run.chatId)) return;
+		if (run.kind === "chat" && !(await chatStore.getChat(run.chatId))) return;
 		const entry: ExtractionRunUsage = {
 			startedAt: run.startedAt,
 			at: new Date().toISOString(),
@@ -1047,8 +1049,8 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 				auditor: run.usage.auditor ?? { model: "unknown", steps: [] },
 			},
 		};
-		if (run.kind === "notes") graphStore.appendSourceUsage(run.chatId, entry);
-		else chatStore.appendExtractionUsage(run.chatId, entry);
+		if (run.kind === "notes") await graphStore.appendSourceUsage(run.chatId, entry);
+		else await chatStore.appendExtractionUsage(run.chatId, entry);
 	}
 
 	/** One chunk/batch JOB (per-chunk jobs, owner 2026-09-28): the registry
@@ -1065,10 +1067,10 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const t0 = performance.now();
 		try {
 			const stats = await body(jobKey);
-			persistRunUsage(jobKey, Math.round(performance.now() - t0), stats);
+			await persistRunUsage(jobKey, Math.round(performance.now() - t0), stats);
 			return stats;
 		} catch (err) {
-			persistRunUsage(jobKey, Math.round(performance.now() - t0), undefined);
+			await persistRunUsage(jobKey, Math.round(performance.now() - t0), undefined);
 			throw err;
 		} finally {
 			finishExtraction(jobKey);
@@ -1122,20 +1124,20 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// error below loses at most the in-flight batch — every earlier
 		// batch stays covered, the rest stays visibly uncovered.
 		try {
-			const record = chatStore.getChat(chatId);
+			const record = await chatStore.getChat(chatId);
 			if (!record) throw new Error(`Chat not found: ${chatId}`);
 			// BYOK per-need gate (owner, 2026-09-22) + key presence
 			// (2026-09-25): the write channel needs extractor + auditor
 			// engines AND their providers' keys; a refusal lands BEFORE any
 			// stage runs (typed — the trigger skips, routes surface 503).
 			refuseIfStagesUnready();
-			const covered = coverageOf(record.messages, graphStore.readCoverage(), chatId);
+			const covered = coverageOf(record.messages, await graphStore.readCoverage(), chatId);
 			const failedOutputCalls = failedOutputCallIds(record.messages);
 			if (covered.uncovered.length === 0) {
 				console.info(`[extraction ${chatId}] nothing uncovered — no-op`);
 				return { nodes: 0, chains: 0 };
 			}
-			const chunkTokens = deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
+			const chunkTokens = (await deps.getChunkTokens?.()) ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
 			// The batcher's one rule (owner, Wave D): a tool-call message and
 			// its result message(s) are INSEPARABLE — one chunk, covered
 			// together, read together (core/coverage.ts batchRuns).
@@ -1193,7 +1195,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								// as one sync block; this closes the last window — a run that slipped
 								// past the wind-down finds the chat gone HERE and rides the existing
 								// abort path (info, not error): nothing merged, nothing checkpointed.
-								if (!chatStore.getChat(chatId)) {
+								if (!(await chatStore.getChat(chatId))) {
 									const gone = new Error(`chat deleted mid-run: ${chatId}`);
 									gone.name = "AbortError";
 									throw gone;
@@ -1203,7 +1205,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								// merges in), the stored fingerprint won't match its new
 								// one and it re-opens: honest by construction.
 								const foldedAt = new Date().toISOString();
-								const batchStats = mergeFindings(chatId, findings, auditResult, { chatStore, graphStore }, {
+								const batchStats = await mergeFindings(chatId, findings, auditResult, { chatStore, graphStore }, {
 									foldedAt,
 									coverage: batch
 										.filter((slot) => slot.tokens > 0)
@@ -1211,7 +1213,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								});
 								// The layout ledger evolves with the merge (sync — the
 								// next snapshot fetch must already reflect the new nodes).
-								settleGraphLayout(graphStore);
+								await settleGraphLayout(graphStore);
 								console.info(
 									`[extraction ${jobKey}] merged: ${batchStats.nodes} nodes, ${batchStats.chains ?? 0} chains`,
 								);
@@ -1290,7 +1292,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const view = notesView(input);
 		// Same digest law as the chat door (owner, 2026-09-30 evening): the
 		// chunk extractor continues its own source, ids verbatim.
-		const graph = getGraph(graphStore);
+		const graph = await getGraph(graphStore);
 		const digest = sourceDigest(graph, input.id);
 		const prompt = digest === "" ? view : `${digest}\n\n${view}`;
 		console.info(
@@ -1330,7 +1332,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// standalone extract → audit → merge, so no single call carries a
 			// whole large file. Abort mid-run keeps earlier chunks merged
 			// (same doctrine as chat batches).
-			const chunkTokens = deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
+			const chunkTokens = (await deps.getChunkTokens?.()) ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
 			const chunks = chunkNotes(input.text, chunkTokens);
 			console.info(
 				`[extraction ${id}] notes pipeline start (${input.filePath}) — ${chunks.length} chunk(s) of ≤${chunkTokens} tok`,
@@ -1367,7 +1369,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								setPhase(jobKey, "auditing", "notes", input.filePath, part);
 								const auditResult = await audit(jobKey, input.id, findings);
 								setPhase(jobKey, "merging", "notes", input.filePath, part);
-								const merged = mergeFindings(
+								const merged = await mergeFindings(
 									id,
 									findings,
 									auditResult,
@@ -1381,7 +1383,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 									mergedStats.droppedChains = (mergedStats.droppedChains ?? 0) + merged.droppedChains;
 								// The layout ledger evolves with each merge — the next
 								// snapshot fetch reflects every finished chunk.
-								settleGraphLayout(graphStore);
+								await settleGraphLayout(graphStore);
 								console.info(`[extraction ${jobKey}] merged: ${merged.nodes} nodes, ${merged.chains ?? 0} chains`);
 								return merged;
 							});
@@ -1437,7 +1439,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		inFlight.add(id);
 		try {
 			const importedAt = new Date().toISOString();
-			graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
+			await graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
 			return await runNotesExtraction({ id, ...input, importedAt });
 		} catch (err) {
 			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError) throw err;

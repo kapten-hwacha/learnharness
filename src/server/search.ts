@@ -275,27 +275,36 @@ export function resolveSearchEngineFor(
 	};
 }
 
+let cachedSearchEngine: SearchEngineId | undefined;
+
+export function updateCachedSearchEngine(engine?: SearchEngineId): void {
+	cachedSearchEngine = engine;
+}
+
 /** The live search state (the honest availability signal): reads the
  *  settings record's pin + the auth store fresh each call, so a key saved
  *  mid-session activates on the next check (no restart). */
-export function searchStatus(): SearchStatus {
+export async function searchStatus(): Promise<SearchStatus> {
+	const settings = await effectiveSettings();
 	const { available, engine, reason } = resolveSearchEngineFor(
-		effectiveSettings().agent.search?.engine,
+		settings.agent.search?.engine,
 		engineKeys(),
 	);
+	cachedSearchEngine = settings.agent.search?.engine;
 	return { available, engine, reason };
 }
 
 /** Search status only — research itself remains available without a key. */
 export function searchAvailable(): boolean {
-	return searchStatus().available;
+	const { available } = resolveSearchEngineFor(cachedSearchEngine, engineKeys());
+	return available;
 }
 
 /** The LIVE adapter, or null when unavailable. Composed fresh each call —
  *  the tool layer (Teacher stream) calls this once per search, so key
  *  rotations take effect immediately. */
 export function searchProvider(): SearchProvider | null {
-	const resolved = resolveSearchEngineFor(effectiveSettings().agent.search?.engine, engineKeys());
+	const resolved = resolveSearchEngineFor(cachedSearchEngine, engineKeys());
 	if (!resolved.available || !resolved.key) return null;
 	switch (resolved.engine) {
 		case "tavily":
@@ -312,3 +321,5 @@ export function searchProvider(): SearchProvider | null {
 			return null;
 	}
 }
+
+void searchStatus();

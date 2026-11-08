@@ -1,7 +1,24 @@
-import { chainsForSelection, formatChainLine, practiceContextForSelection } from "@/src/core";
-import { newGraphContextMessage, type GraphContextPick, type GraphNode, type PropositionReviewState } from "@/src/core";
-import { compactionInFlight, createChat, isTurnRunning, listChats, readReview, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
-import type { ChatListItem } from "@/src/core";
+import {
+	chainsForSelection,
+	formatChainLine,
+	fuzzyScore,
+	practiceContextForSelection,
+	newGraphContextMessage,
+	type GraphContextPick,
+	type GraphNode,
+	type PropositionReviewState,
+	type ChatListItem,
+} from "@/src/core";
+import {
+	compactionInFlight,
+	createChat,
+	isTurnRunning,
+	listChats,
+	readReview,
+	readSettingsRecord,
+	stores,
+	titleFromPrompt,
+} from "@/src/server";
 
 /** The session picker's list: record-derived summaries (phase, pending
  *  question) + live liveness — a running turn marks the session busy
@@ -18,11 +35,53 @@ function formatReviewTag(item: PropositionReviewState | undefined, now: number, 
 	return prefix ? `${prefix} · ${base}` : base;
 }
 
-export async function GET() {
-	const chats: ChatListItem[] = listChats().map((c) => ({
+export async function GET(req?: Request) {
+	const allChats = await listChats();
+	let filtered = allChats;
+
+	const url = req?.url ? new URL(req.url) : null;
+	const q = url?.searchParams.get("q")?.trim();
+
+	const snippets = new Map<string, string>();
+
+	if (q) {
+		const [chatHits, nodeHits, allNodes] = await Promise.all([
+			stores.chatStore.searchChats(q),
+			stores.graphStore.searchNodes(q),
+			stores.graphStore.readNodes(),
+		]);
+
+		for (const hit of chatHits) {
+			if (hit.snippet) {
+				snippets.set(hit.chatId, hit.snippet);
+			}
+		}
+
+		const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+		for (const hit of nodeHits) {
+			const node = nodeMap.get(hit.nodeId);
+			if (node) {
+				const snippetText = hit.statement || hit.name;
+				for (const pt of node.provenance) {
+					if (pt.chatId && !snippets.has(pt.chatId)) {
+						snippets.set(pt.chatId, snippetText);
+					}
+				}
+			}
+		}
+
+		filtered = allChats.filter((c) => {
+			const titleMatches = fuzzyScore(q, c.title) !== null;
+			const hasSnippet = snippets.has(c.id);
+			return titleMatches || hasSnippet;
+		});
+	}
+
+	const chats: ChatListItem[] = filtered.map((c) => ({
 		...c,
 		busy: isTurnRunning(c.id),
 		compacting: compactionInFlight(c.id),
+		...(snippets.has(c.id) ? { snippet: snippets.get(c.id) } : {}),
 	}));
 	return Response.json({ chats });
 }
@@ -33,7 +92,7 @@ export async function POST(req: Request) {
 	// Practice sessions (owner, 2026-10-04): kind "practice" marks the
 	// record — the practice agent + its tools from turn 1, no extraction.
 	const kind = body.kind === "practice" ? ("practice" as const) : undefined;
-	const chat = createChat(titleFromPrompt(title || "Untitled session"), kind);
+	const chat = await createChat(titleFromPrompt(title || "Untitled session"), kind);
 	// PER-SESSION MODELS (owner, 2026-09-28): a session owns its model +
 	// thinking level from birth — stamped verbatim from the STRONG slot,
 	// the new-session default. From here the strong slot never reaches
@@ -41,9 +100,10 @@ export async function POST(req: Request) {
 	// (PUT /api/chats/:id/settings). No strong slot configured (fresh BYOK
 	// boot) → no stamp; the turn gate's 503 models_not_configured envelope
 	// refuses honestly until the setup flow fills the slot.
-	const strong = readSettingsRecord()?.models?.strong;
+	const settings = await readSettingsRecord();
+	const strong = settings?.models?.strong;
 	if (strong?.model) {
-		stores.chatStore.saveSettings(chat.id, {
+		await stores.chatStore.saveSettings(chat.id, {
 			model: { provider: strong.model.provider, id: strong.model.id },
 			thinkingLevel: strong.thinkingLevel,
 		});
@@ -68,13 +128,13 @@ export async function POST(req: Request) {
 					.slice(0, 64)
 			: [];
 	if (picks.length > 0) {
-		const allNodes = stores.graphStore.readNodes();
-		const allChains = stores.graphStore.readChains();
+		const allNodes = await stores.graphStore.readNodes();
+		const allChains = await stores.graphStore.readChains();
 		const byId = new Map(allNodes.map((n) => [n.id, n]));
 		const pickedNodes = picks.map((p) => byId.get(p.id)).filter((n): n is GraphNode => n !== undefined);
 
 		if (kind === "practice") {
-			const review = readReview();
+			const review = await readReview();
 			const now = Date.now();
 			for (const pick of picks) {
 				pick.tag = formatReviewTag(review.state.get(pick.id), now);
@@ -87,12 +147,12 @@ export async function POST(req: Request) {
 				tag: formatReviewTag(review.state.get(node.id), now, "supporting premise"),
 			}));
 			const chainLines = chains.map((c) => formatChainLine(c, Object.fromEntries(byId)));
-			stores.chatStore.saveMessages(chat.id, [newGraphContextMessage([...picks, ...supportingPicks], chainLines)]);
+			await stores.chatStore.saveMessages(chat.id, [newGraphContextMessage([...picks, ...supportingPicks], chainLines)]);
 		} else {
 			const chainLines = chainsForSelection(pickedNodes, allChains).map((c) =>
 				formatChainLine(c, Object.fromEntries(byId)),
 			);
-			stores.chatStore.saveMessages(chat.id, [newGraphContextMessage(picks, chainLines)]);
+			await stores.chatStore.saveMessages(chat.id, [newGraphContextMessage(picks, chainLines)]);
 		}
 	}
 	return Response.json({ id: chat.id, title: chat.title });

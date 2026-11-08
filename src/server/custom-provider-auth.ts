@@ -15,11 +15,11 @@ export interface CustomAuthState {
 }
 /** requiredConfig prevents even credential resolution until startup/runtime
  * authorization matches. Explicit UI inspection/probe authorization omits it. */
-export function customAuthState(inspectKey = false, requiredConfig?: CustomProviderSettings): CustomAuthState {
+export async function customAuthState(inspectKey = false, requiredConfig?: CustomProviderSettings): Promise<CustomAuthState> {
 	try {
-		const snapshot = readCustomAuth();
-		const result: CustomAuthState = { readable: true, binding: snapshot.binding, source: "none" };
-		if (!inspectKey || (requiredConfig && !customBindingMatches(requiredConfig, snapshot.binding))) return result;
+		const snapshot = await readCustomAuth();
+		const result: CustomAuthState = { readable: true, binding: snapshot.binding ?? undefined, source: "none" };
+		if (!inspectKey || (requiredConfig && !customBindingMatches(requiredConfig, snapshot.binding ?? undefined))) return result;
 		result.fileKey = snapshot.fileKey();
 		const record = authEnvRecord();
 		const env = getRuntimeEnv();
@@ -34,8 +34,8 @@ export function customKeyAuthorized(cp: CustomProviderSettings | undefined, stat
 }
 /** Reflect only after the atomic pair is committed. Runtime file resolution
  * does not rely on this compatibility mirror, including after a failed write. */
-export function persistCustomAuth(binding: CustomAuthBinding | undefined, fileKey: string | undefined): void {
-	writeCustomAuth(binding, fileKey);
+export async function persistCustomAuth(binding: CustomAuthBinding | undefined, fileKey: string | undefined): Promise<void> {
+	await writeCustomAuth(binding, fileKey);
 	const record = authEnvRecord();
 	if (!record.realEnv.has(CUSTOM_PROVIDER.envVar)) {
 		const env = getRuntimeEnv();

@@ -13,12 +13,11 @@ export default async function ChatPage({
 	searchParams: Promise<{ prompt?: string }>;
 }) {
 	const [{ id }, { prompt }] = await Promise.all([params, searchParams]);
-	const chat = getChat(id);
+	const [chat, record] = await Promise.all([getChat(id), readSettingsRecord()]);
 	if (!chat) notFound();
 	// The persistent setup CTA's seed (BYOK, owner 2026-09-22): slotsConfigured
 	// over the settings record, server-read — the same gate home/new read. The
 	// server's 503 stays the truth; this only decides whether the pill rides.
-	const record = readSettingsRecord();
 	return (
 		<Chat
 			key={chat.id}

@@ -48,15 +48,15 @@ export type ClarifyReplier = (args: {
 export interface ClarifyDeps {
 	chatStore: ChatStore;
 	/** The clarifier's engine, or the refusal the learner sees. */
-	engine: () => EngineChoice;
+	engine: () => EngineChoice | Promise<EngineChoice>;
 	/** Test seam: a scripted reply replaces the sub-agent run. */
 	reply?: ClarifyReplier;
 }
 
 /** The clarifier role's engine from the user's settings (BYOK chain: the
  *  Cheap slot). A foreground call: the learner is waiting on it. */
-function settingsEngine(): EngineChoice {
-	const spec = resolveRoleSpec("clarifier", stores.settingsStore.readSettings());
+async function settingsEngine(): Promise<EngineChoice> {
+	const spec = resolveRoleSpec("clarifier", await stores.settingsStore.readSettings());
 	if (!spec) return { status: 503, error: modelsNotConfigured(["cheap"]).error };
 	if (!providerKeyPresent(spec.provider)) return { status: 503, error: providerKeyMissing(spec.provider, ["cheap"]).error };
 	try {
@@ -99,8 +99,8 @@ function openQuestion(record: ChatRecord, toolCallId: string): { messageId: stri
 
 /** The saved side chat for one question ([] when none), or null for an
  *  unknown chat. */
-export function clarifyThread(chatId: string, toolCallId: string, deps: Pick<ClarifyDeps, "chatStore"> = defaultDeps): ClarifyExchange[] | null {
-	const record = deps.chatStore.getChat(chatId);
+export async function clarifyThread(chatId: string, toolCallId: string, deps: Pick<ClarifyDeps, "chatStore"> = defaultDeps): Promise<ClarifyExchange[] | null> {
+	const record = await deps.chatStore.getChat(chatId);
 	if (!record) return null;
 	return record.clarifications?.[toolCallId] ?? [];
 }
@@ -115,7 +115,7 @@ export async function clarifyQuestion(
 	const b = (typeof body === "object" && body !== null ? body : {}) as { toolCallId?: unknown; text?: unknown };
 	if (typeof b.toolCallId !== "string" || b.toolCallId.length === 0) return { ok: false, status: 400, error: "toolCallId is required" };
 	const toolCallId = b.toolCallId;
-	const record = deps.chatStore.getChat(chatId);
+	const record = await deps.chatStore.getChat(chatId);
 	if (!record) return { ok: false, status: 404, error: "unknown chat" };
 	const question = openQuestion(record, toolCallId);
 	if (!question) return { ok: false, status: 409, error: "This question is no longer open." };
@@ -126,7 +126,7 @@ export async function clarifyQuestion(
 
 	const key = `${chatId}:${toolCallId}`;
 	if (inFlight.has(key)) return { ok: false, status: 409, error: "Still answering your last message." };
-	const choice = deps.engine();
+	const choice = await deps.engine();
 	if (!("engine" in choice)) return { ok: false, ...choice };
 	const { engine } = choice;
 
@@ -141,11 +141,11 @@ export async function clarifyQuestion(
 		// The money channel: every billed request lands in the turn log,
 		// whether the reply succeeds, fails, or can no longer be saved.
 		const usage: Usage[] = [];
-		const recordUsage = () => {
+		const recordUsage = async () => {
 			if (usage.length === 0) return;
 			const steps: CallUsage[] = usage.map((u) => usageToCallUsage(u));
 			try {
-				deps.chatStore.appendTurnUsage(chatId, {
+				await deps.chatStore.appendTurnUsage(chatId, {
 					id: crypto.randomUUID(),
 					messageId: question.messageId,
 					at: new Date().toISOString(),
@@ -160,20 +160,20 @@ export async function clarifyQuestion(
 		try {
 			text = await (deps.reply ?? subagentReply)({ prompt, engine, chatId, signal, onUsage: (u) => usage.push(u) });
 		} catch (err) {
-			recordUsage();
+			await recordUsage();
 			if (err instanceof Error && err.name === "AbortError") return { ok: false, status: 499, error: "cancelled" };
 			return { ok: false, status: 502, error: `The side-chat model failed: ${err instanceof Error ? err.message : String(err)}` };
 		}
-		recordUsage();
+		await recordUsage();
 		const at = new Date().toISOString();
 		const reply = text.trim();
 		if (!reply) return { ok: false, status: 502, error: "The side-chat model returned an empty reply. Try again." };
 		// The learner may have answered while the reply was being written:
 		// only an exchange about a still-open question joins the thread.
-		const latest = deps.chatStore.getChat(chatId);
+		const latest = await deps.chatStore.getChat(chatId);
 		if (!latest || !openQuestion(latest, toolCallId)) return { ok: false, status: 409, error: "This question was answered before the reply arrived." };
 		const exchange: ClarifyExchange = { asked, reply, at };
-		const saved = deps.chatStore.appendClarification(chatId, toolCallId, exchange);
+		const saved = await deps.chatStore.appendClarification(chatId, toolCallId, exchange);
 		return { ok: true, exchange, thread: saved };
 	} finally {
 		inFlight.delete(key);

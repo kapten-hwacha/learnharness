@@ -13,13 +13,14 @@ import { effectiveSettings } from "../src/server/stores.ts";
 
 async function main() {
 	const only = process.argv[2]; // optional: extract just one chat id
-	const chats = only ? chatStore.listChats().filter((c) => c.id === only) : chatStore.listChats();
+	const allChats = await chatStore.listChats();
+	const chats = only ? allChats.filter((c) => c.id === only) : allChats;
 	console.log(`[backfill] ${chats.length} chats to extract`);
 	const pipeline = createExtractionPipeline({
 		chatStore,
 		graphStore,
 		// Live budget: the graph section's setting, same as the app's trigger
-		getChunkTokens: () => effectiveSettings().graph.extractionChunkTokens,
+		getChunkTokens: async () => (await effectiveSettings()).graph.extractionChunkTokens,
 	});
 	for (const chat of chats) {
 		const t0 = Date.now();
@@ -33,7 +34,7 @@ async function main() {
 			console.error(`[backfill] ${chat.id} FAILED:`, err);
 		}
 	}
-	const graph = getGraph(graphStore);
+	const graph = await getGraph(graphStore);
 	console.log(
 		`[backfill] done: ${graph.nodes.length} nodes, ${graph.chains.length} chains`,
 	);

@@ -21,7 +21,8 @@ import { effectivePromptSegments, readSettingsRecord } from "@/src/server";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-	const switches = readSettingsRecord()?.agent?.prompts ?? {};
+	const record = await readSettingsRecord();
+	const switches = record?.agent?.prompts ?? {};
 	return Response.json({
 		prober: effectivePromptSegments("prober", switches),
 		teacher: effectivePromptSegments("teacher", switches),

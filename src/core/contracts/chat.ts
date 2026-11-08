@@ -305,6 +305,7 @@ export interface ChatListItem extends ChatSummary {
 	 *  route attaches it from the compaction registry — never
 	 *  record-derived (the marker persists, the RUN is ephemeral). */
 	compacting: boolean;
+	snippet?: string;
 }
 
 // ─── Learner images in the lesson (issue #363) ──────────────────────────────

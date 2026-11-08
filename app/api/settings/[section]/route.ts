@@ -66,7 +66,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ section: st
 		return Response.json({ error: parsed.error }, { status: 400 });
 	}
 	// Compare against the same record that this whole-section write replaces.
-	const record = readSettingsRecord() ?? { version: 1 };
+	const record = (await readSettingsRecord()) ?? { version: 1 };
 	let agentHealed: AgentSettings | undefined;
 
 	// Section-specific cross-validation (against the catalog / the prompt
@@ -97,7 +97,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ section: st
 		const segments = new Set(allSegmentPaths());
 		const orphans: string[] = [];
 		for (const [path, on] of Object.entries(agent.prompts ?? {})) {
-			if (on && (!segments.has(path) || promptOverrides.readOverride(path) === null)) orphans.push(path);
+			if (on && (!segments.has(path) || (await promptOverrides.readOverride(path)) === null)) orphans.push(path);
 		}
 		if (orphans.length > 0) {
 			const prompts = { ...(agent.prompts ?? {}) };
@@ -117,9 +117,10 @@ export async function PUT(request: Request, ctx: { params: Promise<{ section: st
 	// The agent section lands HEALED when orphaned prompt switches were
 	// found above (the healed copy) — after every write the record and
 	// file reality agree.
+	const eff = await effectiveSettings();
 	const sectionOut =
 		section === "chat"
-			? clampChatLevel(parsed.settings as ChatSettings, effectiveSettings().models.strong)
+			? clampChatLevel(parsed.settings as ChatSettings, eff.models.strong)
 			: section === "models"
 				? clampModelsLevels(parsed.settings as ModelsSettings)
 				: section === "agent" && agentHealed
@@ -129,7 +130,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ section: st
 	// Read-modify-write ONE section of the record; everything else rides
 	// along untouched (other sections, unknown keys — sanitize preserves).
 	const next = { ...record, [section]: sectionOut };
-	const stored = writeSettingsRecord(next);
+	const stored = await writeSettingsRecord(next);
 	const fileAccessError = fileAccessConfigurationError();
 	return Response.json({ settings: stored, ...(fileAccessError ? { fileAccessError } : {}) });
 }

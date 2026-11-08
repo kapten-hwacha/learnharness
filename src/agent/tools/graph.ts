@@ -69,12 +69,12 @@ export function formatPropositionReviewSuffix(review: PropositionReviewState | u
 
 export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentTool<any>> {
 	const deps = { chatStore: ctx.chatStore, graphStore: ctx.graphStore };
-	const history = (): PracticeHistory => {
+	const history = async (): Promise<PracticeHistory> => {
 		const records: PracticeRecord[] = [];
 		const teachChatIds = new Set<string>();
 		const teachRatings = new Map<string, ReturnType<typeof teachSessionSeedRating>>();
-		for (const summary of ctx.chatStore.listChats()) {
-			const chat = ctx.chatStore.getChat(summary.id);
+		for (const summary of await ctx.chatStore.listChats()) {
+			const chat = await ctx.chatStore.getChat(summary.id);
 			if (!chat) continue;
 			const messages = chat.messages ?? [];
 			if (summary.kind === "practice") records.push(...practiceRecordsFromChat(summary.id, messages));
@@ -92,7 +92,7 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 				"Reading this first shows what he has already covered and when, before you probe anything.",
 			parameters: listSessionsInput,
 			execute: serverExecute("list_sessions", listSessionsInput, async (): Promise<string> => {
-				const sessions = graphSessionIndex(deps);
+				const sessions = await graphSessionIndex(deps);
 				if (sessions.length === 0) return "The knowledge graph is empty — no session has contributed propositions yet.";
 				const lines = sessions.map((s, i) =>
 					`${i + 1}. ${s.name} (${s.kind}, ${s.propositions} proposition${s.propositions === 1 ? "" : "s"}, ` +
@@ -109,14 +109,16 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 				"Names only — no statement text, no session contents (owner ruling 2026-09-23: the map's ORGANIZATION is your business, its prose is not).",
 			parameters: listPropositionsInput,
 			execute: serverExecute("list_propositions", listPropositionsInput, async ({ session }): Promise<string> => {
-				const propositions = graphSessionPropositions(deps, session);
+				const propositions = await graphSessionPropositions(deps, session);
 				if (propositions.length === 0) {
 					return `No propositions born in session "${session}". Call list_sessions for the current ids.`;
 				}
 				const now = ctx.now?.() ?? Date.now();
-				const graph = getGraph(deps.graphStore);
+				const graph = await getGraph(deps.graphStore);
 				const nodes = graph.nodes;
-				const state = reviewState(ctx.history?.() ?? history(), nodes, now, ctx.settingsStore?.readSettings()?.agent?.desiredRetention ?? 0.9);
+				const hist = ctx.history?.() ?? await history();
+				const settings = await ctx.settingsStore?.readSettings();
+				const state = reviewState(hist, nodes, now, settings?.agent?.desiredRetention ?? 0.9);
 				const lines = propositions.map((p) => `- ${p.name} · ${formatPropositionReviewSuffix(state.get(p.nodeId), now)}`);
 				const chainLines = sessionChainLines(new Set(propositions.map((p) => p.nodeId)), graph.nodes, graph.chains);
 				const baseOutput = `${propositions.length} proposition(s) covered in this session:\n${lines.join("\n")}`;
@@ -134,11 +136,11 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 				"Use when learning a new subject to discover relevant propositions that were covered in earlier sessions and may belong here.",
 			parameters: searchPropositionsInput,
 			execute: serverExecute("search_propositions", searchPropositionsInput, async ({ query, limit }): Promise<string> => {
-				const graph = getGraph(deps.graphStore);
+				const graph = await getGraph(deps.graphStore);
 				const nodes = graph.nodes;
 				if (nodes.length === 0) return "The knowledge graph is empty — no propositions exist yet.";
 
-				const rawRegroups = deps.graphStore.readRegroups();
+				const rawRegroups = (await deps.graphStore.readRegroups?.()) ?? [];
 				const regroupMap = new Map<string, string>();
 				for (const r of rawRegroups) regroupMap.set(r.nodeId, r.targetSessionId);
 
@@ -153,21 +155,26 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 					return `No propositions matching "${query}" found in other subjects.`;
 				}
 
-				const resolveSubjectLabel = (sessionId: string | null): string => {
+				const sources = (await deps.graphStore.readSources?.()) ?? [];
+				const resolveSubjectLabel = async (sessionId: string | null): Promise<string> => {
 					if (!sessionId) return "unlabeled";
-					const chat = deps.chatStore.getChat(sessionId);
+					const chat = await deps.chatStore.getChat(sessionId);
 					if (chat?.title) return chat.title;
-					const source = deps.graphStore.readSources().find((s) => s.id === sessionId);
+					const source = sources.find((s) => s.id === sessionId);
 					if (source?.filePath) return source.filePath;
 					return sessionId;
 				};
 
 				const now = ctx.now?.() ?? Date.now();
-				const state = reviewState(ctx.history?.() ?? history(), nodes, now, ctx.settingsStore?.readSettings()?.agent?.desiredRetention ?? 0.9);
+				const hist = ctx.history?.() ?? await history();
+				const settings = await ctx.settingsStore?.readSettings();
+				const state = reviewState(hist, nodes, now, settings?.agent?.desiredRetention ?? 0.9);
 
-				const lines = candidates.map((c, i) => {
+				const lines: string[] = [];
+				for (let i = 0; i < candidates.length; i++) {
+					const c = candidates[i]!;
 					const sessionId = effectiveSessionOf(c.node, regroupMap);
-					const subject = resolveSubjectLabel(sessionId);
+					const subject = await resolveSubjectLabel(sessionId);
 					const headline = `${i + 1}. [${c.node.id}] "${c.node.name}": ${c.node.statement} (Current subject: "${subject}" · ${formatPropositionReviewSuffix(state.get(c.node.id), now)})`;
 					const { incoming, outgoing } = nodeChainLines(c.node.id, graph.nodes, graph.chains);
 					const sublines: string[] = [];
@@ -177,8 +184,8 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 					for (const line of outgoing) {
 						sublines.push(`   used to derive: ${line}`);
 					}
-					return sublines.length > 0 ? `${headline}\n${sublines.join("\n")}` : headline;
-				});
+					lines.push(sublines.length > 0 ? `${headline}\n${sublines.join("\n")}` : headline);
+				}
 
 				return `Found ${candidates.length} candidate proposition(s) from other subjects:\n${lines.join("\n")}`;
 			}),
@@ -193,10 +200,10 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 			execute: serverExecute("regroup_propositions", regroupPropositionsInput, async ({ nodeIds, reason }): Promise<string> => {
 				if (!ctx.chatId) return "Cannot regroup propositions: active session ID is missing.";
 
-				const nodes = getGraph(deps.graphStore).nodes;
+				const nodes = (await getGraph(deps.graphStore)).nodes;
 				const knownNodes = new Map(nodes.map((n) => [n.id, n]));
 
-				const rawRegroups = deps.graphStore.readRegroups();
+				const rawRegroups = (await deps.graphStore.readRegroups?.()) ?? [];
 				const regroupMap = new Map<string, string>();
 				for (const r of rawRegroups) regroupMap.set(r.nodeId, r.targetSessionId);
 
@@ -223,12 +230,12 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 						reason: reason.trim(),
 						regroupedAt: new Date().toISOString(),
 					};
-					deps.graphStore.appendRegroup(record);
+					await deps.graphStore.appendRegroup(record);
 					regroupMap.set(node.id, ctx.chatId);
 					regrouped.push({ id: node.id, name: node.name });
 				}
 
-				const targetTitle = deps.chatStore.getChat(ctx.chatId)?.title ?? ctx.chatId;
+				const targetTitle = (await deps.chatStore.getChat(ctx.chatId))?.title ?? ctx.chatId;
 				const parts: string[] = [];
 
 				if (regrouped.length > 0) {
@@ -290,10 +297,10 @@ interface CandidateLookup {
  * audit's immutable queries. A new search cannot accidentally inherit an old
  * offset. Tokens are opaque, per-audit and stable when a request is repeated;
  * none of this suppresses previously returned records. */
-export function prepareAuditorReview(ctx: GraphToolContext, propositions: readonly CandidateProposition[] = []): {
+export async function prepareAuditorReview(ctx: GraphToolContext, propositions: readonly CandidateProposition[] = []): Promise<{
 	initialCandidates: AuditorCandidateBatch;
 	tools: Record<string, AgentTool<any>>;
-} {
+}> {
 	const deps = { chatStore: ctx.chatStore, graphStore: ctx.graphStore };
 	const findInput = Type.Object({
 		propositions: Type.Array(Type.Object({
@@ -304,7 +311,8 @@ export function prepareAuditorReview(ctx: GraphToolContext, propositions: readon
 			cursor: Type.Optional(Type.String({ minLength: 1, description: "Continue a previous query with its nextCursor. Do not supply hints with a cursor; its query is already fixed. Omit cursor to start a new search at its first page." })),
 		}, { additionalProperties: false }), { minItems: 1, description: "Look up only findings needing a specific additional search. Include each id once." }),
 	}, { additionalProperties: false });
-	let search: ReturnType<typeof createPropositionCandidateSearch> | undefined;
+	const graph = await getGraph(deps.graphStore);
+	const search = createPropositionCandidateSearch(graph.nodes);
 	const continuations = new Map<string, CandidateRequest>();
 	const tokens = new Map<string, string>();
 	function lookup(requests: readonly CandidateLookup[]): AuditorCandidateBatch {
@@ -315,7 +323,6 @@ export function prepareAuditorReview(ctx: GraphToolContext, propositions: readon
 			if (!query || query.id !== request.id) throw new Error("Unknown cursor for this finding and audit. Start a fresh lookup without cursor.");
 			return query;
 		});
-		search ??= createPropositionCandidateSearch(getGraph(deps.graphStore).nodes);
 		const batch = propositionCandidateBatch(search, propositions, queries);
 		return {
 			matches: batch.matches.map((match, index) => {
@@ -355,7 +362,7 @@ export function prepareAuditorReview(ctx: GraphToolContext, propositions: readon
 				"Each line: name, kind, proposition count, id. Use the id with list_propositions to see what a session covered.",
 			parameters: Type.Object({}),
 			execute: serverExecute("list_sessions", Type.Object({}), async (): Promise<string> => {
-				const sessions = graphSessionIndex(deps);
+				const sessions = await graphSessionIndex(deps);
 				if (sessions.length === 0) return "The knowledge graph is empty — no session has contributed propositions yet.";
 				const lines = sessions.map((s, i) => `${i + 1}. ${s.name} (${s.kind}, ${s.propositions} proposition${s.propositions === 1 ? "" : "s"}) — id: ${s.id}`);
 				return `${sessions.length} session(s):\n${lines.join("\n")}`;
@@ -369,9 +376,10 @@ export function prepareAuditorReview(ctx: GraphToolContext, propositions: readon
 				"(deciding whether a new proposition is really one of these).",
 			parameters: listPropositionsInput,
 			execute: serverExecute("list_propositions", listPropositionsInput, async ({ session }): Promise<string> => {
-				const propositions = graphSessionPropositions(deps, session);
+				const propositions = await graphSessionPropositions(deps, session);
 				if (propositions.length === 0) return `No propositions born in session "${session}". Call list_sessions for the current ids.`;
-				const nodes = new Map(getGraph(deps.graphStore).nodes.map((n) => [n.id, n]));
+				const currentGraph = await getGraph(deps.graphStore);
+				const nodes = new Map(currentGraph.nodes.map((n) => [n.id, n]));
 				const lines = propositions.map((p) => {
 					const node = nodes.get(p.nodeId);
 					return `- ${p.nodeId} :: ${p.name}\n  statement: ${node?.statement ?? "(unknown)"}`;

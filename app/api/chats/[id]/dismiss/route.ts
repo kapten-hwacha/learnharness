@@ -24,7 +24,7 @@ import { getChat, isTurnRunning, parkDismissal, stores } from "@/src/server";
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
 	const { id } = await ctx.params;
-	const chat = getChat(id);
+	const chat = await getChat(id);
 	if (!chat) return Response.json({ error: "Unknown chat" }, { status: 404 });
 
 	let input;
@@ -59,7 +59,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
 	// Write-ahead, turn-less: the record is the only state that moves.
 	const merged = [...chat.messages, ...appends];
-	stores.chatStore.saveMessages(id, merged);
+	await stores.chatStore.saveMessages(id, merged);
 	emit("record-changed", { chatId: id });
 	return Response.json({ ok: true });
 }

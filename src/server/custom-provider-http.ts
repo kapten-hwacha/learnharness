@@ -18,12 +18,12 @@ const secret = globals[revisionKey] ??= randomBytes(32);
 const failure = (error: string, status = 400) => Response.json({ error }, { status });
 const stale = () => failure("Custom configuration or credentials changed. Reload configuration and retry.", 409);
 
-function snapshot(inspectKey = false) {
-	const record = readSettings() ?? { version: 1 };
+async function snapshot(inspectKey = false) {
+	const record = (await readSettings()) ?? { version: 1 };
 	const cp = record.customProvider;
 	// Keyless never looks up a key for authentication or revision generation.
 	// An explicit API-key inspection is used only after the user selects that mode.
-	const auth = customAuthState(inspectKey);
+	const auth = await customAuthState(inspectKey);
 	const key = auth.key;
 	// Public revisions contain configuration only, never credential material.
 	// Effective credentials are compared privately across the awaited probe.
@@ -31,14 +31,15 @@ function snapshot(inspectKey = false) {
 	return { record, cp, auth, key, etag };
 }
 
-function response(body: object) {
-	return Response.json(body, { headers: { etag: snapshot().etag, "cache-control": "no-store" } });
+async function response(body: object) {
+	const snap = await snapshot();
+	return Response.json(body, { headers: { etag: snap.etag, "cache-control": "no-store" } });
 }
 
-export function customProviderGet(request: Request): Response {
+export async function customProviderGet(request: Request): Promise<Response> {
 	const inspect = new URL(request.url).searchParams.get("authMode") === "apiKey";
-	const current = snapshot();
-	const s = snapshot(inspect || current.cp?.authMode === "apiKey");
+	const current = await snapshot();
+	const s = await snapshot(inspect || current.cp?.authMode === "apiKey");
 	return response({
 		baseUrl: s.cp?.baseUrl ?? "", authMode: s.cp?.authMode ?? "keyless",
 		models: s.cp?.models ?? [], overrides: s.cp?.overrides ?? {}, manualModels: s.cp?.manualModels ?? [],
@@ -64,21 +65,21 @@ function authorized(request: Request): boolean {
 /** Auth pair FIRST, matching config nonce SECOND. Any interrupted/failed
  * cross-file publication is durably unusable, including with a real env key.
  * Best-effort rollback restores the entire old pair, never just its secret. */
-function commit(cp: CustomProviderSettings | undefined, binding?: CustomAuthBinding, fileKey?: string): void {
-	const latest = readSettings() ?? { version: 1 };
-	const oldAuth = binding ? readCustomAuth() : undefined;
+async function commit(cp: CustomProviderSettings | undefined, binding?: CustomAuthBinding, fileKey?: string): Promise<void> {
+	const latest = (await readSettings()) ?? { version: 1 };
+	const oldAuth = binding ? await readCustomAuth() : undefined;
 	let published = false;
 	try {
-		if (binding) { persistCustomAuth(binding, fileKey); published = true; }
+		if (binding) { await persistCustomAuth(binding, fileKey); published = true; }
 		const { customProvider: _old, ...rest } = latest;
-		writeSettings(cp ? { ...rest, customProvider: cp } : rest);
+		await writeSettings(cp ? { ...rest, customProvider: cp } : rest);
 	} catch {
 		if (published && oldAuth) {
-			try { persistCustomAuth(oldAuth.binding, oldAuth.fileKey()); } catch { /* durable nonce mismatch fails closed after restart */ }
+			try { await persistCustomAuth(oldAuth.binding ?? undefined, oldAuth.fileKey()); } catch { /* durable nonce mismatch fails closed after restart */ }
 		}
 		throw new Error("Unable to save custom configuration. Reload configuration and retry.");
 	}
-	syncCustomProvider();
+	await syncCustomProvider();
 }
 
 export async function customProviderMutation(request: Request): Promise<Response> {
@@ -90,20 +91,20 @@ export async function customProviderMutation(request: Request): Promise<Response
 		const body = await readBoundedJson(request, 64 * 1024, request.method === "DELETE");
 		if (!body || typeof body !== "object" || Array.isArray(body)) return failure("Invalid JSON body");
 		const raw = body as Record<string, unknown>;
-		const before = snapshot(raw.authMode === "apiKey");
+		const before = await snapshot(raw.authMode === "apiKey");
 		if (!before.auth.readable) return failure("Custom authorization storage is unavailable. No changes were saved.", 500);
 		if (request.headers.get("if-match") !== before.etag) return stale();
 		if (request.method === "DELETE") {
-			commit(undefined, { version: 1, id: randomBytes(16).toString("hex"), authMode: "disabled" });
-			return response({ ok: true });
+			await commit(undefined, { version: 1, id: randomBytes(16).toString("hex"), authMode: "disabled" });
+			return await response({ ok: true });
 		}
 		if (request.method === "PATCH") {
 			const parsed = parseCustomModelOverridesBody(raw);
 			if (!parsed.ok) return failure(parsed.error);
 			if (!before.cp?.baseUrl) return failure("No custom endpoint configured", 409);
-			const overrides = sanitizeCustomModelOverrides(parsed.settings, before.cp.models?.map((m) => m.id));
-			commit({ ...before.cp, overrides });
-			return response({ ok: true, overrides });
+			const overrides = sanitizeCustomModelOverrides(parsed.settings, before.cp.models?.map((m: { id: string }) => m.id));
+			await commit({ ...before.cp, overrides });
+			return await response({ ok: true, overrides });
 		}
 		if (request.method !== "POST") return failure("Unsupported method", 405);
 		const base = normalizeBaseUrl(typeof raw.baseUrl === "string" ? raw.baseUrl : "");
@@ -131,7 +132,7 @@ export async function customProviderMutation(request: Request): Promise<Response
 		if (!found.ok && !manualModels.length) return failure(`${found.error}. If this endpoint has no /models list, add model IDs manually.`, 502);
 		// Discovery yields; both the custom record and the credential must still
 		// match. Unrelated settings edits are preserved by commit's fresh merge.
-		const now = snapshot(authMode === "apiKey");
+		const now = await snapshot(authMode === "apiKey");
 		if (before.etag !== now.etag || JSON.stringify(before.auth) !== JSON.stringify(now.auth)) return stale();
 		const discovered = found.ok ? found.models : !changedTarget ? before.cp?.models ?? [] : [];
 		const models = mergeManualModels(discovered, manualModels);
@@ -141,8 +142,8 @@ export async function customProviderMutation(request: Request): Promise<Response
 		const fileKey = authMode === "keyless" ? undefined : supplied && !envOwned ? supplied : now.auth.fileKey;
 		const fileKeyBaseUrl = authMode === "apiKey" ? envOwned ? now.auth.binding?.fileKeyBaseUrl : base : undefined;
 		const binding: CustomAuthBinding = { version: 1, id, baseUrl: base, authMode, ...(fileKey && fileKeyBaseUrl ? { fileKeyBaseUrl } : {}) };
-		commit({ baseUrl: base, authMode, credentialBindingId: id, models, overrides, ...(manualModels.length ? { manualModels } : {}) }, binding, fileKey);
-		return response({ ok: true, models });
+		await commit({ baseUrl: base, authMode, credentialBindingId: id, models, overrides, ...(manualModels.length ? { manualModels } : {}) }, binding, fileKey);
+		return await response({ ok: true, models });
 	} catch (error) {
 		return failure(error instanceof CustomBodyLimitError ? "Configuration body exceeds 64 KiB." : error instanceof SyntaxError ? "Invalid JSON body." : "Unable to save custom configuration. Reload configuration and retry.", error instanceof CustomBodyLimitError ? 413 : error instanceof SyntaxError ? 400 : 500);
 	}

@@ -19,7 +19,7 @@ import { deleteGraphNode } from "@/src/server";
  */
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
-	const outcome = deleteGraphNode(id);
+	const outcome = await deleteGraphNode(id);
 	if (!outcome.ok) {
 		return Response.json({ error: outcome.error, code: outcome.code }, { status: outcome.status });
 	}

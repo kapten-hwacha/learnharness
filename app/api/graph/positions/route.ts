@@ -20,5 +20,5 @@ export async function PUT(request: Request) {
 	} catch {
 		return Response.json({ error: "invalid JSON body" }, { status: 400 });
 	}
-	return Response.json({ positions: commitPositions(body) });
+	return Response.json({ positions: await commitPositions(body) });
 }

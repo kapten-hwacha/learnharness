@@ -12,59 +12,60 @@ export class SourceOrganizationInputError extends Error {}
 
 export function createSourceDirectory(deps: { chatStore: ChatStore; graphStore: GraphStore; sourceOrganizationStore: SourceOrganizationStore }) {
 	const freshFolder = () => ({ id: `folder_${randomUUID()}`, createdAt: new Date().toISOString() });
-	function read(): SourceDirectory {
-		const organization = deps.sourceOrganizationStore.read();
+	async function read(): Promise<SourceDirectory> {
+		const organization = await deps.sourceOrganizationStore.read();
 		const entries = new Map<string, SourceEntry>();
-		for (const c of deps.chatStore.listChats()) entries.set(c.id, { id: c.id, kind: "chat", chatKind: c.kind, label: c.title, createdAt: c.createdAt });
-		for (const s of deps.graphStore.readSources()) entries.set(s.id, {
+		for (const c of await deps.chatStore.listChats()) entries.set(c.id, { id: c.id, kind: "chat", chatKind: c.kind, label: c.title, createdAt: c.createdAt });
+		for (const s of await deps.graphStore.readSources()) entries.set(s.id, {
 			id: s.id, kind: "notes", label: placementOf(organization, s.id)?.name ?? sourceFileLabel(s.filePath),
 			filePath: s.filePath, createdAt: s.importedAt,
 		});
 		// Preserve graph groups whose naming record is gone; do not resurrect a chat.
-		for (const node of getGraph(deps.graphStore).nodes) for (const p of node.provenance) {
+		const graph = await getGraph(deps.graphStore);
+		for (const node of graph.nodes) for (const p of node.provenance) {
 			if (!entries.has(p.chatId)) entries.set(p.chatId, { id: p.chatId, kind: "missing", label: null, createdAt: null });
 		}
 		return { organization, sources: [...entries.values()] };
 	}
-	function change(raw: unknown): SourceDirectory & { createdFolderId?: string } {
+	async function change(raw: unknown): Promise<SourceDirectory & { createdFolderId?: string }> {
 		let action;
 		let createdFolderId: string | undefined;
 		try { action = parseOrganizationAction(raw); }
 		catch (error) { throw new SourceOrganizationInputError((error as Error).message); }
-		const directory = read();
+		const directory = await read();
 		if (action.action === "rename-source") {
 			const entry = directory.sources.find((s) => s.id === action.id);
 			if (!entry || entry.kind === "missing") throw new SourceOrganizationInputError("Source no longer exists.");
-			if (entry.kind === "chat") deps.chatStore.renameChat(entry.id, action.name);
+			if (entry.kind === "chat") await deps.chatStore.renameChat(entry.id, action.name);
 			else {
 				const state = directory.organization;
 				state.placements = { ...state.placements, [entry.id]: { folderId: null, ...placementOf(state, entry.id), name: action.name } };
-				deps.sourceOrganizationStore.write(state);
+				await deps.sourceOrganizationStore.write(state);
 			}
 		} else {
 			let next;
 			const fresh = freshFolder();
 			try { next = applyOrganizationAction(directory.organization, action, new Set(directory.sources.map((s) => s.id)), fresh); }
 			catch (error) { throw new SourceOrganizationInputError((error as Error).message); }
-			deps.sourceOrganizationStore.write(next);
+			await deps.sourceOrganizationStore.write(next);
 			if (action.action === "create-folder") createdFolderId = fresh.id;
 		}
-		return { ...read(), ...(createdFolderId ? { createdFolderId } : {}) };
+		return { ...(await read()), ...(createdFolderId ? { createdFolderId } : {}) };
 	}
 	/** Before starting the file's existing extraction pipeline. The source key
 	 * is the pipeline's unchanged path hash; no source text is stored here. */
-	function registerImport(filePath: string): void {
+	async function registerImport(filePath: string): Promise<void> {
 		const id = `src_${createHash("sha256").update(filePath).digest("hex").slice(0, 12)}`;
-		const state = deps.sourceOrganizationStore.read();
+		const state = await deps.sourceOrganizationStore.read();
 		// Legacy imports with no organization record already live at root.
 		// Explicitly preserve that placement on re-import too.
-		if (!placementOf(state, id) && deps.graphStore.readSources().some((s) => s.id === id)) {
+		if (!placementOf(state, id) && (await deps.graphStore.readSources()).some((s) => s.id === id)) {
 			state.placements = { ...state.placements, [id]: { folderId: null } };
-			deps.sourceOrganizationStore.write(state);
+			await deps.sourceOrganizationStore.write(state);
 			return;
 		}
 		const next = placeImportedSource(state, id, filePath, freshFolder);
-		if (next !== state) deps.sourceOrganizationStore.write(next);
+		if (next !== state) await deps.sourceOrganizationStore.write(next);
 	}
 	return { read, change, registerImport };
 }

@@ -28,7 +28,7 @@ export async function POST(req: Request) {
 		if (err instanceof StudyInputError) return Response.json({ error: "invalid_body" }, { status: 400 });
 		throw err;
 	}
-	const result = recordStudy(input);
+	const result = await recordStudy(input);
 	if (result.ok) return Response.json({ ok: true });
 	return Response.json({ error: result.error }, { status: result.status });
 }
@@ -37,7 +37,7 @@ export async function GET(req: Request) {
 	const params = new URL(req.url).searchParams;
 	const chatId = params.get("chatId");
 	if (chatId && !params.get("range")) {
-		return Response.json(getChatStudyStatus(chatId), { headers: { "Cache-Control": "no-store" } });
+		return Response.json(await getChatStudyStatus(chatId), { headers: { "Cache-Control": "no-store" } });
 	}
 	const tz = params.get("tz");
 	if (!tz || !isValidTimeZone(tz)) return Response.json({ error: "invalid_tz" }, { status: 400 });
@@ -45,5 +45,5 @@ export async function GET(req: Request) {
 	if (!range || !(STUDY_RANGE_KEYS as readonly string[]).includes(range)) {
 		return Response.json({ error: "invalid_range" }, { status: 400 });
 	}
-	return Response.json(studyHistory(tz, range as StudyRangeKey), { headers: { "Cache-Control": "no-store" } });
+	return Response.json(await studyHistory(tz, range as StudyRangeKey), { headers: { "Cache-Control": "no-store" } });
 }

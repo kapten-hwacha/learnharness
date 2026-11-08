@@ -321,6 +321,9 @@ export function SessionRow({
 				    rule, finally applied to the picker too (owner, typography
 				    round): mono = chrome, Source Sans = human words. */}
 				<span className="block truncate font-prose text-(length:--lh-prose-size)">{chat.title}</span>
+				{chat.snippet && (
+					<span className="block truncate text-xs text-muted-foreground/80">{chat.snippet.replace(/<\/?b>/g, "")}</span>
+				)}
 				<span className="block text-xs text-muted-foreground">{sessionMeta(chat)}</span>
 			</span>
 			{/* The dumbbell rides the FAR RIGHT (owner round 6, 2026-10-05) —
@@ -393,6 +396,7 @@ function SessionsSidebar() {
 	const { open, toggle } = useSidebar();
 	const [chats, setChats] = useState<ChatListItem[] | null>(null);
 	const [query, setQuery] = useState("");
+	const [serverSearchResults, setServerSearchResults] = useState<ChatListItem[] | null>(null);
 	const [kindFilter, setKindFilter] = useState<SessionKindFilter>("all");
 	useEffect(() => {
 		const stored = window.localStorage.getItem(KIND_FILTER_KEY);
@@ -408,11 +412,29 @@ function SessionsSidebar() {
 
 	/* New session (owner, 2026-09-13): NO POST — the button opens the
 	   sessionless draft view; the session is created only when the first
-	   message is sent (and that message becomes its title). Search: a
-	   client-side filter over the poll snapshot — no server round trip. */
+	   message is sent (and that message becomes its title). */
 	const newSession = useCallback(() => {
 		router.push("/chat/new");
 	}, [router]);
+
+	useEffect(() => {
+		const q = query.trim();
+		if (!q) {
+			setServerSearchResults(null);
+			return;
+		}
+		const timer = setTimeout(async () => {
+			try {
+				const res = await fetch(`/api/chats?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+				if (!res.ok) return;
+				const d = (await res.json()) as { chats: ChatListItem[] };
+				setServerSearchResults(d.chats);
+			} catch {
+				// ignore
+			}
+		}, 150);
+		return () => clearTimeout(timer);
+	}, [query]);
 
 	/* FUZZY (owner round 8, 2026-10-05): subsequence match ranked by
 	 * fuzzyScore — prefix beats word-boundary beats scattered. Empty query
@@ -425,12 +447,46 @@ function SessionsSidebar() {
 		}
 		if (!list) return list;
 		if (!q) return list;
-		return list
-			.map((c) => ({ c, score: fuzzyScore(q, c.title) }))
-			.filter((r): r is { c: (typeof list)[number]; score: number } => r.score !== null)
+
+		const serverMap = new Map<string, ChatListItem>();
+		if (serverSearchResults) {
+			for (const sc of serverSearchResults) {
+				if (kindFilter === "all" || (sc.kind ?? "teach") === kindFilter) {
+					serverMap.set(sc.id, sc);
+				}
+			}
+		}
+
+		const seen = new Set<string>();
+		const scoredMatches: Array<{ c: ChatListItem; score: number }> = [];
+
+		for (const c of list) {
+			const serverMatch = serverMap.get(c.id);
+			const mergedChat: ChatListItem = serverMatch?.snippet ? { ...c, snippet: serverMatch.snippet } : c;
+			const score = fuzzyScore(q, c.title);
+
+			if (score !== null) {
+				seen.add(c.id);
+				scoredMatches.push({ c: mergedChat, score });
+			} else if (serverMatch) {
+				seen.add(c.id);
+				scoredMatches.push({ c: mergedChat, score: -1 });
+			}
+		}
+
+		if (serverSearchResults) {
+			for (const sc of serverSearchResults) {
+				if (!seen.has(sc.id) && (kindFilter === "all" || (sc.kind ?? "teach") === kindFilter)) {
+					seen.add(sc.id);
+					scoredMatches.push({ c: sc, score: -1 });
+				}
+			}
+		}
+
+		return scoredMatches
 			.sort((a, b) => b.score - a.score)
 			.map((r) => r.c);
-	}, [chats, query, kindFilter]);
+	}, [chats, query, kindFilter, serverSearchResults]);
 
 	const refreshInFlightRef = useRef(false);
 	const refresh = useCallback(async () => {

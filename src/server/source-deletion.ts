@@ -26,30 +26,30 @@ export function parseSourceDeletion(raw: unknown): SourceDeletionRequest {
 /** A single synchronous deletion stretch, after the same global extraction
  * refusal as the old chains-view deletion. No imports or turns are cancelled.
  * Missing entries are harmless on retry after a partially completed I/O failure. */
-export function deleteSources(raw: unknown): SourceDirectory & { graphRevision: number } {
+export async function deleteSources(raw: unknown): Promise<SourceDirectory & { graphRevision: number }> {
 	const request = parseSourceDeletion(raw);
-	const directory = sourceDirectory.read(); // validate organization before any destructive write
+	const directory = await sourceDirectory.read(); // validate organization before any destructive write
 	const targets = directory.sources.filter((s) => request.sourceIds.includes(s.id));
 	if (targets.length && extractionStatuses().length) throw new SourceDeletionError("An extraction is running — try again when the activity dock drains.", 409, "extraction_running");
 	if (request.deleteSessions) for (const entry of targets) if (entry.kind === "chat") {
-		const blocker = runningWorkBlocker(entry.id);
+		const blocker = await runningWorkBlocker(entry.id);
 		if (blocker) throw new SourceDeletionError(blocker.error, blocker.status, blocker.code);
 	}
 	// Clear the whole selected batch in one graph rewrite. Kept chats lose
 	// coverage/checkpoints too, so their unchanged messages can be re-extracted.
-	deleteSourcesTraces(stores.graphStore, new Set(targets.map((s) => s.id)), "delete-nodes");
-	stores.graphStore.deleteSources(new Set(targets.filter((s) => s.kind === "notes").map((s) => s.id)));
+	await deleteSourcesTraces(stores.graphStore, new Set(targets.map((s) => s.id)), "delete-nodes");
+	await stores.graphStore.deleteSources(new Set(targets.filter((s) => s.kind === "notes").map((s) => s.id)));
 	const removed = new Set(request.sourceIds.filter((id) => !directory.sources.some((s) => s.id === id)));
 	for (const entry of targets) {
 		if (entry.kind === "chat" && request.deleteSessions) {
-			const outcome = deleteIdleChatRecord(entry.id);
+			const outcome = await deleteIdleChatRecord(entry.id);
 			if (!outcome.ok) throw new SourceDeletionError(outcome.error, outcome.status, outcome.code);
 			removed.add(entry.id);
 		} else if (entry.kind !== "chat") removed.add(entry.id);
 	}
 	const state = structuredClone(directory.organization);
 	state.placements = Object.fromEntries(Object.entries(state.placements).filter(([id]) => !removed.has(id)));
-	const remainingSources = new Set(sourceDirectory.read().sources.map((s) => s.id));
+	const remainingSources = new Set((await sourceDirectory.read()).sources.map((s) => s.id));
 	// Bottom-up fixed point: remove selected empty descendants, then their
 	// emptied ancestors. Kept conversations and unselected entries block removal.
 	let changed = true;
@@ -63,6 +63,6 @@ export function deleteSources(raw: unknown): SourceDirectory & { graphRevision: 
 			}
 		}
 	}
-	if (JSON.stringify(state) !== JSON.stringify(directory.organization)) stores.sourceOrganizationStore.write(state);
-	return { ...sourceDirectory.read(), graphRevision: graphRevision() };
+	if (JSON.stringify(state) !== JSON.stringify(directory.organization)) await stores.sourceOrganizationStore.write(state);
+	return { ...(await sourceDirectory.read()), graphRevision: await graphRevision() };
 }

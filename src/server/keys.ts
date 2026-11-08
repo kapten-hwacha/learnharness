@@ -65,6 +65,8 @@ import { CUSTOM_AUTH_BINDING } from "../core/custom-provider-auth.ts";
 // without importing this store-backed module into the agent layer.
 import { authEnvRecord as boot, getRuntimeEnv } from "../core/auth-env.ts";
 
+let cachedFileVars: Record<string, string> = {};
+
 /** Ordinary writable key names. Custom auth writes must use the atomic
  * endpoint-binding seam, never the generic single-key API. */
 export function isWritableAuthKey(id: string): boolean {
@@ -92,10 +94,11 @@ export function envKeysIgnored(): boolean {
  * vars still unset in the env, so a var deleted through the API never
  * resurrects (its file entry is gone too).
  */
-export function initAuthEnv(): void {
+export async function initAuthEnv(): Promise<void> {
 	const record = boot();
 	const env = getRuntimeEnv();
-	const fileVars = Object.fromEntries(Object.entries(authStore.authVars()).filter(([name]) => name !== CUSTOM_AUTH_BINDING));
+	const fileVars = Object.fromEntries(Object.entries(await authStore.authVars()).filter(([name]) => name !== CUSTOM_AUTH_BINDING));
+	cachedFileVars = fileVars;
 	const managed = new Set<string>([
 		...Object.keys(fileVars),
 		...AUTH_KEYS.map((k) => k.id),
@@ -131,7 +134,7 @@ export function initAuthEnv(): void {
 /** Is this env-var name one the keys system manages (curated, provider,
  *  or held in the file)? */
 function isManagedName(name: string): boolean {
-	return name !== CUSTOM_AUTH_BINDING && (isWritableAuthKey(name) || name in authStore.authVars());
+	return name !== CUSTOM_AUTH_BINDING && (isWritableAuthKey(name) || name in cachedFileVars);
 }
 
 /**
@@ -176,8 +179,10 @@ export function resolveKeyStatuses(
 }
 
 /** The GET view: every curated key (present or not) + unknown file vars. */
-export function keyStatuses(): AuthKeyStatus[] {
-	return resolveKeyStatuses(authStore.authVars(), getRuntimeEnv(), boot().realEnv, new Set([...AUTH_PROVIDER_ENV_VARS, CUSTOM_PROVIDER.envVar]));
+export async function keyStatuses(): Promise<AuthKeyStatus[]> {
+	const vars = await authStore.authVars();
+	cachedFileVars = vars;
+	return resolveKeyStatuses(vars, getRuntimeEnv(), boot().realEnv, new Set([...AUTH_PROVIDER_ENV_VARS, CUSTOM_PROVIDER.envVar]));
 }
 
 /** The live value for one var, env-first (the env-wins rule) — the canonical
@@ -190,8 +195,8 @@ export function keyValue(id: string): string | undefined {
 	// suspenders — the boot deletion already emptied the env; this guards
 	// any env key reintroduced after boot).
 	const env = getRuntimeEnv();
-	if (envKeysIgnored()) return authStore.authVars()[id];
-	return env[id] ?? authStore.authVars()[id];
+	if (envKeysIgnored()) return cachedFileVars[id];
+	return env[id] ?? cachedFileVars[id];
 }
 
 /** The key-presence truth for one model provider (provider-key interlude,
@@ -217,19 +222,21 @@ export function providerKeyPresent(provider: string): boolean {
  * var that the REAL env owns is not reflected (env wins — the status row
  * reports shadowedByEnv so the page can explain it).
  */
-export function saveKey(id: string, value: string): { ok: true; status: AuthKeyStatus } | { ok: false; error: string } {
+export async function saveKey(id: string, value: string): Promise<{ ok: true; status: AuthKeyStatus } | { ok: false; error: string }> {
 	if (id === CUSTOM_PROVIDER.envVar || id === CUSTOM_AUTH_BINDING) return { ok: false, error: "Use the custom endpoint editor" };
 	const shape = isProviderEnvVar(id) ? genericProviderKeyGuard(id, value) : validateKeyShape(id, value);
 	if (!shape.ok) return { ok: false, error: shape.error };
 	const trimmed = value.trim();
-	authStore.setAuthVar(id, trimmed);
+	await authStore.setAuthVar(id, trimmed);
+	cachedFileVars[id] = trimmed;
 	const record = boot();
 	if (!record.realEnv.has(id)) {
 		getRuntimeEnv()[id] = trimmed;
 		record.fillGap.add(id);
 	}
+	const statuses = await keyStatuses();
 	// validateKeyShape guarantees catalog membership, so the row exists.
-	return { ok: true, status: keyStatuses().find((s) => s.id === id)! };
+	return { ok: true, status: statuses.find((s) => s.id === id)! };
 }
 
 /**
@@ -237,18 +244,20 @@ export function saveKey(id: string, value: string): { ok: true; status: AuthKeyS
  * only when the env copy was OURS (fill-gap) — a real env var stays (env
  * wins) and the status shows the key still present from env.
  */
-export function deleteKey(id: string): AuthKeyStatus {
+export async function deleteKey(id: string): Promise<AuthKeyStatus> {
 	if (id === CUSTOM_PROVIDER.envVar || id === CUSTOM_AUTH_BINDING) throw new Error("Use the custom endpoint editor");
-	authStore.deleteAuthVar(id);
+	await authStore.deleteAuthVar(id);
+	delete cachedFileVars[id];
 	const record = boot();
 	if (record.fillGap.has(id) && !record.realEnv.has(id)) {
 		delete getRuntimeEnv()[id];
 		record.fillGap.delete(id);
 	}
-	return keyStatuses().find((s) => s.id === id)!;
+	const statuses = await keyStatuses();
+	return statuses.find((s) => s.id === id)!;
 }
 
 // Reflect the file into the env at first import (idempotent; the module is
 // imported by every route/handler path that touches keys).
-initAuthEnv();
+void initAuthEnv();
 installCustomProviderSource();
