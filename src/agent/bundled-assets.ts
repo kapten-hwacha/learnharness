@@ -12,37 +12,46 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FRAGMENT_RE } from "../core/prompt-segments.ts";
 
+declare global {
+	interface ImportMeta {
+		glob<T = string>(
+			pattern: string,
+			options?: { query?: string; import?: string; eager?: boolean },
+		): Record<string, T>;
+	}
+}
+
 export interface BundledSkill {
 	dirName: string;
 	rawContent: string;
 	content: string;
 }
 
-const isViteGlobAvailable = typeof (import.meta as any).glob === "function";
+let globSystemPrompt: Record<string, string> = {};
+let globPrompts: Record<string, string> = {};
+let globSkills: Record<string, string> = {};
 
-const globSystemPrompt: Record<string, string> = isViteGlobAvailable
-	? ((import.meta as any).glob("./system-prompt.md", {
-			query: "?raw",
-			import: "default",
-			eager: true,
-		}) as Record<string, string>)
-	: {};
+try {
+	globSystemPrompt = import.meta.glob<string>("./system-prompt.md", {
+		query: "?raw",
+		import: "default",
+		eager: true,
+	});
+	globPrompts = import.meta.glob<string>("./prompts/**/*.md", {
+		query: "?raw",
+		import: "default",
+		eager: true,
+	});
+	globSkills = import.meta.glob<string>("./skills/**/SKILL.md", {
+		query: "?raw",
+		import: "default",
+		eager: true,
+	});
+} catch {
+	// In Node (tsx --test), import.meta.glob is not a function; fall back to node:fs
+}
 
-const globPrompts: Record<string, string> = isViteGlobAvailable
-	? ((import.meta as any).glob("./prompts/**/*.md", {
-			query: "?raw",
-			import: "default",
-			eager: true,
-		}) as Record<string, string>)
-	: {};
-
-const globSkills: Record<string, string> = isViteGlobAvailable
-	? ((import.meta as any).glob("./skills/**/SKILL.md", {
-			query: "?raw",
-			import: "default",
-			eager: true,
-		}) as Record<string, string>)
-	: {};
+const isViteGlobBundled = Object.keys(globPrompts).length > 0;
 
 function getBaseDir(): string {
 	if (typeof import.meta.dirname === "string") {
@@ -55,7 +64,7 @@ let bundledSystemPrompt: string = "";
 const bundledPrompts = new Map<string, string>();
 const bundledSkillsList: BundledSkill[] = [];
 
-if (isViteGlobAvailable) {
+if (isViteGlobBundled) {
 	// 1. System prompt
 	for (const [key, content] of Object.entries(globSystemPrompt)) {
 		if (key.endsWith("system-prompt.md")) {
