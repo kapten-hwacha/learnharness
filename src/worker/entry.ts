@@ -2,6 +2,7 @@ import "../client/shims.ts";
 import { headlessOverride } from "../agent/subagents/headless.ts";
 import { initAuthEnv } from "../server/keys.ts";
 import { installCustomProviderSource } from "../server/custom-provider.ts";
+import { effectiveSettings } from "../server/stores.ts";
 import { waitForInitialBridge } from "./host-bridge.ts";
 import { createWorkerHeadless } from "./headless-worker.ts";
 import { dispatchWorkerRequest } from "./router.ts";
@@ -162,6 +163,7 @@ export function ensureWorkerBooted(): Promise<void> {
 
 			await initAuthEnv();
 			installCustomProviderSource();
+			await effectiveSettings();
 
 			headlessOverride.current = createWorkerHeadless();
 

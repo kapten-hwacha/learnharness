@@ -25,7 +25,13 @@ export const stores = {
 	graphStore,
 	sourceOrganizationStore,
 	jobStore,
-	settingsStore,
+	settingsStore: {
+		...settingsStore,
+		async writeSettings(settings: UserSettings) {
+			await settingsStore.writeSettings(settings);
+			await effectiveSettings();
+		},
+	},
 	studyStore,
 };
 

@@ -105,8 +105,13 @@ async function renderPdfPages(
 		const buf = await fs.readFile(path.resolve(pdfPath));
 		data = new Uint8Array(buf);
 	} catch {
-		const res = await fetch(pdfPath);
-		data = new Uint8Array(await res.arrayBuffer());
+		try {
+			const { readExternalFile } = await import("./host-bridge.ts");
+			data = await readExternalFile(pdfPath);
+		} catch {
+			const res = await fetch(pdfPath);
+			data = new Uint8Array(await res.arrayBuffer());
+		}
 	}
 
 	const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");

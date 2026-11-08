@@ -268,11 +268,7 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 	}
 
 	const isTauri = typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__?.invoke);
-	const workerUrl = new URL("../worker/entry.ts", import.meta.url);
-	if (isTauri) {
-		workerUrl.searchParams.set("tauri", "1");
-	}
-	const worker = new Worker(workerUrl, { type: "module" });
+	const worker = new Worker(new URL("../worker/entry.ts", import.meta.url), { type: "module" });
 	activeWorker = worker;
 	if (typeof window !== "undefined") {
 		(window as any).__LH_WORKER__ = worker;
@@ -280,7 +276,11 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 
 	worker.onerror = (err) => {
 		err.preventDefault?.();
-		const msg = err.message || "Unknown worker error";
+		const msg =
+			err.message ||
+			(err.filename
+				? `Error loading worker (${err.filename}:${err.lineno})`
+				: "Failed to load backend worker script (module evaluation or bundle error)");
 		console.error("[LH Worker onerror]", msg, err.filename, err.lineno);
 		const el = document.getElementById("lh-boot-error-overlay") || document.createElement("div");
 		el.id = "lh-boot-error-overlay";
@@ -493,7 +493,6 @@ function fromBase64(base64: string): Uint8Array {
 
 				const onDone = (doneEvent: MessageEvent) => {
 					if (
-						doneEvent.source === iframe.contentWindow &&
 						doneEvent.data?.type === "lh:demo-probe-done" &&
 						doneEvent.data?.requestId === requestId
 					) {
