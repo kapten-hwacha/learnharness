@@ -274,6 +274,18 @@ describe("coerceCorrectAnswer", () => {
 		assert.deepEqual(coerceCorrectAnswer(key, [...values, key]), [key]);
 		assert.deepEqual(coerceCorrectAnswer("[]", ["[]"]), ["[]"]);
 	});
+
+	it("matches case-insensitively when exact match fails", () => {
+		assert.deepEqual(coerceCorrectAnswer("MERCURY", values), ["mercury"]);
+		assert.deepEqual(coerceCorrectAnswer("Mercury", values), ["mercury"]);
+	});
+
+	it("resolves option prefixes and letters", () => {
+		assert.deepEqual(coerceCorrectAnswer("A", ["opt1", "opt2"]), ["opt1"]);
+		assert.deepEqual(coerceCorrectAnswer("B", ["opt1", "opt2"]), ["opt2"]);
+		assert.deepEqual(coerceCorrectAnswer("A) mercury", values), ["mercury"]);
+		assert.deepEqual(coerceCorrectAnswer("1", values), ["mercury"]);
+	});
 });
 
 // ─── resolveCorrect ─────────────────────────────────────────────────────────

@@ -19,7 +19,7 @@ import { healToolRecord, withArgumentHeal } from "./tools/heal.ts";
 import { sendToUserApplies, sendToUserTool } from "./tools/send-to-user.ts";
 import { makeNarrationGuard, narrationGuardApplies, SEND_TO_USER_DELIVERY_RULE } from "./narration-guard.ts";
 import { createReadTool, readTool } from "./tools/read.ts";
-import { quizInputObject, quizInputProblems } from "../core/question-core.ts";
+import { explainInputProblems, quizInputObject, quizInputProblems } from "../core/question-core.ts";
 import { QUESTION_TOOLS, type EnabledTools } from "../core/pending.ts";
 import { toLlmMessages, nativeInputCause, PRACTICE_PROBLEM_TOOL } from "../core/native-messages.ts";
 import type { ChatGPTRequestCycle } from "./chatgpt-request-cycle.ts";
@@ -156,7 +156,8 @@ export interface AgentBuildOptions {
  * (owner ruling 2026-09-25: no maximum-agent-turns net on the teaching
  * turn).
  */
-function makeQuestionStopper(kind: AgentKind) {
+export function makeQuestionStopper(kind: AgentKind) {
+	let consecutiveFailedAttempts = 0;
 	return (context: {
 		message: { content: Array<{ type: string; id?: string; name?: string }> };
 		toolResults: Array<{ toolCallId: string; isError?: boolean }>;
@@ -169,11 +170,28 @@ function makeQuestionStopper(kind: AgentKind) {
 				))
 				.map((c) => c.id!),
 		);
-		if (called.size === 0) return false;
+		if (called.size === 0) {
+			if (context.toolResults.length > 0 && context.toolResults.every((r) => r.isError)) {
+				consecutiveFailedAttempts++;
+				if (consecutiveFailedAttempts >= 3) {
+					console.warn(`[stopper] Consecutive tool failures reached ${consecutiveFailedAttempts}; capping retries and ending turn.`);
+					return true;
+				}
+			}
+			return false;
+		}
 		// Stop only when every question/problem pose resolved cleanly.
 		for (const result of context.toolResults) {
-			if (called.has(result.toolCallId) && result.isError) return false;
+			if (called.has(result.toolCallId) && result.isError) {
+				consecutiveFailedAttempts++;
+				if (consecutiveFailedAttempts >= 3) {
+					console.warn(`[stopper] Question authoring failed ${consecutiveFailedAttempts} consecutive times; capping retries and ending turn.`);
+					return true;
+				}
+				return false;
+			}
 		}
+		consecutiveFailedAttempts = 0;
 		return true;
 	};
 }
@@ -284,7 +302,35 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
  * handler keys teacher construction on.
  */
 export function createProberAgent(ctx: ProberToolContext, opts: AgentBuildOptions = {}) {
-	return baseAgentOptions("prober", opts, Object.values(createProberTools(ctx, opts.toolToggles)));
+	const proberTools = Object.values(createProberTools(ctx, opts.toolToggles));
+	const aliases: AgentTool<any, any>[] = [];
+	const hasProbe = proberTools.find((t) => t.name === "probe");
+	if (hasProbe) {
+		aliases.push({
+			...hasProbe,
+			name: "quiz",
+			label: "quiz",
+			execute: async (_toolCallId, input) => {
+				const problems = quizInputProblems(input as Parameters<typeof quizInputProblems>[0]);
+				if (problems.length > 0) return invalidInputResult("quiz", problems);
+				return questionResult();
+			},
+		});
+	}
+	const hasRecall = proberTools.find((t) => t.name === "recall");
+	if (hasRecall) {
+		aliases.push({
+			...hasRecall,
+			name: "explain",
+			label: "explain",
+			execute: async (_toolCallId, input) => {
+				const problems = explainInputProblems(input as Parameters<typeof explainInputProblems>[0]);
+				if (problems.length > 0) return invalidInputResult("explain", problems);
+				return questionResult();
+			},
+		});
+	}
+	return baseAgentOptions("prober", opts, [...proberTools, ...aliases]);
 }
 
 /**

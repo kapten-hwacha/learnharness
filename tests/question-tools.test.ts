@@ -26,6 +26,7 @@ import {
 	teachQuizToolFor,
 	type TeacherToolContext,
 } from "../src/agent/tools.ts";
+import { makeQuestionStopper } from "../src/agent/teacher-agent.ts";
 import { TOGGLEABLE_TOOLS } from "../src/core/pending.ts";
 import { jobStore } from "../src/store/jobs.ts";
 import { probeQuizInputSchema, quizInputObject, quizInputProblems } from "../src/core/question-core.ts";
@@ -471,5 +472,48 @@ describe("tool descriptions carry mechanics only, no question-craft", () => {
 		);
 		assert.ok(shared.includes("asymmetry"), "the option craft moved here, not deleted");
 		assert.ok(shared.includes("TRANSCRIBED SPEECH"), "the dictation-leniency note lives here");
+	});
+});
+
+describe("makeQuestionStopper retry capping", () => {
+	it("stops turn when a question resolves cleanly without errors", () => {
+		const stopper = makeQuestionStopper("prober");
+		const stop = stopper({
+			message: { content: [{ type: "toolCall", id: "c1", name: "probe" }] },
+			toolResults: [{ toolCallId: "c1", isError: false }],
+		});
+		assert.equal(stop, true);
+	});
+
+	it("caps retries after 3 consecutive question authoring failures", () => {
+		const stopper = makeQuestionStopper("prober");
+		const failedContext = {
+			message: { content: [{ type: "toolCall", id: "c1", name: "probe" }] },
+			toolResults: [{ toolCallId: "c1", isError: true }],
+		};
+
+		// 1st failed attempt -> does not stop
+		assert.equal(stopper(failedContext), false);
+		// 2nd failed attempt -> does not stop
+		assert.equal(stopper(failedContext), false);
+		// 3rd failed attempt -> capped and stops turn!
+		assert.equal(stopper(failedContext), true);
+	});
+
+	it("resets failure count after a successful question resolution", () => {
+		const stopper = makeQuestionStopper("prober");
+		const failedContext = {
+			message: { content: [{ type: "toolCall", id: "c1", name: "probe" }] },
+			toolResults: [{ toolCallId: "c1", isError: true }],
+		};
+		const successContext = {
+			message: { content: [{ type: "toolCall", id: "c1", name: "probe" }] },
+			toolResults: [{ toolCallId: "c1", isError: false }],
+		};
+
+		assert.equal(stopper(failedContext), false);
+		assert.equal(stopper(successContext), true);
+		// After success, a subsequent failure starts count from 1
+		assert.equal(stopper(failedContext), false);
 	});
 });

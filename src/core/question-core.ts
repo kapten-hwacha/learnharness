@@ -703,7 +703,43 @@ export function coerceCorrectAnswer(
 ): string[] {
 	const clean = (value: string): string => {
 		const trimmed = value.trim();
-		return optionValues.includes(trimmed) ? trimmed : stripModelValueDebris(value);
+		if (optionValues.includes(trimmed)) return trimmed;
+		const stripped = stripModelValueDebris(value);
+		if (optionValues.includes(stripped)) return stripped;
+
+		// Case-insensitive match against optionValues
+		const lowerTrimmed = trimmed.toLowerCase();
+		const matchedByLower = optionValues.find((ov) => ov.toLowerCase() === lowerTrimmed);
+		if (matchedByLower !== undefined) return matchedByLower;
+
+		const lowerStripped = stripped.toLowerCase();
+		const matchedByStrippedLower = optionValues.find((ov) => ov.toLowerCase() === lowerStripped);
+		if (matchedByStrippedLower !== undefined) return matchedByStrippedLower;
+
+		// Prefix strip (e.g., "A) Option text" or "A. Option text")
+		const prefixStripped = stripped.replace(/^[A-Za-z0-9][.)]\s*/, "");
+		if (optionValues.includes(prefixStripped)) return prefixStripped;
+		const lowerPrefixStripped = prefixStripped.toLowerCase();
+		const matchedByPrefixLower = optionValues.find((ov) => ov.toLowerCase() === lowerPrefixStripped);
+		if (matchedByPrefixLower !== undefined) return matchedByPrefixLower;
+
+		// Letter-based matching: "A" / "a" -> 1st option, "B" / "b" -> 2nd option, etc.
+		if (/^[a-zA-Z]$/.test(stripped)) {
+			const letterIdx = stripped.toUpperCase().charCodeAt(0) - 65;
+			if (letterIdx >= 0 && letterIdx < optionValues.length) {
+				return optionValues[letterIdx]!;
+			}
+		}
+
+		// 1-based digit matching: "1" -> 1st option, "2" -> 2nd option, etc.
+		if (/^[1-9]\d*$/.test(stripped)) {
+			const numIdx = parseInt(stripped, 10) - 1;
+			if (numIdx >= 0 && numIdx < optionValues.length) {
+				return optionValues[numIdx]!;
+			}
+		}
+
+		return stripped;
 	};
 	if (Array.isArray(correctAnswer)) return correctAnswer.map(clean);
 	const trimmed = correctAnswer.trim();
