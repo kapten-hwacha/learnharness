@@ -408,13 +408,19 @@ function QuestionDockForm({
 
 	const toggle = (idx: number) => setSel(toggleOption(selectMode, sel, idx));
 
+	const submittingRef = useRef(false);
+	useEffect(() => {
+		submittingRef.current = false;
+	}, [toolCallId]);
+
 	const canSubmit =
 		qd.mode === "text"
 			? text.trim().length > 0 || attachments.length > 0
 			: sel.dontKnow || (sel.otherSelected && other.trim().length > 0) || sel.selected.size > 0;
 
 	const submit = () => {
-		if (!canSubmit || compactionRunning) return;
+		if (submittingRef.current || !canSubmit || compactionRunning) return;
+		submittingRef.current = true;
 		/* FINISH DICTATION FIRST (owner, 2026-10-01): Enter may arrive while
 		 * a run is live with reasoning still in Deepgram's hands. Stop the
 		 * run, let the last finals land in the target field, and only then
@@ -428,7 +434,10 @@ function QuestionDockForm({
 		void finishDictation().then(doSubmit);
 	};
 	const doSubmit = () => {
-		if (!canSubmit) return;
+		if (!canSubmit) {
+			submittingRef.current = false;
+			return;
+		}
 		const textValue =
 			qd.mode === "text"
 				? answerTextRef.current.trim() || (attachments.length > 0 ? "[See attached Quaderno PDF]" : "")
@@ -1018,9 +1027,12 @@ function QuestionDockForm({
 						</span>
 						<Button
 							type="submit"
-							onClick={() => submit()}
 							disabled={!canSubmit || compactionRunning}
 							className="ml-auto h-9 rounded-[6px] px-3.5 text-sm font-medium"
+							onClick={(e) => {
+								e.preventDefault();
+								submit();
+							}}
 						>
 							Submit answer
 						</Button>

@@ -76,3 +76,32 @@ test("committed-answer reveals keep the first paragraph inline without flattenin
 		assert.deepEqual(answer, before);
 	} finally { await act(async () => root.unmount()); host.remove(); }
 });
+
+test("QuestionDock does not fire duplicate onSubmit calls on button click or double submit", async () => {
+	let calls = 0;
+	const input = {
+		question: "Which pole is stable?",
+		options: [{ label: "Left half-plane" }, { label: "Right half-plane" }],
+		correctAnswer: "Left half-plane",
+		explanation: "Poles in LHP decay.",
+	};
+	const host = document.createElement("div"); document.body.append(host);
+	const root = createRoot(host);
+	try {
+		await act(async () => root.render(<QuestionDock toolName="probe" toolCallId="probe-1" input={input} expanded
+			dictationClaim={false} onExpand={() => {}} onSubmit={() => { calls++; }} />));
+		const choice = [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')][0]!;
+		assert.ok(choice, "radio option must be rendered");
+		await act(async () => choice.click());
+		const submitBtn = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Submit answer"))!;
+		assert.ok(submitBtn, "submit button must be rendered");
+		const form = submitBtn.closest("form")!;
+		// Simulate browser behavior where clicking submit button fires click then form submit
+		await act(async () => {
+			submitBtn.click();
+			form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+		});
+		assert.equal(calls, 1, "onSubmit must be called exactly once");
+	} finally { await act(async () => root.unmount()); host.remove(); }
+});
+

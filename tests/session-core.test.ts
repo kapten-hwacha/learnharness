@@ -932,6 +932,24 @@ describe("answer submission recovery", () => {
 		assert.equal(m.status, "error");
 	});
 
+	it("unwraps 400 error JSON envelopes for answer inputs", async () => {
+		const m = model({
+			initialMessages: [question],
+			fetch: async (url) => {
+				if (String(url) === "/api/chat") {
+					return new Response(JSON.stringify({ error: "answer input targets no pending question call" }), {
+						status: 400,
+						headers: { "Content-Type": "application/json" },
+					});
+				}
+				return Response.json({ messages: [question], turnInFlight: false });
+			},
+		});
+		await m.submitAnswer("quiz", "q1", answer);
+		assert.equal(m.status, "error");
+		assert.equal(m.getState().error?.message, "answer input targets no pending question call");
+	});
+
 	it("does not repost an answer whose acceptance acknowledgement was lost", async () => {
 		let posts = 0;
 		const saved = JSON.parse(JSON.stringify([question, newAnswerResult("q1", "quiz", answer)])) as LhMessage[];

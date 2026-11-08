@@ -782,10 +782,10 @@ export class SessionModel {
 			}
 			if (!res.ok) {
 				// Keep model/key refusal envelopes verbatim: the page's refusal
-				// flow parses them. Retry and attachment 400s are ordinary user-facing
+				// flow parses them. Retry, answer, and attachment 400s are ordinary user-facing
 				// guidance, so show their error text without JSON syntax.
 				let message = (await res.text()) || `The send failed (${res.status}).`;
-				if ((input.type === "retry" || input.type === "retry-question" || (input.type === "text" && input.attachments?.length)) && res.status === 400) {
+				if ((input.type === "retry" || input.type === "retry-question" || input.type === "answer" || (input.type === "text" && input.attachments?.length)) && res.status === 400) {
 					try {
 						const refusal = JSON.parse(message) as { error?: unknown } | null;
 						if (typeof refusal?.error === "string" && refusal.error.length > 0) message = refusal.error;
