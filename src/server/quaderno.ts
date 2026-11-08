@@ -84,7 +84,7 @@ export async function resolveQuadernoConfig(opts?: {
 		? path.join(homeDir, rawSyncDir.slice(2))
 		: rawSyncDir === "~"
 			? homeDir
-			: path.resolve(rawSyncDir);
+			: path.resolve(/*turbopackIgnore: true*/ rawSyncDir);
 
 	const resolvedSyncDir = path.resolve(rawResolved);
 	const homeResolved = path.resolve(homeDir);

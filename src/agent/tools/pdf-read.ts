@@ -126,7 +126,7 @@ export function createPdfReadTools(dir: string): Record<string, AgentTool<any>> 
 					}
 					const bytes = Buffer.from(await readBoundedBytes(resp, MAX_PDF_BYTES));
 					if (bytes.length === 0) throw new Error("Empty response");
-					const filePath = path.join(dir, pdfFileName(url));
+					const filePath = path.join(/*turbopackIgnore: true*/ dir, pdfFileName(url));
 					await fs.writeFile(filePath, bytes);
 					try {
 						await pdfProbe(filePath);

@@ -184,7 +184,7 @@ async function connectBrowserService(): Promise<import("puppeteer-core").Browser
 			path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", ".."),
 			"--browser-service",
 		];
-		const childProc = spawn(binary, appArgs, {
+		const childProc = spawn(/*turbopackIgnore: true*/ binary, appArgs, {
 			// Cast: the sanitizer is pure over a loose record; NODE_ENV is
 			// always present in a real process.env.
 			env: browserServiceSpawnEnv(proc.env) as NodeJS.ProcessEnv,

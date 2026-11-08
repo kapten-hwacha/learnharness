@@ -5,6 +5,13 @@ import { MAX_IMPORT_BODY_BYTES } from "./lib/notes-import-limits.ts";
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string; homepage: string };
 
 const nextConfig: NextConfig = {
+	turbopack: {
+		rules: {
+			"*.md": {
+				type: "text",
+			},
+		},
+	},
 	// Public build metadata only; no new runtime Electron version API.
 	env: { LH_VERSION: pkg.version, LH_HOMEPAGE: pkg.homepage },
 	// Leave multipart headroom above the 25 MiB file allowance. This is a
@@ -52,6 +59,10 @@ const nextConfig: NextConfig = {
 	outputFileTracingExcludes: {
 		"*": [
 			"**/data/**/*",
+			"src-tauri/target/**/*",
+			"**/src-tauri/target/**/*",
+			"src-tauri/gen/**/*",
+			"**/src-tauri/gen/**/*",
 			"auth.json",
 			"chatgpt-credentials.json*",
 			"github-copilot-credentials.json*",

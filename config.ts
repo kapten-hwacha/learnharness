@@ -33,7 +33,7 @@ export const PATHS = {
 	/** Debug artifacts (env-gated): data/debug/provider-events/<chatId>.jsonl
 	 * raw provider stream recordings (src/agent/provider-events.ts). */
 	get debug() {
-		return path.join(DATA_ROOT, "debug");
+		return path.join(/*turbopackIgnore: true*/ DATA_ROOT, "debug");
 	},
 } as const;
 

@@ -14,9 +14,9 @@ import { FRAGMENT_RE } from "../core/prompt-segments.ts";
 
 declare global {
 	interface ImportMeta {
-		glob<T = string>(
+		glob<T = unknown>(
 			pattern: string,
-			options?: { query?: string; import?: string; eager?: boolean },
+			options?: { query?: string | Record<string, string | boolean>; import?: string; eager?: boolean },
 		): Record<string, T>;
 	}
 }
@@ -27,24 +27,29 @@ export interface BundledSkill {
 	content: string;
 }
 
-let globSystemPrompt: Record<string, string> = {};
-let globPrompts: Record<string, string> = {};
-let globSkills: Record<string, string> = {};
+function extractRaw(mod: unknown): string {
+	if (typeof mod === "string") return mod;
+	if (mod && typeof (mod as { default?: unknown }).default === "string") {
+		return (mod as { default: string }).default;
+	}
+	return "";
+}
+
+let globSystemPrompt: Record<string, unknown> = {};
+let globPrompts: Record<string, unknown> = {};
+let globSkills: Record<string, unknown> = {};
 
 try {
-	globSystemPrompt = import.meta.glob<string>("./system-prompt.md", {
+	globSystemPrompt = import.meta.glob("./system-prompt.md", {
 		query: "?raw",
-		import: "default",
 		eager: true,
 	});
-	globPrompts = import.meta.glob<string>("./prompts/**/*.md", {
+	globPrompts = import.meta.glob("./prompts/**/*.md", {
 		query: "?raw",
-		import: "default",
 		eager: true,
 	});
-	globSkills = import.meta.glob<string>("./skills/**/SKILL.md", {
+	globSkills = import.meta.glob("./skills/**/SKILL.md", {
 		query: "?raw",
-		import: "default",
 		eager: true,
 	});
 } catch {
@@ -66,26 +71,28 @@ const bundledSkillsList: BundledSkill[] = [];
 
 if (isViteGlobBundled) {
 	// 1. System prompt
-	for (const [key, content] of Object.entries(globSystemPrompt)) {
+	for (const [key, mod] of Object.entries(globSystemPrompt)) {
 		if (key.endsWith("system-prompt.md")) {
+			const content = extractRaw(mod);
 			bundledSystemPrompt = content;
 			bundledPrompts.set("system-prompt.md", content);
 		}
 	}
 
 	// 2. Prompts
-	for (const [key, content] of Object.entries(globPrompts)) {
+	for (const [key, mod] of Object.entries(globPrompts)) {
 		const normalized = key.replace(/^\.\/prompts\//, "").replace(/^\.\//, "");
-		bundledPrompts.set(normalized, content);
+		bundledPrompts.set(normalized, extractRaw(mod));
 	}
 
 	// 3. Skills
 	const skillsMap = new Map<string, BundledSkill>();
-	for (const [key, content] of Object.entries(globSkills)) {
+	for (const [key, mod] of Object.entries(globSkills)) {
 		// Key matches ./skills/<dirName>/SKILL.md
 		const m = /^\.\/skills\/([^/]+)\/SKILL\.md$/.exec(key);
 		if (m && m[1]) {
 			const dirName = m[1];
+			const content = extractRaw(mod);
 			skillsMap.set(dirName, {
 				dirName,
 				rawContent: content,

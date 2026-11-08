@@ -83,7 +83,7 @@ export async function ensureCliProxyRunning(): Promise<{ ok: boolean; error?: st
 	const args = fs.existsSync(configPath) ? ["-config", configPath] : [];
 
 	try {
-		const child = spawn(binary, args, {
+		const child = spawn(/*turbopackIgnore: true*/ binary, args, {
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: false,
 		});
