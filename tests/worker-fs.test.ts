@@ -3,6 +3,8 @@ import nodeCrypto from "node:crypto";
 import { describe, it } from "node:test";
 import { getHostBridge } from "../src/worker/host-bridge.ts";
 import * as shimCrypto from "../src/worker/shims/crypto.ts";
+import * as shimFs from "../src/worker/shims/fs.ts";
+import * as shimFsPromises from "../src/worker/shims/fs-promises.ts";
 import * as shimPath from "../src/worker/shims/path.ts";
 import { AsyncLocalStorage } from "../src/worker/shims/async_hooks.ts";
 import {
@@ -110,6 +112,22 @@ describe("Worker node:* shims & runtime bridge", () => {
 
 		const defaultBridge = getHostBridge();
 		assert.equal(typeof defaultBridge.initRuntime, "function");
+	});
+
+	it("provides browser-safe node:fs and node:fs/promises stubs", async () => {
+		assert.equal(shimFs.existsSync("/test"), false);
+		assert.deepEqual(shimFs.readdirSync(), []);
+		assert.equal(shimFs.constants.R_OK, 4);
+		assert.equal(shimFs.realpathSync("/var/data"), "/var/data");
+		assert.throws(() => shimFs.readFileSync(), /fs is not supported in browser\/worker runtime/);
+
+		assert.deepEqual(await shimFs.promises.readdir(), []);
+		assert.deepEqual(await shimFsPromises.readdir(), []);
+		assert.equal(await shimFsPromises.realpath("/var/data"), "/var/data");
+		await assert.rejects(
+			async () => shimFsPromises.readFile(),
+			/fs\/promises is not supported in browser\/worker runtime/
+		);
 	});
 
 	it("updates os.homedir() via setWorkerHomeDir", () => {
