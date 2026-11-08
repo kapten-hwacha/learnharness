@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { ActivityIcon, BotIcon, FileTextIcon, PenToolIcon, PlayIcon, SearchIcon, SquareIcon, WaypointsIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CallUsage, JobKind, JobRecord } from "@/src/core";
@@ -374,6 +375,14 @@ export function ActivitySection({ feed: feedProp }: { feed?: ActivityFeed }) {
 }
 
 /** One blob: icon + elapsed + cost on the face; click → detail popover. */
+function useSafeRouter(): ReturnType<typeof useRouter> | null {
+	try {
+		return useRouter();
+	} catch {
+		return null;
+	}
+}
+
 function ActivityBlobRow({
 	blob,
 	now,
@@ -389,6 +398,7 @@ function ActivityBlobRow({
 	abortState: AbortState | undefined;
 	onAbort: () => void;
 }) {
+	const router = useSafeRouter();
 	const Icon = blob.process === "extraction" ? WaypointsIcon : (blob.jobKind && KIND_ICON[blob.jobKind]) || BotIcon;
 	const label =
 		blob.process === "extraction"
@@ -487,7 +497,14 @@ function ActivityBlobRow({
 								<span className="tabular-nums text-card-foreground">{blob.steps}</span>
 							</div>
 						)}
-						<a href={`/chat/${blob.chatId}`} className="text-primary hover:underline">
+						<a
+							href={`/chat/${blob.chatId}`}
+							onClick={(e) => {
+								e.preventDefault();
+								router?.push(`/chat/${blob.chatId}`);
+							}}
+							className="text-primary hover:underline cursor-pointer"
+						>
 							Open session →
 						</a>
 					</div>
