@@ -5,6 +5,8 @@ import {
 	createWorkerTauriInvoke,
 	getHostBridge,
 	handleWorkerTauriMessage,
+	hasTauriBridge,
+	hostInvoke,
 	setHostBridge,
 	waitForInitialBridge,
 	type FsMutationOp,
@@ -234,5 +236,141 @@ describe("Tauri HostBridge", () => {
 		} finally {
 			delete globalAny.__TAURI_INTERNALS__;
 		}
+	});
+
+	it("hasTauriBridge reflects presence of invoke", () => {
+		const globalAny = globalThis as any;
+		delete globalAny.__TAURI_INTERNALS__;
+		delete globalAny.__TAURI_INVOKE__;
+		assert.equal(hasTauriBridge(), false);
+
+		globalAny.__TAURI_INTERNALS__ = { invoke: async () => {} };
+		assert.equal(hasTauriBridge(), true);
+		delete globalAny.__TAURI_INTERNALS__;
+	});
+
+	it("hostInvoke delegates to active tauri invoke", async () => {
+		const globalAny = globalThis as any;
+		const calls: [string, any][] = [];
+		globalAny.__TAURI_INTERNALS__ = {
+			invoke: async (cmd: string, args: any) => {
+				calls.push([cmd, args]);
+				return { ok: true };
+			},
+		};
+		try {
+			const res = await hostInvoke<{ ok: boolean }>("lh_custom_test", { a: 1 });
+			assert.deepEqual(res, { ok: true });
+			assert.deepEqual(calls, [["lh_custom_test", { a: 1 }]]);
+		} finally {
+			delete globalAny.__TAURI_INTERNALS__;
+		}
+	});
+
+	it("createTauriHostBridge maps initRuntime to lh_get_host_dirs and lh_auth_read", async () => {
+		const calls: [string, any][] = [];
+		const bridge = createTauriHostBridge(async <T>(cmd: string, args?: Record<string, unknown>) => {
+			calls.push([cmd, args]);
+			if (cmd === "lh_get_host_dirs") {
+				return { homeDir: "/Users/alice", dataDir: "/data", userDataDir: "/userData", root: "/app" } as unknown as T;
+			}
+			if (cmd === "lh_auth_read") {
+				return JSON.stringify({ OPENAI_API_KEY: "sk-test" }) as unknown as T;
+			}
+			throw new Error(`Unexpected: ${cmd}`);
+		});
+
+		const init = await bridge.initRuntime();
+		assert.equal(init.homeDir, "/Users/alice");
+		assert.deepEqual(init.authVars, { OPENAI_API_KEY: "sk-test" });
+		assert.deepEqual(calls, [
+			["lh_get_host_dirs", undefined],
+			["lh_auth_read", { filename: "auth.json" }],
+		]);
+	});
+
+	it("createTauriHostBridge maps statExternalFile and statExternal to lh_fs_stat_external", async () => {
+		const calls: [string, any][] = [];
+		const mockStat = { exists: true, isFile: true, isDir: false, size: 1024, mtimeMs: 12345 };
+		const bridge = createTauriHostBridge(async <T>(cmd: string, args?: Record<string, unknown>) => {
+			calls.push([cmd, args]);
+			if (cmd === "lh_fs_stat_external") return mockStat as unknown as T;
+			throw new Error(`Unexpected: ${cmd}`);
+		});
+
+		const res1 = await bridge.statExternalFile("/path/to/file.txt");
+		assert.deepEqual(res1, mockStat);
+		assert.deepEqual(calls[0], ["lh_fs_stat_external", { path: "/path/to/file.txt" }]);
+
+		const res2 = await bridge.statExternal!("/path/to/dir");
+		assert.deepEqual(res2, mockStat);
+		assert.deepEqual(calls[1], ["lh_fs_stat_external", { path: "/path/to/dir" }]);
+	});
+
+	it("createTauriHostBridge maps listExternalDir to lh_fs_list_external_dir", async () => {
+		const calls: [string, any][] = [];
+		const mockEntries = [
+			{ name: "docs", path: "/path/to/docs", isDir: true, isFile: false, size: 0 },
+			{ name: "file.txt", path: "/path/to/file.txt", isDir: false, isFile: true, size: 42 },
+		];
+		const bridge = createTauriHostBridge(async <T>(cmd: string, args?: Record<string, unknown>) => {
+			calls.push([cmd, args]);
+			if (cmd === "lh_fs_list_external_dir") return mockEntries as unknown as T;
+			throw new Error(`Unexpected: ${cmd}`);
+		});
+
+		const res = await bridge.listExternalDir("/path/to");
+		assert.deepEqual(res, mockEntries);
+		assert.deepEqual(calls, [["lh_fs_list_external_dir", { path: "/path/to" }]]);
+	});
+
+	it("createTauriHostBridge maps walkExternalDir and walkExternal to lh_fs_walk_external", async () => {
+		const calls: [string, any][] = [];
+		const mockWalk = ["/root/a.txt", "/root/sub/b.txt"];
+		const bridge = createTauriHostBridge(async <T>(cmd: string, args?: Record<string, unknown>) => {
+			calls.push([cmd, args]);
+			if (cmd === "lh_fs_walk_external") return mockWalk as unknown as T;
+			throw new Error(`Unexpected: ${cmd}`);
+		});
+
+		const res1 = await bridge.walkExternalDir("/root", 500);
+		assert.deepEqual(res1, mockWalk);
+		assert.deepEqual(calls[0], ["lh_fs_walk_external", { rootDir: "/root", maxEntries: 500 }]);
+
+		const res2 = await bridge.walkExternal!("/root");
+		assert.deepEqual(res2, mockWalk);
+		assert.deepEqual(calls[1], ["lh_fs_walk_external", { rootDir: "/root", maxEntries: undefined }]);
+	});
+
+	it("createTauriHostBridge maps writeDebugLog to lh_debug_write", async () => {
+		const calls: [string, any][] = [];
+		const bridge = createTauriHostBridge(async <T>(cmd: string, args?: Record<string, unknown>) => {
+			calls.push([cmd, args]);
+			if (cmd === "lh_debug_write") return undefined as unknown as T;
+			throw new Error(`Unexpected: ${cmd}`);
+		});
+
+		await bridge.writeDebugLog("provider-events", "chat_123.jsonl", '{"test":1}', true);
+		assert.deepEqual(calls, [
+			["lh_debug_write", { relPath: "provider-events/chat_123.jsonl", line: '{"test":1}', append: true }],
+		]);
+	});
+
+	it("createTauriHostBridge maps writeQuadernoPdf and listQuadernoPdfs", async () => {
+		const calls: [string, any][] = [];
+		const bridge = createTauriHostBridge(async <T>(cmd: string, args?: Record<string, unknown>) => {
+			calls.push([cmd, args]);
+			if (cmd === "lh_quaderno_write_pdf") return "/path/to/saved.pdf" as unknown as T;
+			if (cmd === "lh_quaderno_list_pdfs") return ["a.pdf", "b.pdf"] as unknown as T;
+			throw new Error(`Unexpected: ${cmd}`);
+		});
+
+		const pathResult = await bridge.writeQuadernoPdf!("test.pdf", "base64data");
+		assert.equal(pathResult, "/path/to/saved.pdf");
+		assert.deepEqual(calls[0], ["lh_quaderno_write_pdf", { filename: "test.pdf", dataBase64: "base64data" }]);
+
+		const pdfs = await bridge.listQuadernoPdfs!();
+		assert.deepEqual(pdfs, ["a.pdf", "b.pdf"]);
+		assert.deepEqual(calls[1], ["lh_quaderno_list_pdfs", undefined]);
 	});
 });

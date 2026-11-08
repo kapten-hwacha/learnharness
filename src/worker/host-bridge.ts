@@ -19,10 +19,42 @@ export interface HydratedFsSnapshot {
 
 export const DEV_BRIDGE_HEADER = "x-lh-dev-bridge";
 
+export interface ExternalStatResult {
+	exists: boolean;
+	isFile: boolean;
+	isDir: boolean;
+	size: number;
+	mtimeMs: number;
+}
+
+export interface ExternalDirEntry {
+	name: string;
+	path: string;
+	isDir: boolean;
+	isFile: boolean;
+	size: number;
+}
+
+export interface HostDirs {
+	dataDir: string;
+	userDataDir: string;
+	homeDir: string;
+	root: string;
+}
+
 export interface HostBridge {
 	hydrateFs(): Promise<HydratedFsSnapshot>;
 	syncFs(op: FsMutationOp): Promise<void>;
+	initRuntime(): Promise<{ homeDir: string; authVars: Record<string, string> }>;
 	readExternalFile(absPath: string): Promise<Uint8Array>;
+	statExternalFile(absPath: string): Promise<ExternalStatResult>;
+	statExternal(absPath: string): Promise<ExternalStatResult>;
+	listExternalDir(absPath: string): Promise<ExternalDirEntry[]>;
+	walkExternalDir(root: string, maxFiles?: number, timeoutMs?: number): Promise<string[]>;
+	walkExternal(root: string, maxFiles?: number): Promise<string[]>;
+	writeDebugLog(kind: string, filename: string, content: string, append: boolean): Promise<void>;
+	writeQuadernoPdf(filename: string, dataBase64: string): Promise<string>;
+	listQuadernoPdfs(): Promise<string[]>;
 	nativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
@@ -154,6 +186,18 @@ export function getTauriInvoke(): TauriInvokeFn | null {
 	return null;
 }
 
+export function hasTauriBridge(): boolean {
+	return Boolean(getTauriInvoke());
+}
+
+export function hostInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+	const invoke = getTauriInvoke();
+	if (!invoke) {
+		throw new Error(`Host bridge invoke unavailable: cannot invoke "${cmd}"`);
+	}
+	return invoke<T>(cmd, args);
+}
+
 if (typeof globalThis !== "undefined" && !(globalThis as any).__TAURI_INTERNALS__ && isTauriEnvironment()) {
 	const invoke = getTauriInvoke() ?? createWorkerTauriInvoke();
 	workerTauriInvoke = invoke;
@@ -169,10 +213,10 @@ const initialBridgePromise = new Promise<HostBridge>((resolve) => {
 	initialBridgeResolve = resolve;
 });
 
-export function setHostBridge(bridge: HostBridge | null): void {
-	activeBridge = bridge;
-	if (bridge && initialBridgeResolve) {
-		initialBridgeResolve(bridge);
+export function setHostBridge(bridge: Partial<HostBridge> | null): void {
+	activeBridge = bridge ? { ...createBrowserDevHostBridge(), ...bridge } : null;
+	if (activeBridge && initialBridgeResolve) {
+		initialBridgeResolve(activeBridge);
 	}
 }
 
@@ -214,9 +258,51 @@ export function createTauriHostBridge(
 		async syncFs(op: FsMutationOp): Promise<void> {
 			await invoke("lh_fs_sync", { op });
 		},
+		async initRuntime(): Promise<{ homeDir: string; authVars: Record<string, string> }> {
+			const dirs = await invoke<HostDirs>("lh_get_host_dirs");
+			let authVars: Record<string, string> = {};
+			try {
+				const raw = await invoke<string | null>("lh_auth_read", { filename: "auth.json" });
+				if (raw) {
+					authVars = JSON.parse(raw);
+				}
+			} catch {}
+			return {
+				homeDir: dirs.homeDir,
+				authVars,
+			};
+		},
 		async readExternalFile(absPath: string): Promise<Uint8Array> {
 			const res = await invoke<number[] | Uint8Array>("lh_fs_read_external", { path: absPath });
 			return res instanceof Uint8Array ? res : new Uint8Array(res);
+		},
+		async statExternalFile(absPath: string): Promise<ExternalStatResult> {
+			return await invoke<ExternalStatResult>("lh_fs_stat_external", { path: absPath });
+		},
+		async statExternal(absPath: string): Promise<ExternalStatResult> {
+			return await invoke<ExternalStatResult>("lh_fs_stat_external", { path: absPath });
+		},
+		async listExternalDir(absPath: string): Promise<ExternalDirEntry[]> {
+			return await invoke<ExternalDirEntry[]>("lh_fs_list_external_dir", { path: absPath });
+		},
+		async walkExternalDir(root: string, maxFiles?: number, _timeoutMs?: number): Promise<string[]> {
+			return await invoke<string[]>("lh_fs_walk_external", { rootDir: root, maxEntries: maxFiles });
+		},
+		async walkExternal(root: string, maxFiles?: number): Promise<string[]> {
+			return await invoke<string[]>("lh_fs_walk_external", { rootDir: root, maxEntries: maxFiles });
+		},
+		async writeDebugLog(kind: string, filename: string, content: string, append: boolean): Promise<void> {
+			await invoke("lh_debug_write", {
+				relPath: `${kind}/${filename}`,
+				line: content,
+				append,
+			});
+		},
+		async writeQuadernoPdf(filename: string, dataBase64: string): Promise<string> {
+			return await invoke<string>("lh_quaderno_write_pdf", { filename, dataBase64 });
+		},
+		async listQuadernoPdfs(): Promise<string[]> {
+			return await invoke<string[]>("lh_quaderno_list_pdfs");
 		},
 		async nativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
 			const url =
@@ -297,6 +383,9 @@ export function createBrowserDevHostBridge(): HostBridge {
 				console.warn(`[host-bridge] syncFs failed: ${res.status} ${res.statusText}`);
 			}
 		},
+		async initRuntime(): Promise<{ homeDir: string; authVars: Record<string, string> }> {
+			return { homeDir: "/home", authVars: {} };
+		},
 		async readExternalFile(absPath: string): Promise<Uint8Array> {
 			const res = await fetch("/__lh_dev/fs-read-external", {
 				method: "POST",
@@ -311,6 +400,28 @@ export function createBrowserDevHostBridge(): HostBridge {
 			}
 			const buf = await res.arrayBuffer();
 			return new Uint8Array(buf);
+		},
+		async statExternalFile(absPath: string): Promise<ExternalStatResult> {
+			return { exists: false, isFile: false, isDir: false, size: 0, mtimeMs: 0 };
+		},
+		async statExternal(absPath: string): Promise<ExternalStatResult> {
+			return { exists: false, isFile: false, isDir: false, size: 0, mtimeMs: 0 };
+		},
+		async listExternalDir(absPath: string): Promise<ExternalDirEntry[]> {
+			return [];
+		},
+		async walkExternalDir(root: string, maxFiles?: number): Promise<string[]> {
+			return [];
+		},
+		async walkExternal(root: string, maxFiles?: number): Promise<string[]> {
+			return [];
+		},
+		async writeDebugLog(kind: string, filename: string, content: string, append: boolean): Promise<void> {},
+		async writeQuadernoPdf(filename: string, dataBase64: string): Promise<string> {
+			return "";
+		},
+		async listQuadernoPdfs(): Promise<string[]> {
+			return [];
 		},
 		async nativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
 			try {
@@ -350,4 +461,32 @@ export function createBrowserDevHostBridge(): HostBridge {
 			return fetch(input, init);
 		},
 	};
+}
+
+export async function statExternal(absPath: string): Promise<ExternalStatResult> {
+	return getHostBridge().statExternal(absPath);
+}
+
+export async function listExternalDir(absPath: string): Promise<ExternalDirEntry[]> {
+	return getHostBridge().listExternalDir(absPath);
+}
+
+export async function walkExternal(root: string, maxFiles?: number): Promise<string[]> {
+	return getHostBridge().walkExternal(root, maxFiles);
+}
+
+export async function readExternalFile(absPath: string): Promise<Uint8Array> {
+	return getHostBridge().readExternalFile(absPath);
+}
+
+export async function writeQuadernoPdf(filename: string, dataBase64: string): Promise<string> {
+	return getHostBridge().writeQuadernoPdf(filename, dataBase64);
+}
+
+export async function listQuadernoPdfs(): Promise<string[]> {
+	return getHostBridge().listQuadernoPdfs();
+}
+
+export async function writeDebugLog(kind: string, filename: string, content: string, append: boolean): Promise<void> {
+	return getHostBridge().writeDebugLog(kind, filename, content, append);
 }
