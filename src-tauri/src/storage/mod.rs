@@ -445,8 +445,11 @@ mod tests {
             .unwrap();
         assert!(render_val.contains("1.5"));
 
-        // Verify auth moved to user_data_dir and has 0600 mode on Unix
+        // Verify auth and credentials copied to user_data_dir, mode 0600 on Unix, and originals untouched in data_dir
         assert!(auth_file.exists());
+        assert!(data_dir.join("auth.json").exists());
+        assert!(data_dir.join("custom-credentials.json").exists());
+        assert!(user_data_dir.join("custom-credentials.json").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -454,6 +457,65 @@ mod tests {
             assert_eq!(meta.permissions().mode() & 0o777, 0o600);
             let cred_meta = fs::metadata(user_data_dir.join("custom-credentials.json")).unwrap();
             assert_eq!(cred_meta.permissions().mode() & 0o777, 0o600);
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn preserves_legacy_auth_and_credentials_files_without_deletion() {
+        let tmp = std::env::temp_dir().join(format!("lh_sql_auth_nodel_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let data_dir = tmp.join("data");
+        let user_data_dir = tmp.join("user_data");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::create_dir_all(&user_data_dir).unwrap();
+
+        let original_auth_content = r#"{"ANTHROPIC_API_KEY":"sk-ant-test"}"#;
+        let original_cred_content = r#"{"token":"test-token"}"#;
+        fs::write(data_dir.join("auth.json"), original_auth_content).unwrap();
+        fs::write(
+            data_dir.join("chatgpt-credentials.json"),
+            original_cred_content,
+        )
+        .unwrap();
+
+        let db_path = user_data_dir.join("learnharness.db");
+        let auth_file = user_data_dir.join("auth.json");
+
+        let _state = open_and_init_db(&db_path, &data_dir, &auth_file, &user_data_dir).unwrap();
+
+        // 1. Originals MUST remain untouched in data_dir
+        assert!(data_dir.join("auth.json").exists());
+        assert_eq!(
+            fs::read_to_string(data_dir.join("auth.json")).unwrap(),
+            original_auth_content
+        );
+        assert!(data_dir.join("chatgpt-credentials.json").exists());
+        assert_eq!(
+            fs::read_to_string(data_dir.join("chatgpt-credentials.json")).unwrap(),
+            original_cred_content
+        );
+
+        // 2. Copies must exist in user_data_dir with 0600 on Unix
+        assert!(auth_file.exists());
+        assert_eq!(
+            fs::read_to_string(&auth_file).unwrap(),
+            original_auth_content
+        );
+        assert!(user_data_dir.join("chatgpt-credentials.json").exists());
+        assert_eq!(
+            fs::read_to_string(user_data_dir.join("chatgpt-credentials.json")).unwrap(),
+            original_cred_content
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta_auth = fs::metadata(&auth_file).unwrap();
+            assert_eq!(meta_auth.permissions().mode() & 0o777, 0o600);
+            let meta_cred = fs::metadata(user_data_dir.join("chatgpt-credentials.json")).unwrap();
+            assert_eq!(meta_cred.permissions().mode() & 0o777, 0o600);
         }
 
         let _ = fs::remove_dir_all(&tmp);

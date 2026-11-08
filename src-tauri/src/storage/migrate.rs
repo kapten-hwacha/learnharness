@@ -196,11 +196,8 @@ fn migrate_auth_and_credentials(
     }
 
     let legacy_auth = data_dir.join("auth.json");
-    if legacy_auth.exists() && (!auth_file.exists() || legacy_auth != *auth_file) {
-        if !auth_file.exists() {
-            let _ = std::fs::copy(&legacy_auth, auth_file);
-        }
-        let _ = std::fs::remove_file(&legacy_auth);
+    if legacy_auth.exists() && (!auth_file.exists() && legacy_auth != *auth_file) {
+        let _ = std::fs::copy(&legacy_auth, auth_file);
     }
 
     if auth_file.exists() {
@@ -219,7 +216,9 @@ fn migrate_auth_and_credentials(
                     let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if name.ends_with("-credentials.json") {
                         let target = user_data_dir.join(name);
-                        let _ = std::fs::rename(&p, &target);
+                        if !target.exists() && p != target {
+                            let _ = std::fs::copy(&p, &target);
+                        }
                         #[cfg(unix)]
                         {
                             use std::os::unix::fs::PermissionsExt;
