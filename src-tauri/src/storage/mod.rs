@@ -1,3 +1,7 @@
+pub mod chats;
+pub mod graph;
+pub mod jobs;
+pub mod kv;
 pub mod migrate;
 pub mod schema;
 
@@ -72,6 +76,13 @@ pub fn sanitize_fts5_query(raw: &str) -> Option<String> {
     } else {
         Some(tokens.join(" "))
     }
+}
+
+#[tauri::command]
+pub async fn lh_runtime_init(
+    _state: tauri::State<'_, DbState>,
+) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({ "ok": true }))
 }
 
 #[cfg(test)]

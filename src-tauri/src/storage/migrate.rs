@@ -2,13 +2,13 @@ use rusqlite::{params, Connection, Transaction};
 use serde_json::Value;
 use std::path::Path;
 
-const FSRS_W: [f64; 21] = [
+pub(crate) const FSRS_W: [f64; 21] = [
     0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796, 1.4835,
     0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
 ];
-const DAY_MS: f64 = 86_400_000.0;
+pub(crate) const DAY_MS: f64 = 86_400_000.0;
 
-fn current_time_ms() -> i64 {
+pub(crate) fn current_time_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -25,7 +25,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146097 + doe as i64 - 719468
 }
 
-fn parse_iso_timestamp(iso: &str, fallback_ms: i64) -> i64 {
+pub(crate) fn parse_iso_timestamp(iso: &str, fallback_ms: i64) -> i64 {
     if let Ok(num) = iso.parse::<i64>() {
         return num;
     }
@@ -447,7 +447,7 @@ fn migrate_chats(tx: &Transaction, data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn derive_phase(messages: &[Value]) -> String {
+pub(crate) fn derive_phase(messages: &[Value]) -> String {
     let mut phase = "probe";
     let mut probe_done_results = std::collections::HashSet::new();
     for m in messages {
@@ -502,7 +502,7 @@ fn derive_phase(messages: &[Value]) -> String {
     phase.to_string()
 }
 
-fn has_dangling_question(messages: &[Value]) -> bool {
+pub(crate) fn has_dangling_question(messages: &[Value]) -> bool {
     const QUESTION_TOOLS: &[&str] = &["quiz", "probe", "ask_user_question", "explain", "recall"];
     for mi in (0..messages.len()).rev() {
         let m = &messages[mi];
@@ -537,7 +537,7 @@ fn has_dangling_question(messages: &[Value]) -> bool {
     false
 }
 
-fn has_active_problem(messages: &[Value]) -> bool {
+pub(crate) fn has_active_problem(messages: &[Value]) -> bool {
     let mut clean_call_ids = std::collections::HashSet::new();
     for m in messages {
         if m.get("role").and_then(|r| r.as_str()) == Some("toolResult") {
@@ -585,7 +585,7 @@ fn has_active_problem(messages: &[Value]) -> bool {
     false
 }
 
-fn derive_seed_rating(messages: &[Value]) -> i64 {
+pub(crate) fn derive_seed_rating(messages: &[Value]) -> i64 {
     let mut ratings = Vec::new();
     for m in messages {
         let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -652,18 +652,21 @@ fn derive_seed_rating(messages: &[Value]) -> i64 {
     avg.round().clamp(1.0, 4.0) as i64
 }
 
-struct PracticeRecordRow {
-    chat_id: String,
-    at_ms: i64,
-    targets_json: String,
-    outcome: String,
-    rung: Option<String>,
-    miss_class: Option<String>,
-    missed_json: Option<String>,
-    rating: Option<i64>,
+pub(crate) struct PracticeRecordRow {
+    pub(crate) chat_id: String,
+    pub(crate) at_ms: i64,
+    pub(crate) targets_json: String,
+    pub(crate) outcome: String,
+    pub(crate) rung: Option<String>,
+    pub(crate) miss_class: Option<String>,
+    pub(crate) missed_json: Option<String>,
+    pub(crate) rating: Option<i64>,
 }
 
-fn extract_practice_records(chat_id: &str, messages: &[Value]) -> Vec<PracticeRecordRow> {
+pub(crate) fn extract_practice_records(
+    chat_id: &str,
+    messages: &[Value],
+) -> Vec<PracticeRecordRow> {
     let mut clean_calls = std::collections::HashSet::new();
     for m in messages {
         if m.get("role").and_then(|r| r.as_str()) == Some("toolResult") {
@@ -774,7 +777,7 @@ fn extract_practice_records(chat_id: &str, messages: &[Value]) -> Vec<PracticeRe
     out
 }
 
-fn extract_transcript_text(
+pub(crate) fn extract_transcript_text(
     messages: &[Value],
     tree: Option<&Value>,
     extractions: Option<&Value>,
@@ -1557,7 +1560,7 @@ fn migrate_kv_documents(tx: &Transaction, data_dir: &Path) -> Result<(), String>
     Ok(())
 }
 
-fn materialize_fsrs_cards(tx: &Transaction) -> Result<(), String> {
+pub(crate) fn materialize_fsrs_cards(tx: &Connection) -> Result<(), String> {
     struct NodeData {
         created_at_ms: i64,
         chat_id: String,

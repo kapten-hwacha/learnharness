@@ -1,294 +1,35 @@
 use base64::Engine;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum FsMutationOp {
-    WriteFile {
-        path: String,
-        data_base64: String,
-        #[serde(default)]
-        mode: Option<u32>,
-    },
-    AppendFile {
-        path: String,
-        data_base64: String,
-        #[serde(default)]
-        mode: Option<u32>,
-    },
-    Rename {
-        old_path: String,
-        new_path: String,
-    },
-    Unlink {
-        path: String,
-    },
-    Mkdir {
-        path: String,
-        #[serde(default)]
-        recursive: Option<bool>,
-        #[serde(default)]
-        mode: Option<u32>,
-    },
-    Rm {
-        path: String,
-        #[serde(default)]
-        recursive: Option<bool>,
-        #[serde(default)]
-        force: Option<bool>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HydratedFsSnapshot {
-    pub root: String,
+pub struct HostDirs {
     pub data_dir: String,
-    pub auth_file: String,
-    #[serde(rename = "homeDir")]
+    pub user_data_dir: String,
     pub home_dir: String,
-    pub files: HashMap<String, String>,
-    pub dirs: Vec<String>,
+    pub root: String,
 }
 
-pub fn resolve_allowed(
-    path: &str,
-    data_dir: &Path,
-    auth_file: &Path,
-    user_data_dir: &Path,
-) -> Result<PathBuf, String> {
-    let p = Path::new(path);
-    for component in p.components() {
-        if matches!(component, std::path::Component::ParentDir) {
-            return Err(format!("Parent directory traversal not allowed: {path}"));
-        }
-    }
-
-    if !data_dir.exists() {
-        let _ = std::fs::create_dir_all(data_dir);
-    }
-    if !user_data_dir.exists() {
-        let _ = std::fs::create_dir_all(user_data_dir);
-    }
-
-    let canonical_data_dir = data_dir
-        .canonicalize()
-        .map_err(|e| format!("Invalid data_dir: {e}"))?;
-    let canonical_user_data_dir = user_data_dir
-        .canonicalize()
-        .map_err(|e| format!("Invalid user_data_dir: {e}"))?;
-
-    let mut curr = p.to_path_buf();
-    while !curr.exists() {
-        match curr.parent() {
-            Some(parent) => curr = parent.to_path_buf(),
-            None => break,
-        }
-    }
-
-    if curr.exists() {
-        let canonical_curr = curr
-            .canonicalize()
-            .map_err(|e| format!("Canonicalize failed for ancestor: {e}"))?;
-
-        if canonical_curr.starts_with(&canonical_data_dir) {
-            if p.exists() {
-                let canonical_p = p
-                    .canonicalize()
-                    .map_err(|e| format!("Canonicalize failed for path: {e}"))?;
-                if !canonical_p.starts_with(&canonical_data_dir) {
-                    return Err(format!("Symlink target escapes data_dir: {path}"));
-                }
-                return Ok(canonical_p);
-            }
-            let remaining = p.strip_prefix(&curr).unwrap_or(p);
-            return Ok(canonical_curr.join(remaining));
-        }
-
-        if canonical_curr == canonical_user_data_dir {
-            let is_direct_child =
-                p.parent() == Some(user_data_dir) || p.parent() == Some(&canonical_user_data_dir);
-            if is_direct_child {
-                let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if file_name == "auth.json" || file_name.ends_with("-credentials.json") {
-                    if p.exists() {
-                        let canonical_p = p
-                            .canonicalize()
-                            .map_err(|e| format!("Canonicalize failed: {e}"))?;
-                        if canonical_p.parent() != Some(&canonical_user_data_dir) {
-                            return Err(format!(
-                                "Credential symlink outside user_data_dir: {path}"
-                            ));
-                        }
-                        return Ok(canonical_p);
-                    }
-                    return Ok(canonical_user_data_dir.join(file_name));
-                }
-            }
-        }
-    }
-
-    if p == auth_file {
-        return Ok(auth_file.to_path_buf());
-    }
-
-    Err(format!("Path is not within allowed directories: {path}"))
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatResult {
+    pub exists: bool,
+    pub is_file: bool,
+    pub is_dir: bool,
+    pub size: u64,
+    pub mtime_ms: u64,
 }
 
-pub fn apply_op(
-    op: &FsMutationOp,
-    data_dir: &Path,
-    auth_file: &Path,
-    user_data_dir: &Path,
-) -> Result<(), String> {
-    match op {
-        FsMutationOp::WriteFile {
-            path,
-            data_base64,
-            mode,
-        } => {
-            let resolved = resolve_allowed(path, data_dir, auth_file, user_data_dir)?;
-            let file_name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let is_credential =
-                file_name == "auth.json" || file_name.ends_with("-credentials.json");
-
-            let parent = resolved
-                .parent()
-                .ok_or_else(|| "Target path has no parent".to_string())?;
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-
-            let temp_name = format!(
-                ".tmp_{}_{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            );
-            let temp_path = parent.join(temp_name);
-
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(data_base64.as_bytes())
-                .map_err(|e| format!("Base64 decode failed: {e}"))?;
-
-            fs::write(&temp_path, &bytes).map_err(|e| e.to_string())?;
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let perm_mode = if is_credential {
-                    0o600
-                } else {
-                    mode.unwrap_or(0o644)
-                };
-                let _ = fs::set_permissions(&temp_path, fs::Permissions::from_mode(perm_mode));
-            }
-
-            fs::rename(&temp_path, &resolved).map_err(|e| e.to_string())?;
-
-            #[cfg(unix)]
-            {
-                if is_credential {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = fs::set_permissions(&resolved, fs::Permissions::from_mode(0o600));
-                }
-            }
-            Ok(())
-        }
-        FsMutationOp::AppendFile {
-            path,
-            data_base64,
-            mode,
-        } => {
-            let resolved = resolve_allowed(path, data_dir, auth_file, user_data_dir)?;
-            let file_name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let is_credential =
-                file_name == "auth.json" || file_name.ends_with("-credentials.json");
-
-            if let Some(parent) = resolved.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-
-            let is_new = !resolved.exists();
-            let mut file = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&resolved)
-                .map_err(|e| e.to_string())?;
-
-            #[cfg(unix)]
-            if is_new {
-                use std::os::unix::fs::PermissionsExt;
-                let perm_mode = if is_credential {
-                    0o600
-                } else {
-                    mode.unwrap_or(0o644)
-                };
-                let _ = fs::set_permissions(&resolved, fs::Permissions::from_mode(perm_mode));
-            }
-
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(data_base64.as_bytes())
-                .map_err(|e| format!("Base64 decode failed: {e}"))?;
-
-            use std::io::Write;
-            file.write_all(&bytes).map_err(|e| e.to_string())?;
-            Ok(())
-        }
-        FsMutationOp::Rename { old_path, new_path } => {
-            let resolved_old = resolve_allowed(old_path, data_dir, auth_file, user_data_dir)?;
-            let resolved_new = resolve_allowed(new_path, data_dir, auth_file, user_data_dir)?;
-
-            if let Some(parent) = resolved_new.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-
-            fs::rename(&resolved_old, &resolved_new).map_err(|e| e.to_string())?;
-            Ok(())
-        }
-        FsMutationOp::Unlink { path } => {
-            let resolved = resolve_allowed(path, data_dir, auth_file, user_data_dir)?;
-            if resolved.exists() {
-                fs::remove_file(&resolved).map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        }
-        FsMutationOp::Mkdir {
-            path,
-            recursive,
-            mode: _,
-        } => {
-            let resolved = resolve_allowed(path, data_dir, auth_file, user_data_dir)?;
-            if recursive.unwrap_or(false) {
-                fs::create_dir_all(&resolved).map_err(|e| e.to_string())?;
-            } else {
-                fs::create_dir(&resolved).map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        }
-        FsMutationOp::Rm {
-            path,
-            recursive,
-            force,
-        } => {
-            let resolved = resolve_allowed(path, data_dir, auth_file, user_data_dir)?;
-            if resolved.exists() {
-                if recursive.unwrap_or(false) {
-                    fs::remove_dir_all(&resolved).map_err(|e| e.to_string())?;
-                } else if resolved.is_dir() {
-                    fs::remove_dir(&resolved).map_err(|e| e.to_string())?;
-                } else {
-                    fs::remove_file(&resolved).map_err(|e| e.to_string())?;
-                }
-            } else if !force.unwrap_or(false) {
-                return Err(format!("Path does not exist: {path}"));
-            }
-            Ok(())
-        }
-    }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntryResult {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub is_file: bool,
+    pub size: u64,
 }
 
 pub fn resolve_app_dirs(app: &tauri::AppHandle) -> (PathBuf, PathBuf, PathBuf) {
@@ -328,80 +69,6 @@ pub fn resolve_app_dirs(app: &tauri::AppHandle) -> (PathBuf, PathBuf, PathBuf) {
     let _ = std::fs::create_dir_all(&data_dir);
 
     (data_dir, auth_file, user_data_dir)
-}
-
-fn collect_dir_files(dir: &Path, files: &mut HashMap<String, String>, dirs: &mut Vec<String>) {
-    if !dir.exists() {
-        return;
-    }
-    dirs.push(dir.to_string_lossy().to_string());
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                collect_dir_files(&path, files, dirs);
-            } else if path.is_file() {
-                if let Ok(content) = fs::read(&path) {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&content);
-                    files.insert(path.to_string_lossy().to_string(), b64);
-                }
-            }
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn lh_fs_hydrate(app: tauri::AppHandle) -> Result<HydratedFsSnapshot, String> {
-    use tauri::Manager;
-    let (data_dir, auth_file, user_data_dir) = resolve_app_dirs(&app);
-    let root = app
-        .path()
-        .resource_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .to_string_lossy()
-        .to_string();
-
-    let mut files = HashMap::new();
-    let mut dirs = Vec::new();
-
-    collect_dir_files(&data_dir, &mut files, &mut dirs);
-
-    if auth_file.exists() {
-        if let Ok(content) = fs::read(&auth_file) {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&content);
-            files.insert(auth_file.to_string_lossy().to_string(), b64);
-        }
-    }
-
-    if user_data_dir.exists() {
-        if let Ok(entries) = fs::read_dir(&user_data_dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_file() {
-                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if name.ends_with("-credentials.json") {
-                        if let Ok(content) = fs::read(&p) {
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&content);
-                            files.insert(p.to_string_lossy().to_string(), b64);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let home_dir = dirs_home()
-        .map(|p| to_posix(&p))
-        .unwrap_or_else(|| "/home".to_string());
-
-    Ok(HydratedFsSnapshot {
-        root,
-        data_dir: data_dir.to_string_lossy().to_string(),
-        auth_file: auth_file.to_string_lossy().to_string(),
-        home_dir,
-        files,
-        dirs,
-    })
 }
 
 pub fn dirs_home() -> Option<PathBuf> {
@@ -536,11 +203,51 @@ fn is_sensitive_home_subpath(path: &Path, home: &Path) -> bool {
     false
 }
 
-pub fn validate_external_read_path(
+fn load_settings(data_dir: &Path) -> Option<serde_json::Value> {
+    let settings_file = data_dir.join("settings.json");
+    if settings_file.exists() {
+        if let Ok(content) = fs::read_to_string(&settings_file) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                return Some(v);
+            }
+        }
+    }
+
+    let mut dirs_to_check = vec![data_dir.to_path_buf()];
+    if let Some(parent) = data_dir.parent() {
+        dirs_to_check.push(parent.to_path_buf());
+        dirs_to_check.push(parent.join("user_data"));
+    }
+
+    for dir in dirs_to_check {
+        let db_path = dir.join("learnharness.db");
+        if db_path.exists() {
+            if let Ok(conn) = rusqlite::Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            ) {
+                if let Ok(val_str) = conn.query_row::<String, _, _>(
+                    "SELECT value_json FROM kv_documents WHERE key = 'settings'",
+                    [],
+                    |r| r.get(0),
+                ) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&val_str) {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn validate_external_path(
     raw: &str,
     data_dir: &Path,
     auth_file: &Path,
     home_dir: Option<&Path>,
+    require_dir: bool,
 ) -> Result<PathBuf, String> {
     if raw.is_empty() || raw.contains('\0') {
         return Err("Invalid path".to_string());
@@ -553,7 +260,11 @@ pub fn validate_external_read_path(
 
     let canonical = fs::canonicalize(raw).map_err(|e| format!("Failed to resolve {raw}: {e}"))?;
 
-    if !canonical.is_file() {
+    if require_dir {
+        if !canonical.is_dir() {
+            return Err(format!("Path is not a directory: {raw}"));
+        }
+    } else if !canonical.is_file() {
         return Err(format!("Path is not a file: {raw}"));
     }
 
@@ -586,92 +297,76 @@ pub fn validate_external_read_path(
         }
     }
 
-    let settings_path = data_dir.join("settings.json");
-    if settings_path.exists() {
-        if let Ok(content) = fs::read_to_string(&settings_path) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                let is_restricted = val
-                    .get("agent")
-                    .and_then(|a| a.get("restrictFileAccess"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                    || val
-                        .get("agent")
+    if let Some(val) = load_settings(data_dir) {
+        let is_restricted = val
+            .get("agent")
+            .and_then(|a| a.get("restrictFileAccess"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || val
+                .get("agent")
+                .and_then(|a| a.get("fileAccess"))
+                .and_then(|f| f.get("restricted"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+        if is_restricted {
+            let folders_val = val
+                .get("agent")
+                .and_then(|a| a.get("allowedFolders"))
+                .or_else(|| {
+                    val.get("agent")
                         .and_then(|a| a.get("fileAccess"))
-                        .and_then(|f| f.get("restricted"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
+                        .and_then(|f| f.get("folders"))
+                });
 
-                if is_restricted {
-                    let folders_val = val
-                        .get("agent")
-                        .and_then(|a| a.get("allowedFolders"))
-                        .or_else(|| {
-                            val.get("agent")
-                                .and_then(|a| a.get("fileAccess"))
-                                .and_then(|f| f.get("folders"))
-                        });
+            let allowed_folders = folders_val
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
 
-                    let allowed_folders = folders_val
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
+            let mut is_inside_allowed = false;
+            for folder_val in allowed_folders {
+                if let Some(folder_str) = folder_val.as_str() {
+                    let folder_path = if folder_str == "~" {
+                        home_dir.map(|h| h.to_path_buf())
+                    } else if folder_str.starts_with("~/") || folder_str.starts_with("~\\") {
+                        home_dir.map(|h| h.join(&folder_str[2..]))
+                    } else {
+                        Some(PathBuf::from(folder_str))
+                    };
 
-                    let mut is_inside_allowed = false;
-                    for folder_val in allowed_folders {
-                        if let Some(folder_str) = folder_val.as_str() {
-                            let folder_path = if folder_str == "~" {
-                                home_dir.map(|h| h.to_path_buf())
-                            } else if folder_str.starts_with("~/") || folder_str.starts_with("~\\")
-                            {
-                                home_dir.map(|h| h.join(&folder_str[2..]))
-                            } else {
-                                Some(PathBuf::from(folder_str))
-                            };
-
-                            if let Some(fp) = folder_path {
-                                if let Ok(canon_folder) = fs::canonicalize(&fp) {
-                                    let mut folder_is_sensitive = false;
-                                    if let Some(home) = home_dir {
-                                        let canonical_home = fs::canonicalize(home)
-                                            .unwrap_or_else(|_| home.to_path_buf());
-                                        if is_sensitive_home_subpath(&canon_folder, home)
-                                            || is_sensitive_home_subpath(
-                                                &canon_folder,
-                                                &canonical_home,
-                                            )
-                                            || is_sensitive_home_subpath(&fp, home)
-                                            || is_sensitive_home_subpath(&fp, &canonical_home)
-                                        {
-                                            folder_is_sensitive = true;
-                                        }
-                                    }
-                                    if is_credential_or_temp_file(
-                                        &canon_folder,
-                                        auth_file,
-                                        &canonical_auth,
-                                    ) || is_credential_or_temp_file(
-                                        &fp,
-                                        auth_file,
-                                        &canonical_auth,
-                                    ) {
-                                        folder_is_sensitive = true;
-                                    }
-
-                                    if !folder_is_sensitive && canonical.starts_with(&canon_folder)
-                                    {
-                                        is_inside_allowed = true;
-                                        break;
-                                    }
+                    if let Some(fp) = folder_path {
+                        if let Ok(canon_folder) = fs::canonicalize(&fp) {
+                            let mut folder_is_sensitive = false;
+                            if let Some(home) = home_dir {
+                                let canonical_home =
+                                    fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+                                if is_sensitive_home_subpath(&canon_folder, home)
+                                    || is_sensitive_home_subpath(&canon_folder, &canonical_home)
+                                    || is_sensitive_home_subpath(&fp, home)
+                                    || is_sensitive_home_subpath(&fp, &canonical_home)
+                                {
+                                    folder_is_sensitive = true;
                                 }
+                            }
+                            if is_credential_or_temp_file(&canon_folder, auth_file, &canonical_auth)
+                                || is_credential_or_temp_file(&fp, auth_file, &canonical_auth)
+                            {
+                                folder_is_sensitive = true;
+                            }
+
+                            if !folder_is_sensitive && canonical.starts_with(&canon_folder) {
+                                is_inside_allowed = true;
+                                break;
                             }
                         }
                     }
-
-                    if !is_inside_allowed {
-                        return Err("Access denied: outside allowed folders".into());
-                    }
                 }
+            }
+
+            if !is_inside_allowed {
+                return Err("Access denied: outside allowed folders".into());
             }
         }
     }
@@ -679,10 +374,97 @@ pub fn validate_external_read_path(
     Ok(canonical)
 }
 
+pub fn validate_external_read_path(
+    raw: &str,
+    data_dir: &Path,
+    auth_file: &Path,
+    home_dir: Option<&Path>,
+) -> Result<PathBuf, String> {
+    validate_external_path(raw, data_dir, auth_file, home_dir, false)
+}
+
+pub fn validate_external_dir_path(
+    raw: &str,
+    data_dir: &Path,
+    auth_file: &Path,
+    home_dir: Option<&Path>,
+) -> Result<PathBuf, String> {
+    validate_external_path(raw, data_dir, auth_file, home_dir, true)
+}
+
+pub fn walk_external(
+    root_dir: &Path,
+    data_dir: &Path,
+    auth_file: &Path,
+    home_dir: Option<&Path>,
+    max_entries: Option<usize>,
+) -> Result<Vec<String>, String> {
+    let canon_root =
+        validate_external_dir_path(&root_dir.to_string_lossy(), data_dir, auth_file, home_dir)?;
+
+    let max_files = max_entries.unwrap_or(5000);
+    let mut results = Vec::new();
+    let mut queue = vec![canon_root];
+
+    while let Some(curr_dir) = queue.pop() {
+        let entries = match fs::read_dir(&curr_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with('.')
+                || file_name == "node_modules"
+                || is_env_file_name(&file_name)
+            {
+                continue;
+            }
+
+            let path = entry.path();
+            if let Some(home) = home_dir {
+                if is_sensitive_home_subpath(&path, home) {
+                    continue;
+                }
+            }
+
+            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+            if is_dir {
+                queue.push(path);
+            } else {
+                results.push(to_posix(&path));
+                if results.len() >= max_files {
+                    return Ok(results);
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+// ─── Tauri Command Handlers ──────────────────────────────────────────────────
+
 #[tauri::command]
-pub async fn lh_fs_sync(app: tauri::AppHandle, op: FsMutationOp) -> Result<(), String> {
-    let (data_dir, auth_file, user_data_dir) = resolve_app_dirs(&app);
-    apply_op(&op, &data_dir, &auth_file, &user_data_dir)
+pub async fn lh_get_host_dirs(app: tauri::AppHandle) -> Result<HostDirs, String> {
+    use tauri::Manager;
+    let (data_dir, _, user_data_dir) = resolve_app_dirs(&app);
+    let home_dir = dirs_home()
+        .map(|p| to_posix(&p))
+        .unwrap_or_else(|| "/home".to_string());
+    let root = app
+        .path()
+        .resource_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .to_string_lossy()
+        .to_string();
+
+    Ok(HostDirs {
+        data_dir: to_posix(&data_dir),
+        user_data_dir: to_posix(&user_data_dir),
+        home_dir,
+        root,
+    })
 }
 
 #[tauri::command]
@@ -691,6 +473,208 @@ pub async fn lh_fs_read_external(app: tauri::AppHandle, path: String) -> Result<
     let home = dirs_home();
     let safe_path = validate_external_read_path(&path, &data_dir, &auth_file, home.as_deref())?;
     fs::read(&safe_path).map_err(|e| format!("Failed to read {path}: {e}"))
+}
+
+#[tauri::command]
+pub async fn lh_fs_stat_external(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<StatResult, String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Ok(StatResult {
+            exists: false,
+            is_file: false,
+            is_dir: false,
+            size: 0,
+            mtime_ms: 0,
+        });
+    }
+
+    let (data_dir, auth_file, _) = resolve_app_dirs(&app);
+    let home = dirs_home();
+    let is_dir = p.is_dir();
+    let safe_path = validate_external_path(&path, &data_dir, &auth_file, home.as_deref(), is_dir)?;
+
+    let meta = fs::metadata(&safe_path).map_err(|e| e.to_string())?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    Ok(StatResult {
+        exists: true,
+        is_file: meta.is_file(),
+        is_dir: meta.is_dir(),
+        size: meta.len(),
+        mtime_ms,
+    })
+}
+
+#[tauri::command]
+pub async fn lh_fs_list_external_dir(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<Vec<DirEntryResult>, String> {
+    let (data_dir, auth_file, _) = resolve_app_dirs(&app);
+    let home = dirs_home();
+    let safe_dir = validate_external_dir_path(&path, &data_dir, &auth_file, home.as_deref())?;
+
+    let entries = fs::read_dir(&safe_dir).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if is_env_file_name(&name) {
+            continue;
+        }
+
+        let p = entry.path();
+        if let Some(h) = home.as_deref() {
+            if is_sensitive_home_subpath(&p, h) {
+                continue;
+            }
+        }
+
+        let meta = entry.metadata().ok();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let is_file = meta.as_ref().map(|m| m.is_file()).unwrap_or(false);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+
+        out.push(DirEntryResult {
+            name,
+            path: to_posix(&p),
+            is_dir,
+            is_file,
+            size,
+        });
+    }
+
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn lh_fs_walk_external(
+    app: tauri::AppHandle,
+    root_dir: String,
+    max_entries: Option<usize>,
+) -> Result<Vec<String>, String> {
+    let (data_dir, auth_file, _) = resolve_app_dirs(&app);
+    let home = dirs_home();
+    walk_external(
+        Path::new(&root_dir),
+        &data_dir,
+        &auth_file,
+        home.as_deref(),
+        max_entries,
+    )
+}
+
+#[tauri::command]
+pub async fn lh_quaderno_write_pdf(
+    app: tauri::AppHandle,
+    filename: String,
+    data_base64: String,
+) -> Result<String, String> {
+    let p = Path::new(&filename);
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid filename".to_string())?;
+
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(format!("Invalid filename: {filename}"));
+    }
+
+    let (data_dir, _, _) = resolve_app_dirs(&app);
+    let quaderno_dir = data_dir.join("quaderno");
+    fs::create_dir_all(&quaderno_dir)
+        .map_err(|e| format!("Failed to create quaderno directory: {e}"))?;
+
+    let target = quaderno_dir.join(name);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|e| format!("Base64 decode failed: {e}"))?;
+
+    fs::write(&target, &bytes).map_err(|e| format!("Failed to write pdf file: {e}"))?;
+
+    Ok(to_posix(&target))
+}
+
+#[tauri::command]
+pub async fn lh_quaderno_list_pdfs(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let (data_dir, _, _) = resolve_app_dirs(&app);
+    let quaderno_dir = data_dir.join("quaderno");
+    if !quaderno_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let entries = fs::read_dir(&quaderno_dir).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_file() {
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                if name.ends_with(".pdf") {
+                    out.push(name.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn lh_debug_write(
+    app: tauri::AppHandle,
+    rel_path: String,
+    line: String,
+    append: Option<bool>,
+) -> Result<(), String> {
+    let p = Path::new(&rel_path);
+    for comp in p.components() {
+        if matches!(
+            comp,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        ) {
+            return Err(format!("Invalid rel_path traversal: {rel_path}"));
+        }
+    }
+
+    let (_, _, user_data_dir) = resolve_app_dirs(&app);
+    let debug_dir = user_data_dir.join("debug");
+    let target = debug_dir.join(p);
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create debug dir: {e}"))?;
+    }
+
+    let formatted_line = if line.ends_with('\n') {
+        line
+    } else {
+        format!("{line}\n")
+    };
+
+    if append.unwrap_or(true) {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&target)
+            .map_err(|e| format!("Failed to open debug file: {e}"))?;
+        file.write_all(formatted_line.as_bytes())
+            .map_err(|e| format!("Failed to write to debug file: {e}"))?;
+    } else {
+        fs::write(&target, formatted_line)
+            .map_err(|e| format!("Failed to write debug file: {e}"))?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -732,249 +716,6 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
-    }
-
-    #[test]
-    fn allows_path_inside_data_dir() {
-        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
-        let target = data_dir.join("notes.md");
-        let resolved = resolve_allowed(
-            target.to_str().unwrap(),
-            &data_dir,
-            &auth_file,
-            &user_data_dir,
-        );
-        assert!(resolved.is_ok());
-    }
-
-    #[test]
-    fn rejects_dotdot_escape() {
-        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
-        let target = data_dir.join("../outside.txt");
-        let resolved = resolve_allowed(
-            target.to_str().unwrap(),
-            &data_dir,
-            &auth_file,
-            &user_data_dir,
-        );
-        assert!(resolved.is_err());
-    }
-
-    #[test]
-    fn rejects_sibling_prefix_dir() {
-        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
-        let sibling = data_dir
-            .parent()
-            .unwrap()
-            .join("LearnHarness-evil")
-            .join("a.json");
-        let resolved = resolve_allowed(
-            sibling.to_str().unwrap(),
-            &data_dir,
-            &auth_file,
-            &user_data_dir,
-        );
-        assert!(
-            resolved.is_err(),
-            "must reject sibling prefix matching directory"
-        );
-    }
-
-    #[test]
-    fn rejects_symlink_escape() {
-        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
-        let outside = data_dir.parent().unwrap().join("outside_dir");
-        fs::create_dir_all(&outside).unwrap();
-        let symlink_path = data_dir.join("link_to_outside");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, &symlink_path).unwrap();
-
-        let op = FsMutationOp::WriteFile {
-            path: symlink_path
-                .join("secret.txt")
-                .to_str()
-                .unwrap()
-                .to_string(),
-            data_base64: "aGVsbG8=".to_string(),
-            mode: None,
-        };
-        let res = apply_op(&op, &data_dir, &auth_file, &user_data_dir);
-        assert!(
-            res.is_err(),
-            "writeFile through symlink outside data_dir must return Err"
-        );
-    }
-
-    #[test]
-    fn allows_auth_json_and_credentials_files() {
-        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
-        let res_auth = resolve_allowed(
-            auth_file.to_str().unwrap(),
-            &data_dir,
-            &auth_file,
-            &user_data_dir,
-        );
-        assert!(res_auth.is_ok());
-
-        let chatgpt_cred = user_data_dir.join("chatgpt-credentials.json");
-        let res_chatgpt = resolve_allowed(
-            chatgpt_cred.to_str().unwrap(),
-            &data_dir,
-            &auth_file,
-            &user_data_dir,
-        );
-        assert!(res_chatgpt.is_ok());
-
-        let copilot_cred = user_data_dir.join("github-copilot-credentials.json");
-        let res_copilot = resolve_allowed(
-            copilot_cred.to_str().unwrap(),
-            &data_dir,
-            &auth_file,
-            &user_data_dir,
-        );
-        assert!(res_copilot.is_ok());
-    }
-
-    #[test]
-    fn rejects_other_files_in_user_data_dir() {
-        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
-        let other = user_data_dir.join("malicious.sh");
-        let res = resolve_allowed(
-            other.to_str().unwrap(),
-            &data_dir,
-            &auth_file,
-            &user_data_dir,
-        );
-        assert!(res.is_err());
-
-        let other_json = user_data_dir.join("settings_evil.json");
-        let res2 = resolve_allowed(
-            other_json.to_str().unwrap(),
-            &data_dir,
-            &auth_file,
-            &user_data_dir,
-        );
-        assert!(res2.is_err());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn credentials_written_with_mode_0600() {
-        use std::os::unix::fs::PermissionsExt;
-        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
-
-        let op = FsMutationOp::WriteFile {
-            path: auth_file.to_str().unwrap().to_string(),
-            data_base64: "e30=".to_string(),
-            mode: None,
-        };
-        apply_op(&op, &data_dir, &auth_file, &user_data_dir).unwrap();
-        let meta = fs::metadata(&auth_file).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
-
-        let cred = user_data_dir.join("chatgpt-credentials.json");
-        let op_cred = FsMutationOp::WriteFile {
-            path: cred.to_str().unwrap().to_string(),
-            data_base64: "e30=".to_string(),
-            mode: None,
-        };
-        apply_op(&op_cred, &data_dir, &auth_file, &user_data_dir).unwrap();
-        let meta_cred = fs::metadata(&cred).unwrap();
-        assert_eq!(meta_cred.permissions().mode() & 0o777, 0o600);
-    }
-
-    #[test]
-    fn rename_overwrites_atomically() {
-        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
-        let file1 = data_dir.join("file1.txt");
-        let file2 = data_dir.join("file2.txt");
-
-        let op1 = FsMutationOp::WriteFile {
-            path: file1.to_str().unwrap().to_string(),
-            data_base64: "ZmlsZTE=".to_string(), // "file1"
-            mode: None,
-        };
-        apply_op(&op1, &data_dir, &auth_file, &user_data_dir).unwrap();
-
-        let op2 = FsMutationOp::WriteFile {
-            path: file2.to_str().unwrap().to_string(),
-            data_base64: "ZmlsZTI=".to_string(), // "file2"
-            mode: None,
-        };
-        apply_op(&op2, &data_dir, &auth_file, &user_data_dir).unwrap();
-
-        let op_rename = FsMutationOp::Rename {
-            old_path: file1.to_str().unwrap().to_string(),
-            new_path: file2.to_str().unwrap().to_string(),
-        };
-        apply_op(&op_rename, &data_dir, &auth_file, &user_data_dir).unwrap();
-
-        assert!(!file1.exists());
-        assert_eq!(fs::read_to_string(&file2).unwrap(), "file1");
-    }
-
-    #[test]
-    fn test_atomic_write_simulation() {
-        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
-        let chats_dir = data_dir.join("chats");
-        let op_mkdir = FsMutationOp::Mkdir {
-            path: chats_dir.to_str().unwrap().to_string(),
-            recursive: Some(true),
-            mode: None,
-        };
-        apply_op(&op_mkdir, &data_dir, &auth_file, &user_data_dir).unwrap();
-
-        let chat_tmp = chats_dir.join("chat_123.json.tmp-abcdef");
-        let chat_target = chats_dir.join("chat_123.json");
-
-        let op_write = FsMutationOp::WriteFile {
-            path: chat_tmp.to_str().unwrap().to_string(),
-            data_base64: "eyJpZCI6ICJjaGF0XzEyMyJ9".to_string(),
-            mode: None,
-        };
-        apply_op(&op_write, &data_dir, &auth_file, &user_data_dir).unwrap();
-        assert!(chat_tmp.exists());
-
-        let op_rename = FsMutationOp::Rename {
-            old_path: chat_tmp.to_str().unwrap().to_string(),
-            new_path: chat_target.to_str().unwrap().to_string(),
-        };
-        apply_op(&op_rename, &data_dir, &auth_file, &user_data_dir).unwrap();
-        assert!(!chat_tmp.exists());
-        assert!(chat_target.exists());
-    }
-
-    #[test]
-    fn nonexistent_initial_directories_created_and_canonicalized() {
-        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let base = std::env::temp_dir().join(format!(
-            "lh_nonexistent_{}_{}_{}",
-            std::process::id(),
-            id,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let data_dir = base.join("nonexistent_data");
-        let user_data_dir = base.join("nonexistent_user_data");
-        let auth_file = user_data_dir.join("auth.json");
-
-        assert!(!data_dir.exists());
-        assert!(!user_data_dir.exists());
-
-        let target = data_dir.join("file.txt");
-        let resolved = resolve_allowed(
-            target.to_str().unwrap(),
-            &data_dir,
-            &auth_file,
-            &user_data_dir,
-        );
-        assert!(resolved.is_ok());
-        assert!(data_dir.exists());
-        assert!(user_data_dir.exists());
-
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1127,5 +868,80 @@ mod tests {
             res_allowed.unwrap(),
             fs::canonicalize(&allowed_file).unwrap()
         );
+    }
+
+    #[test]
+    fn external_walk_and_db_settings_policy() {
+        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
+        let home = user_data_dir.join("fake_home");
+        let allowed = home.join("allowed_workspace");
+        let forbidden = home.join("forbidden_folder");
+        let ssh_dir = home.join(".ssh");
+        fs::create_dir_all(&allowed).unwrap();
+        fs::create_dir_all(&forbidden).unwrap();
+        fs::create_dir_all(&ssh_dir).unwrap();
+
+        let allowed_doc = allowed.join("notes.txt");
+        let forbidden_doc = forbidden.join("notes.txt");
+        let env_file = allowed.join(".env");
+        let node_modules = allowed.join("node_modules/pkg");
+        let nested_file = node_modules.join("index.js");
+        let sub_doc = allowed.join("sub/chapter.md");
+        fs::create_dir_all(allowed.join("sub")).unwrap();
+        fs::create_dir_all(&node_modules).unwrap();
+
+        fs::write(&allowed_doc, "allowed").unwrap();
+        fs::write(&forbidden_doc, "forbidden").unwrap();
+        fs::write(&env_file, "SECRET=1").unwrap();
+        fs::write(&nested_file, "console.log(1)").unwrap();
+        fs::write(&sub_doc, "# Chapter").unwrap();
+
+        // 1. Create SQLite DB with settings in kv_documents
+        let db_path = user_data_dir.join("learnharness.db");
+        let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::storage::schema::init_schema(&mut conn).unwrap();
+        let settings = serde_json::json!({
+            "agent": {
+                "fileAccess": {
+                    "restricted": true,
+                    "folders": [allowed.to_str().unwrap()]
+                }
+            }
+        });
+        conn.execute(
+            "INSERT INTO kv_documents (key, value_json, updated_at) VALUES ('settings', ?1, ?2)",
+            rusqlite::params![settings.to_string(), 1700000000i64],
+        )
+        .unwrap();
+
+        // 2. Validate external read path reads settings from SQLite
+        let res_allowed = validate_external_read_path(
+            allowed_doc.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            Some(&home),
+        );
+        assert!(res_allowed.is_ok());
+
+        let res_forbidden = validate_external_read_path(
+            forbidden_doc.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            Some(&home),
+        );
+        assert!(res_forbidden.is_err());
+        assert_eq!(
+            res_forbidden.unwrap_err(),
+            "Access denied: outside allowed folders"
+        );
+
+        // 3. Walk external under allowed: must find allowed_doc and sub_doc, but skip .env and node_modules
+        let walked = walk_external(&allowed, &data_dir, &auth_file, Some(&home), None).unwrap();
+        let canon_allowed_doc = fs::canonicalize(&allowed_doc).unwrap();
+        let canon_sub_doc = fs::canonicalize(&sub_doc).unwrap();
+        assert!(walked.contains(&to_posix(&canon_allowed_doc)));
+        assert!(walked.contains(&to_posix(&canon_sub_doc)));
+        assert!(!walked.iter().any(|p| p.contains(".env")));
+        assert!(!walked.iter().any(|p| p.contains("node_modules")));
     }
 }
