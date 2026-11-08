@@ -2,6 +2,7 @@ pub mod exec;
 pub mod fs_bridge;
 pub mod http_bridge;
 pub mod oauth;
+pub mod storage;
 pub mod window;
 
 #[cfg(not(target_os = "ios"))]
