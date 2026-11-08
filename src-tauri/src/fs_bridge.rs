@@ -154,11 +154,7 @@ fn is_credential_or_temp_file(file_path: &Path, auth_file: &Path, canonical_auth
     if parent_matches {
         if let Some(file_name) = file_path.file_name().and_then(|n| n.to_str()) {
             let lower = file_name.to_ascii_lowercase();
-            if lower == "auth.json"
-                || lower == "chatgpt-credentials.json"
-                || lower == "github-copilot-credentials.json"
-                || lower == "xai-credentials.json"
-            {
+            if lower == "auth.json" || lower.ends_with("-credentials.json") {
                 return true;
             }
             if lower.contains(".tmp")
@@ -204,15 +200,6 @@ fn is_sensitive_home_subpath(path: &Path, home: &Path) -> bool {
 }
 
 fn load_settings(data_dir: &Path) -> Option<serde_json::Value> {
-    let settings_file = data_dir.join("settings.json");
-    if settings_file.exists() {
-        if let Ok(content) = fs::read_to_string(&settings_file) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                return Some(v);
-            }
-        }
-    }
-
     let mut dirs_to_check = vec![data_dir.to_path_buf()];
     if let Some(parent) = data_dir.parent() {
         dirs_to_check.push(parent.to_path_buf());
@@ -239,6 +226,16 @@ fn load_settings(data_dir: &Path) -> Option<serde_json::Value> {
             }
         }
     }
+
+    let settings_file = data_dir.join("settings.json");
+    if settings_file.exists() {
+        if let Ok(content) = fs::read_to_string(&settings_file) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                return Some(v);
+            }
+        }
+    }
+
     None
 }
 
@@ -785,6 +782,15 @@ mod tests {
             .unwrap_err()
             .contains("Access denied: protected location"));
 
+        let custom_cred = user_data_dir.join("arbitrary-credentials.json");
+        fs::write(&custom_cred, "{}").unwrap();
+        let res_custom =
+            validate_external_read_path(custom_cred.to_str().unwrap(), &data_dir, &auth_file, None);
+        assert!(res_custom.is_err());
+        assert!(res_custom
+            .unwrap_err()
+            .contains("Access denied: protected location"));
+
         let temp_cred = user_data_dir.join("auth.json.tmp-1234");
         fs::write(&temp_cred, "{}").unwrap();
         let res_temp =
@@ -943,5 +949,72 @@ mod tests {
         assert!(walked.contains(&to_posix(&canon_sub_doc)));
         assert!(!walked.iter().any(|p| p.contains(".env")));
         assert!(!walked.iter().any(|p| p.contains("node_modules")));
+    }
+
+    #[test]
+    fn sqlite_settings_preempts_legacy_settings_json() {
+        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
+        let home = user_data_dir.join("fake_home");
+        let allowed_in_sqlite = home.join("sqlite_allowed");
+        let allowed_in_legacy = home.join("legacy_allowed");
+        fs::create_dir_all(&allowed_in_sqlite).unwrap();
+        fs::create_dir_all(&allowed_in_legacy).unwrap();
+
+        let sqlite_file = allowed_in_sqlite.join("file.txt");
+        let legacy_file = allowed_in_legacy.join("file.txt");
+        fs::write(&sqlite_file, "from sqlite").unwrap();
+        fs::write(&legacy_file, "from legacy").unwrap();
+
+        // Write legacy settings allowing only `allowed_in_legacy`
+        let legacy_settings = serde_json::json!({
+            "agent": {
+                "restrictFileAccess": true,
+                "allowedFolders": [allowed_in_legacy.to_str().unwrap()]
+            }
+        });
+        fs::write(data_dir.join("settings.json"), legacy_settings.to_string()).unwrap();
+
+        // Write SQLite settings in user_data_dir/learnharness.db allowing only `allowed_in_sqlite`
+        let db_path = user_data_dir.join("learnharness.db");
+        let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::storage::schema::init_schema(&mut conn).unwrap();
+        let sqlite_settings = serde_json::json!({
+            "agent": {
+                "restrictFileAccess": true,
+                "allowedFolders": [allowed_in_sqlite.to_str().unwrap()]
+            }
+        });
+        conn.execute(
+            "INSERT INTO kv_documents (key, value_json, updated_at) VALUES ('settings', ?1, ?2)",
+            rusqlite::params![sqlite_settings.to_string(), 1700000000i64],
+        )
+        .unwrap();
+
+        // Verification:
+        // SQLite settings MUST take precedence over legacy settings.json:
+        // sqlite_file MUST be allowed
+        let res_sqlite = validate_external_read_path(
+            sqlite_file.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            Some(&home),
+        );
+        assert!(res_sqlite.is_ok(), "SQLite allowed path should be accepted");
+
+        // legacy_file MUST be denied (since SQLite settings do not include it)
+        let res_legacy = validate_external_read_path(
+            legacy_file.to_str().unwrap(),
+            &data_dir,
+            &auth_file,
+            Some(&home),
+        );
+        assert!(
+            res_legacy.is_err(),
+            "Legacy-only allowed path should be rejected when SQLite settings exist"
+        );
+        assert_eq!(
+            res_legacy.unwrap_err(),
+            "Access denied: outside allowed folders"
+        );
     }
 }

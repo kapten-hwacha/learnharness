@@ -1561,6 +1561,12 @@ fn migrate_kv_documents(tx: &Transaction, data_dir: &Path) -> Result<(), String>
 }
 
 pub(crate) fn materialize_fsrs_cards(tx: &Connection) -> Result<(), String> {
+    tx.execute(
+        "DELETE FROM fsrs_cards WHERE node_id NOT IN (SELECT id FROM graph_nodes)",
+        [],
+    )
+    .map_err(|e| format!("Failed to prune orphaned fsrs_cards: {e}"))?;
+
     struct NodeData {
         created_at_ms: i64,
         chat_id: String,

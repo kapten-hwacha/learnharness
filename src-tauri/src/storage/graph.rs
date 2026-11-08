@@ -1614,5 +1614,11 @@ mod tests {
         // dueAtMs: 1700100000000 must come first
         assert_eq!(read_cards[0]["nodeId"], "node_2");
         assert_eq!(read_cards[1]["nodeId"], "node_1");
+
+        // 8. materialize_fsrs_cards prunes orphaned cards when node is deleted from graph_nodes
+        crate::storage::migrate::materialize_fsrs_cards(&conn).unwrap();
+        let cards_after_prune = read_fsrs_cards(&conn, None).unwrap();
+        assert_eq!(cards_after_prune.len(), 1);
+        assert_eq!(cards_after_prune[0]["nodeId"], "node_2");
     }
 }
