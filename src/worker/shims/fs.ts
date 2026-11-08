@@ -80,7 +80,7 @@ export function enqueueOp(op: FsMutationOp): void {
 		try {
 			await getHostBridge().syncFs(op);
 		} catch (err) {
-			console.warn("[memfs] write-behind syncFs error:", err);
+			console.error("[memfs] write-behind syncFs error:", err);
 		}
 	});
 }

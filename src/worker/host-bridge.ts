@@ -102,6 +102,10 @@ export function handleWorkerTauriMessage(event: { data: any }): void {
 			};
 		}
 		setHostBridge(createTauriHostBridge(invoke));
+	} else if (data.type === "lh:dev-init" || data.type === "lh:browser-init") {
+		if (!isTauriEnvironment()) {
+			setHostBridge(createBrowserDevHostBridge());
+		}
 	} else if (data.type === "lh:tauri-invoke-result") {
 		const { id, result, error } = data;
 		const pending = pendingInvocations.get(id);
@@ -160,9 +164,32 @@ if (typeof globalThis !== "undefined" && !(globalThis as any).__TAURI_INTERNALS_
 }
 
 let activeBridge: HostBridge | null = null;
+let initialBridgeResolve: ((bridge: HostBridge) => void) | null = null;
+const initialBridgePromise = new Promise<HostBridge>((resolve) => {
+	initialBridgeResolve = resolve;
+});
 
 export function setHostBridge(bridge: HostBridge | null): void {
 	activeBridge = bridge;
+	if (bridge && initialBridgeResolve) {
+		initialBridgeResolve(bridge);
+	}
+}
+
+export async function waitForInitialBridge(timeoutMs = 50): Promise<HostBridge> {
+	if (activeBridge) return activeBridge;
+	if (isTauriEnvironment()) {
+		return getHostBridge();
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeoutPromise = new Promise<HostBridge>((resolve) => {
+		timer = setTimeout(() => {
+			resolve(getHostBridge());
+		}, timeoutMs);
+	});
+	const bridge = await Promise.race([initialBridgePromise, timeoutPromise]);
+	if (timer) clearTimeout(timer);
+	return bridge;
 }
 
 export function getHostBridge(): HostBridge {

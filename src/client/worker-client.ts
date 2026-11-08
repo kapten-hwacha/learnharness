@@ -268,7 +268,11 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 	}
 
 	const isTauri = typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__?.invoke);
-	const worker = new Worker(new URL("../worker/entry.ts", import.meta.url), { type: "module" });
+	const workerUrl = new URL("../worker/entry.ts", import.meta.url);
+	if (isTauri) {
+		workerUrl.searchParams.set("tauri", "1");
+	}
+	const worker = new Worker(workerUrl, { type: "module" });
 	activeWorker = worker;
 	if (typeof window !== "undefined") {
 		(window as any).__LH_WORKER__ = worker;
@@ -327,6 +331,8 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 				})
 			);
 		}
+	} else {
+		worker.postMessage({ type: "lh:dev-init" });
 	}
 
 	const portFetch = createPortFetch(

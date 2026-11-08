@@ -914,6 +914,37 @@ mod tests {
     }
 
     #[test]
+    fn test_atomic_write_simulation() {
+        let (_guard, data_dir, auth_file, user_data_dir) = setup_dirs();
+        let chats_dir = data_dir.join("chats");
+        let op_mkdir = FsMutationOp::Mkdir {
+            path: chats_dir.to_str().unwrap().to_string(),
+            recursive: Some(true),
+            mode: None,
+        };
+        apply_op(&op_mkdir, &data_dir, &auth_file, &user_data_dir).unwrap();
+
+        let chat_tmp = chats_dir.join("chat_123.json.tmp-abcdef");
+        let chat_target = chats_dir.join("chat_123.json");
+
+        let op_write = FsMutationOp::WriteFile {
+            path: chat_tmp.to_str().unwrap().to_string(),
+            data_base64: "eyJpZCI6ICJjaGF0XzEyMyJ9".to_string(),
+            mode: None,
+        };
+        apply_op(&op_write, &data_dir, &auth_file, &user_data_dir).unwrap();
+        assert!(chat_tmp.exists());
+
+        let op_rename = FsMutationOp::Rename {
+            old_path: chat_tmp.to_str().unwrap().to_string(),
+            new_path: chat_target.to_str().unwrap().to_string(),
+        };
+        apply_op(&op_rename, &data_dir, &auth_file, &user_data_dir).unwrap();
+        assert!(!chat_tmp.exists());
+        assert!(chat_target.exists());
+    }
+
+    #[test]
     fn nonexistent_initial_directories_created_and_canonicalized() {
         let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!(

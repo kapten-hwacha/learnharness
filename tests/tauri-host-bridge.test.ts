@@ -6,6 +6,7 @@ import {
 	getHostBridge,
 	handleWorkerTauriMessage,
 	setHostBridge,
+	waitForInitialBridge,
 	type FsMutationOp,
 	type HydratedFsSnapshot,
 } from "../src/worker/host-bridge.ts";
@@ -197,6 +198,14 @@ describe("Tauri HostBridge", () => {
 			delete globalAny.__TAURI_INTERNALS__;
 			setHostBridge(null as any);
 		}
+	});
+
+	it("waitForInitialBridge resolves to bridge on handshake or timeout", async () => {
+		setHostBridge(null as any);
+		const bridgePromise = waitForInitialBridge(20);
+		const bridge = await bridgePromise;
+		assert.ok(bridge);
+		assert.equal(typeof bridge.hydrateFs, "function");
 	});
 
 	it("childProcess.spawn calls lh_spawn_daemon and kill calls lh_kill_process", async () => {

@@ -3,7 +3,7 @@ import { configurePaths } from "../../config.ts";
 import { headlessOverride } from "../agent/subagents/headless.ts";
 import { initAuthEnv } from "../server/keys.ts";
 import { installCustomProviderSource } from "../server/custom-provider.ts";
-import { getHostBridge } from "./host-bridge.ts";
+import { getHostBridge, waitForInitialBridge } from "./host-bridge.ts";
 import { createWorkerHeadless } from "./headless-worker.ts";
 import { dispatchWorkerRequest } from "./router.ts";
 import { ensureParentDirs, getInternalFiles, hydrateMemfs, normalizeFsPath } from "./shims/fs.ts";
@@ -138,13 +138,14 @@ export function createWorkerMessageHandler(
 						message: err instanceof Error ? err.message : String(err),
 					});
 				} finally {
-					if (port) {
-						try {
-							port.close();
-						} catch {}
-					}
-					// Retain controller briefly so caller abort signal after completion still finds it
+					// Retain controller and port briefly so queued messages flush to port1
+					// and caller abort signal after completion still finds it
 					const t = setTimeout(() => {
+						if (port) {
+							try {
+								port.close();
+							} catch {}
+						}
 						activeRequests.delete(id);
 					}, 5000);
 					if (typeof t === "object" && typeof (t as { unref?: () => void }).unref === "function") {
@@ -161,7 +162,7 @@ let bootPromise: Promise<void> | null = null;
 export function ensureWorkerBooted(): Promise<void> {
 	if (!bootPromise) {
 		bootPromise = (async () => {
-			const bridge = getHostBridge();
+			const bridge = await waitForInitialBridge();
 			const snapshot = await bridge.hydrateFs();
 			configurePaths({ root: snapshot.root, dataDir: snapshot.dataDir, authFile: snapshot.authFile });
 			hydrateMemfs(snapshot);
