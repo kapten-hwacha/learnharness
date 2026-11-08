@@ -5,6 +5,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import { capOutput, formatSize, MAX_OUTPUT_BYTES, matchGlob, sourceSearchRoots, walkFiles, WALK_TIMEOUT_MS } from "./fs-shared.ts";
 import { resolvePolicy } from "./file-access.ts";
+import { hasTauriBridge, statExternal } from "../../worker/host-bridge.ts";
 
 /** Pure-Node pi/fd-style search: no shell, no symlink following, mandatory
  * source denials. Restricted default searches share ONE budget/limit across
@@ -26,10 +27,18 @@ export const findTool: AgentTool<typeof findInput> = {
 		const policy = resolvePolicy();
 		const { roots, notices, multiRoot } = sourceSearchRoots(input.path, policy);
 		for (const root of roots) {
-			let stat;
-			try { stat = await fs.stat(root); }
-			catch { throw new Error(`Path not found: ${root}`); }
-			if (!stat.isDirectory()) throw new Error(`Not a directory: ${root}`);
+			if (hasTauriBridge()) {
+				let stat;
+				try { stat = await statExternal(root); }
+				catch { throw new Error(`Path not found: ${root}`); }
+				if (!stat.exists) throw new Error(`Path not found: ${root}`);
+				if (!stat.isDir) throw new Error(`Not a directory: ${root}`);
+			} else {
+				let stat;
+				try { stat = await fs.stat(root); }
+				catch { throw new Error(`Path not found: ${root}`); }
+				if (!stat.isDirectory()) throw new Error(`Not a directory: ${root}`);
+			}
 		}
 		const effectiveLimit = input.limit ?? DEFAULT_LIMIT;
 		const matches: string[] = [];

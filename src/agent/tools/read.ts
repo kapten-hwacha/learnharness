@@ -4,7 +4,8 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute, type ImageFileResult } from "../tool-execute.ts";
 import { resolveSourcePath } from "./fs-shared.ts";
-import { detectSupportedImageMimeTypeFromFile, processImage } from "../image-processing/index.ts";
+import { detectSupportedImageMimeType, detectSupportedImageMimeTypeFromFile, processImage } from "../image-processing/index.ts";
+import { hasTauriBridge, readExternalFile } from "../../worker/host-bridge.ts";
 
 /**
  * The read tool — sources v0 (2026-09): a Node port of pi's read semantics
@@ -99,8 +100,16 @@ export function createReadTool(model?: ReadModel): AgentTool<typeof readInput> {
 		parameters: readInput,
 		execute: serverExecute("read", readInput, async ({ path: rawPath, offset, limit }, { signal }): Promise<string | ImageFileResult> => {
 			const absolute = resolveSourcePath(rawPath);
-			const mime = await detectSupportedImageMimeTypeFromFile(absolute);
-			const buffer = await fs.readFile(absolute, { signal });
+			let mime: string | null = null;
+			let buffer: Buffer;
+			if (hasTauriBridge()) {
+				const uint8 = await readExternalFile(absolute);
+				buffer = Buffer.from(uint8.buffer, uint8.byteOffset, uint8.byteLength);
+				mime = detectSupportedImageMimeType(uint8);
+			} else {
+				mime = await detectSupportedImageMimeTypeFromFile(absolute);
+				buffer = await fs.readFile(absolute, { signal });
+			}
 			if (mime) {
 				const processed = await processImage(buffer, mime, { resizeOptions: model?.inputLimits?.images?.resize });
 				signal?.throwIfAborted();

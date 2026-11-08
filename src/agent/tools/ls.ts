@@ -5,6 +5,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import { capOutput, formatSize, MAX_OUTPUT_BYTES, resolveSourcePath, sourceSearchRoots } from "./fs-shared.ts";
 import { resolvePolicy } from "./file-access.ts";
+import { hasTauriBridge, listExternalDir, statExternal } from "../../worker/host-bridge.ts";
 
 /**
  * The ls tool — sources v1 (2026-09-19): a Node port of pi's
@@ -41,6 +42,43 @@ export const lsTool: AgentTool<typeof lsInput> = {
 			return notices.length ? `${content}\n\n[${notices.join(". ")}]` : content;
 		}
 		const dirPath = resolveSourcePath(input.path, policy);
+
+		if (hasTauriBridge()) {
+			let stat;
+			try {
+				stat = await statExternal(dirPath);
+			} catch {
+				throw new Error(`Path not found: ${dirPath}`);
+			}
+			if (!stat.exists) throw new Error(`Path not found: ${dirPath}`);
+			if (!stat.isDir) throw new Error(`Not a directory: ${dirPath}`);
+
+			let rawEntries;
+			try {
+				rawEntries = await listExternalDir(dirPath);
+			} catch (e) {
+				throw new Error(`Cannot read directory: ${(e as Error).message}`);
+			}
+			rawEntries.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+
+			const effectiveLimit = input.limit ?? DEFAULT_LIMIT;
+			const lines: string[] = [];
+			let entryLimitReached = false;
+			for (const entry of rawEntries) {
+				if (lines.length >= effectiveLimit) {
+					entryLimitReached = true;
+					break;
+				}
+				lines.push(entry.isDir ? `${entry.name}/` : entry.name);
+			}
+
+			const { content, truncated } = capOutput(lines);
+			if (lines.length === 0) return "Directory is empty";
+			const notices: string[] = [];
+			if (entryLimitReached) notices.push(`${effectiveLimit} entries limit`);
+			if (truncated) notices.push(`${formatSize(MAX_OUTPUT_BYTES)} limit`);
+			return notices.length > 0 ? `${content}\n\n[Truncated: ${notices.join(", ")}]` : content;
+		}
 
 		let stat;
 		try {

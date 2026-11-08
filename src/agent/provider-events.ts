@@ -28,6 +28,7 @@
 import * as fs from "node:fs";
 import path from "node:path";
 import { PATHS } from "../../config.ts";
+import { hasTauriBridge, writeDebugLog } from "../worker/host-bridge.ts";
 
 /** Max bytes per chat's JSONL before recording stops (with a marker). */
 const CAP_BYTES = 20 * 1024 * 1024;
@@ -68,6 +69,12 @@ function writeLine(file: string, line: Record<string, unknown>): void {
 	const state = files.get(file);
 	if (state?.capped) return;
 	const text = `${JSON.stringify({ t: Date.now(), ...line })}\n`;
+	if (hasTauriBridge()) {
+		try {
+			writeDebugLog("provider-events", path.basename(file), text, true).catch(() => {});
+		} catch {}
+		return;
+	}
 	try {
 		const before = state?.bytes ?? (fs.existsSync(file) ? fs.statSync(file).size : 0);
 		fs.mkdirSync(path.dirname(file), { recursive: true });

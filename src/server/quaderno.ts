@@ -6,6 +6,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { hasTauriBridge, writeQuadernoPdf } from "../worker/host-bridge.ts";
 import * as os from "node:os";
 import {
 	DEFAULT_QUADERNO_BASE_URL,
@@ -494,12 +495,18 @@ export async function executeQuadernoAction(
 						toolCallId: "toolCallId" in req ? req.toolCallId : undefined,
 					});
 
-		const folderDir = path.join(config.syncDir, config.folder);
-		await fs.promises.mkdir(folderDir, { recursive: true });
+		let localPdfPath: string;
+		if (hasTauriBridge()) {
+			const pdfBytes = buildMinimalPdfBytes(req.title, req.markdown);
+			localPdfPath = await writeQuadernoPdf(`${docTitle}.pdf`, Buffer.from(pdfBytes).toString("base64"));
+		} else {
+			const folderDir = path.join(config.syncDir, config.folder);
+			await fs.promises.mkdir(folderDir, { recursive: true });
 
-		const localPdfPath = path.join(folderDir, `${docTitle}.pdf`);
-		const pdfBytes = buildMinimalPdfBytes(req.title, req.markdown);
-		await fs.promises.writeFile(localPdfPath, pdfBytes);
+			localPdfPath = path.join(folderDir, `${docTitle}.pdf`);
+			const pdfBytes = buildMinimalPdfBytes(req.title, req.markdown);
+			await fs.promises.writeFile(localPdfPath, pdfBytes);
+		}
 
 		// Daemon upload attempt
 		let daemonOk = false;

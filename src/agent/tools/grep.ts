@@ -16,6 +16,7 @@ import {
 	WALK_TIMEOUT_MS,
 } from "./fs-shared.ts";
 import { resolvePolicy } from "./file-access.ts";
+import { hasTauriBridge, readExternalFile, statExternal } from "../../worker/host-bridge.ts";
 
 /**
  * The grep tool — sources v1 (2026-09-19): pi's dist/core/tools/grep.js
@@ -86,10 +87,19 @@ export const grepTool: AgentTool<typeof grepInput> = {
 		let timedOut = false;
 		let aborted = false;
 		for (const searchPath of roots) {
-			let stat;
-			try { stat = await fs.stat(searchPath); }
-			catch { throw new Error(`Path not found: ${searchPath}`); }
-			const isDirectory = stat.isDirectory();
+			let isDirectory = false;
+			if (hasTauriBridge()) {
+				let stat;
+				try { stat = await statExternal(searchPath); }
+				catch { throw new Error(`Path not found: ${searchPath}`); }
+				if (!stat.exists) throw new Error(`Path not found: ${searchPath}`);
+				isDirectory = stat.isDir;
+			} else {
+				let stat;
+				try { stat = await fs.stat(searchPath); }
+				catch { throw new Error(`Path not found: ${searchPath}`); }
+				isDirectory = stat.isDirectory();
+			}
 			if (!isDirectory) files.push({ filePath: searchPath, searchPath, isDirectory });
 			else {
 				const result = await walkFiles(searchPath, (filePath) => {
@@ -127,18 +137,35 @@ export const grepTool: AgentTool<typeof grepInput> = {
 				limitReached = true;
 				break;
 			}
-			let fileStat;
-			try {
-				fileStat = await fs.stat(filePath);
-			} catch {
-				continue;
+			let fileSize: number;
+			if (hasTauriBridge()) {
+				try {
+					const stat = await statExternal(filePath);
+					if (!stat.exists) continue;
+					fileSize = stat.size;
+				} catch {
+					continue;
+				}
+			} else {
+				let fileStat;
+				try {
+					fileStat = await fs.stat(filePath);
+				} catch {
+					continue;
+				}
+				fileSize = fileStat.size;
 			}
-			if (fileStat.size > MAX_FILE_BYTES) continue; // rg-style silent skip of huge files
+			if (fileSize > MAX_FILE_BYTES) continue; // rg-style silent skip of huge files
 			if (await isBinaryFile(filePath).catch(() => true)) continue;
 
 			let content: string;
 			try {
-				content = await fs.readFile(filePath, "utf-8");
+				if (hasTauriBridge()) {
+					const bytes = await readExternalFile(filePath);
+					content = new TextDecoder("utf-8").decode(bytes);
+				} else {
+					content = await fs.readFile(filePath, "utf-8");
+				}
 			} catch {
 				continue;
 			}

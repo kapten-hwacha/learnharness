@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AUTH_FILE } from "../../../config.ts";
 import { comparisonPath, guardSourcePath, isWithin, realSourcePath as realOrMissing, resolvePolicy, type ResolvedFileAccessPolicy } from "./file-access.ts";
+import { hasTauriBridge, readExternalFile, walkExternal } from "../../worker/host-bridge.ts";
 
 /**
  * Shared plumbing for the learner-filesystem tools (ls / find / grep) —
@@ -325,6 +326,27 @@ export async function walkFiles(
 	// root and compare descendants against the same canonical protected roots.
 	const realRoot = guardSourcePath(checkedSourcePath(path.resolve(root), denied), options.policy);
 
+	if (hasTauriBridge()) {
+		try {
+			const files = await walkExternal(realRoot);
+			for (const full of files) {
+				if (Date.now() > deadline) {
+					timedOut = true;
+					break;
+				}
+				if (signal?.aborted) {
+					aborted = true;
+					break;
+				}
+				if (denied(full)) continue;
+				if (await visit(full)) break;
+			}
+			return { timedOut, aborted };
+		} catch {
+			return { timedOut: false, aborted: false };
+		}
+	}
+
 	const walkDir = async (dir: string): Promise<boolean> => {
 		if (Date.now() > deadline) {
 			timedOut = true;
@@ -368,6 +390,14 @@ export async function walkFiles(
 
 /** True if the first 8KB chunk contains a NUL byte — pi/rg's binary skip. */
 export async function isBinaryFile(filePath: string): Promise<boolean> {
+	if (hasTauriBridge()) {
+		try {
+			const bytes = await readExternalFile(filePath);
+			return bytes.subarray(0, 8192).includes(0);
+		} catch {
+			return true;
+		}
+	}
 	const handle = await fs.open(filePath, "r");
 	try {
 		const buf = Buffer.alloc(8192);

@@ -7,6 +7,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
 import path from "node:path";
 import { PATHS, type ModelRole } from "../../config.ts";
+import { hasTauriBridge, writeDebugLog } from "../worker/host-bridge.ts";
 import type { Api, AssistantMessage, Model, SimpleStreamOptions, StreamFunction, ToolResultMessage } from "@earendil-works/pi-ai";
 
 type CaptureModel = Pick<Model<Api>, "provider" | "id" | "api">;
@@ -86,6 +87,12 @@ export function createBackgroundCapture(input: { role: ModelRole; runId: string;
 	};
 	let warned = false;
 	function write() {
+		if (hasTauriBridge()) {
+			try {
+				writeDebugLog("background-captures", path.basename(file), JSON.stringify(record, null, 2), false).catch(() => {});
+			} catch {}
+			return;
+		}
 		try {
 			fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
 			fs.writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
