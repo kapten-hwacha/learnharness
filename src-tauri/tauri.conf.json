@@ -28,8 +28,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' ipc: tauri: asset: https: data: blob:; connect-src 'self' ipc: tauri: asset: https:; worker-src 'self' blob: tauri:; font-src 'self' data: tauri:;",
-      "devCsp": "default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' ipc: tauri: asset: https: http: data: blob:; connect-src 'self' ipc: tauri: asset: https: http:; worker-src 'self' blob: tauri:; font-src 'self' data: tauri:;"
+      "csp": "default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' ipc: tauri: asset: https: data: blob:; connect-src 'self' ipc: tauri: asset: https: wss://api.deepgram.com; worker-src 'self' blob: tauri:; font-src 'self' data: tauri:;",
+      "devCsp": "default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' ipc: tauri: asset: https: http: data: blob:; connect-src 'self' ipc: tauri: asset: https: http: wss://api.deepgram.com; worker-src 'self' blob: tauri:; font-src 'self' data: tauri:;"
     }
   },
   "bundle": {
