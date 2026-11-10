@@ -41,6 +41,16 @@ class AudioGraph {
 }
 class Worklet { port = {}; connect() {} disconnect() {} }
 
+test("unavailable microphone API ends the run and reports the failure", async () => {
+	const f = await fixture();
+	await f.mount();
+	Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
+	await act(async () => { f.dictation.toggle(); });
+	assert.equal(f.dictation.phase, "idle");
+	assert.equal(f.dictation.error, "Microphone unavailable");
+	assert.equal(f.state.active, false);
+});
+
 const globals = globalThis as Record<string, unknown>;
 let restore: (() => void) | undefined;
 let dispose: (() => Promise<void>) | undefined;

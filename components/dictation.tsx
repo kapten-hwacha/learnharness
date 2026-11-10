@@ -461,12 +461,12 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		// first use.
 		const tokenPromise = warmTokens.mint();
 		tokenPromise.catch(() => {}); // surfaced below; no unhandled rejection
-		const micPromise = navigator.mediaDevices.getUserMedia({
-			audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-		});
 		let stream: MediaStream;
 		try {
-			stream = await micPromise;
+			if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone unavailable");
+			stream = await navigator.mediaDevices.getUserMedia({
+				audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+			});
 			if (gen !== genRef.current) {
 				for (const track of stream.getTracks()) track.stop();
 				return;
