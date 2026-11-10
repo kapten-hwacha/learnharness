@@ -1,4 +1,5 @@
 import { buildDemoVerifySrcDoc } from "../worker/headless-worker.ts";
+import { listen } from "@tauri-apps/api/event";
 
 export type WorkerMessageSubscriber = (handler: (event: MessageEvent) => void) => () => void;
 
@@ -302,7 +303,6 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 
 	if (isTauri) {
 		const tauri = (window as any).__TAURI_INTERNALS__;
-		worker.postMessage({ type: "lh:tauri-init" });
 
 		worker.addEventListener("message", async (event: MessageEvent) => {
 			if (event.data?.type === "lh:tauri-invoke") {
@@ -320,17 +320,11 @@ export function initWorkerClient(): { worker: Worker; portFetch: typeof fetch } 
 			}
 		});
 
-		if (typeof tauri.listen === "function") {
-			void Promise.resolve(
-				tauri.listen("lh://oauth-request", (event: any) => {
-					worker.postMessage({
-						type: "lh:tauri-event",
-						event: "lh://oauth-request",
-						payload: event?.payload,
-					});
-				})
-			);
-		}
+		void Promise.all(["lh://oauth-request", "lh://chatgpt-state", "lh://chatgpt-stream"].map((name) =>
+			listen(name, (event) => worker.postMessage({ type: "lh:tauri-event", event: name, payload: event.payload }))
+		)).then(() => worker.postMessage({ type: "lh:tauri-init" })).catch((error) => {
+			console.error("Failed to initialize native events", error);
+		});
 	} else {
 		worker.postMessage({ type: "lh:dev-init" });
 	}

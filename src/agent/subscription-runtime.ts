@@ -4,6 +4,7 @@ export type SubscriptionRuntimeChannel = "lh:chatgpt" | "lh:subscriptions";
 export type SubscriptionRuntimePacket = Record<string, unknown>;
 interface Runtime {
 	request?: <T>(channel: SubscriptionRuntimeChannel, op: string, fields: Record<string, unknown>) => Promise<T>;
+	nativeFetch?: (scope: import("./chatgpt-request-cycle.ts").AdmissionScope, background: boolean, init: RequestInit | undefined, beforeDispatch: () => void) => Promise<Response>;
 	listeners: Map<SubscriptionRuntimeChannel, Set<(packet: SubscriptionRuntimePacket) => void>>;
 }
 const KEY = Symbol.for("lh.webSubscriptionRuntime");
@@ -12,6 +13,8 @@ function runtime(): Runtime {
 	return global[KEY] ??= { listeners: new Map() };
 }
 export function configureWebSubscriptionRuntime(request: NonNullable<Runtime["request"]>): void { runtime().request = request; }
+export function configureNativeChatGPTFetch(fetcher: NonNullable<Runtime["nativeFetch"]>): void { runtime().nativeFetch = fetcher; }
+export function nativeChatGPTFetch(): Runtime["nativeFetch"] { return runtime().nativeFetch; }
 export function webSubscriptionsEnabled(): boolean {
 	return process.env.LH_DESKTOP_SERVER !== "1" && !process.env.LH_DESKTOP_API_SECRET && !!runtime().request;
 }

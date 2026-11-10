@@ -3,7 +3,10 @@ import { headlessOverride } from "../agent/subagents/headless.ts";
 import { initAuthEnv } from "../server/keys.ts";
 import { installCustomProviderSource } from "../server/custom-provider.ts";
 import { effectiveSettings } from "../server/stores.ts";
-import { waitForInitialBridge } from "./host-bridge.ts";
+import { waitForInitialBridge, isTauriEnvironment, getTauriInvoke, listenTauriEvent } from "./host-bridge.ts";
+import { configureWebSubscriptionRuntime, configureNativeChatGPTFetch, publishWebSubscriptionPacket } from "../agent/subscription-runtime.ts";
+import { nativeChatGPTFetch } from "./chatgpt-native.ts";
+import { emit } from "../core/events.ts";
 import { createWorkerHeadless } from "./headless-worker.ts";
 import { dispatchWorkerRequest } from "./router.ts";
 import { setWorkerHomeDir } from "./shims/node-stubs.ts";
@@ -158,6 +161,21 @@ export function ensureWorkerBooted(): Promise<void> {
 	if (!bootPromise) {
 		bootPromise = (async () => {
 			const bridge = await waitForInitialBridge();
+			if (isTauriEnvironment()) {
+				const invoke = getTauriInvoke();
+				if (!invoke) throw new Error("Native ChatGPT transport unavailable");
+				configureNativeChatGPTFetch(nativeChatGPTFetch);
+				configureWebSubscriptionRuntime(async (channel, op) => {
+					if (channel !== "lh:chatgpt") throw new Error("Subscription unavailable");
+					if (op === "status") return invoke("lh_chatgpt_snapshot");
+					if (op === "models") return invoke("lh_chatgpt_models");
+					throw new Error("ChatGPT operation unavailable");
+				});
+				listenTauriEvent("lh://chatgpt-state", ({ payload }) => {
+					publishWebSubscriptionPacket("lh:chatgpt", payload);
+					emit("subscriptions-changed", {});
+				});
+			}
 			const init = await bridge.initRuntime();
 			setWorkerHomeDir(init.homeDir);
 

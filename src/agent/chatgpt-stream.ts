@@ -5,6 +5,7 @@ import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages"
 import { chatGPTAbortController, chatGPTScope, chatGPTScopeCurrent, chatGPTLease, chatGPTDenial } from "./chatgpt-bridge.ts";
 import type { AdmissionScope, ChatGPTDispatchLifecycle } from "./chatgpt-request-cycle.ts";
 import { capturePreparedBackgroundPayload } from "./background-capture.ts";
+import { nativeChatGPTFetch } from "./subscription-runtime.ts";
 
 const USAGE = "https://chatgpt.com/settings/usage";
 export function chatGPTStreamError(message: string): string {
@@ -64,22 +65,24 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 				if (Object.keys(options?.headers ?? {}).some((key) => key.toLowerCase() === "authorization")) throw new Error("Authorization override is forbidden");
 				scope = chatGPTScope(logicalModel.id);
 				lifecycle?.captured(scope);
-				const credentials = await chatGPTLease(scope, purpose);
+				const nativeFetch = nativeChatGPTFetch();
+				const credentials = nativeFetch ? null : await chatGPTLease(scope, purpose);
 				check();
 				// NEVER dispatch through Models under openai: that would expose ambient API-key fallback.
 				const transport: Model<"openai-responses"> = { ...logicalModel, api: "openai-responses", provider: "openai", baseUrl: "https://api.openai.com/v1", headers: undefined, samplingParams: undefined, compat: { ...logicalModel.compat, supportsDeveloperRole: true } };
 				const delegate = options?.fetch ?? globalThis.fetch;
 				const source = streamSimple(transport, chatGPTHistory(context, logicalModel), {
 					...options,
-					apiKey: credentials.accessToken,
+					apiKey: credentials?.accessToken ?? "native-transport",
 					signal,
 					maxRetries: 0,
 					headers: { "OpenAI-Beta": null, ...options?.headers },
 					fetch: (input, init) => {
 						check();
 						if (committed) throw new Error("ChatGPT does not retry admitted requests");
-						lifecycle?.beforeDispatch(scope!);
-						committed = true;
+						const admit = () => { check(); lifecycle?.beforeDispatch(scope!); committed = true; };
+						if (nativeFetch) return nativeFetch(scope!, purpose, init, admit);
+						admit();
 						return delegate(input, init);
 					},
 					onPayload: async (raw, model) => {

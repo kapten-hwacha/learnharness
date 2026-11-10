@@ -86,6 +86,11 @@ export function installTauriPreload(deps: TauriPreloadDeps): void {
 
 	const isIos = deps.platform === "ios";
 	const isMobile = isIos;
+	const chatgptListeners = new Set<() => void>();
+	void Promise.resolve(deps.listen("lh://chatgpt-state", () => {
+		for (const listener of chatgptListeners) listener();
+	}));
+	const chatgptControl = (op: string, fields: Record<string, unknown> = {}) => deps.invoke("lh_chatgpt_control", { op, ...fields });
 
 	target.lh = {
 		platform: deps.platform,
@@ -132,7 +137,7 @@ export function installTauriPreload(deps: TauriPreloadDeps): void {
 			}
 			return dropPathMap.get(file) ?? "";
 		},
-		subscriptionTransport: "web",
+		subscriptionTransport: "desktop",
 		async openSubscriptionBrowser(action: string): Promise<void> {
 			if (!/^\/api\/subscriptions\/browser\?id=[0-9a-f-]{36}$/.test(action)) {
 				throw new Error(`Invalid subscription browser action: ${action}`);
@@ -156,29 +161,31 @@ export function installTauriPreload(deps: TauriPreloadDeps): void {
 		},
 		chatgpt: {
 			async status() {
-				return { available: false, connected: false, pending: false };
+				if (isIos) return { available: false, pending: false, allowBackgroundUse: true, activeId: null, accounts: [], error: null };
+				return chatgptControl("status");
 			},
 			async start() {
 				return { error: "unsupported" };
 			},
-			async cancel() {},
-			async login() {
-				return { available: false, connected: false, pending: false };
+			async cancel() { return chatgptControl("cancel"); },
+			async login(id?: string) {
+				return chatgptControl("login", { id });
 			},
-			async select() {
-				return { available: false, connected: false, pending: false };
+			async select(id: string) {
+				return chatgptControl("select", { id });
 			},
-			async disconnect() {
-				return { available: false, connected: false, pending: false };
+			async disconnect(id: string) {
+				return chatgptControl("disconnect", { id });
 			},
-			async logout() {
-				return { available: false, connected: false, pending: false };
+			async logout(id: string) {
+				return chatgptControl("logout", { id });
 			},
-			async consent() {
-				return { available: false, connected: false, pending: false };
+			async consent(enabled: boolean) {
+				return chatgptControl("consent", { enabled });
 			},
-			onChange() {
-				return () => {};
+			onChange(listener: () => void) {
+				chatgptListeners.add(listener);
+				return () => { chatgptListeners.delete(listener); };
 			},
 			on() {
 				return () => {};

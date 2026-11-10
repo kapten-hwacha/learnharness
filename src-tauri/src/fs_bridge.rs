@@ -144,6 +144,21 @@ fn is_credential_or_temp_file(file_path: &Path, auth_file: &Path, canonical_auth
         return true;
     }
 
+    // The ChatGPT owner stores credentials under user_data_dir, which may not
+    // share a parent with a custom LH_AUTH_FILE. Never expose these files via
+    // the generic external-file bridge, even in that configuration.
+    if file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower == "chatgpt-credentials.json"
+                || (lower.starts_with(".chatgpt-credentials.json.") && lower.ends_with(".tmp"))
+        })
+    {
+        return true;
+    }
+
     let auth_parent = auth_file.parent();
     let canonical_auth_parent = canonical_auth.parent();
 
@@ -799,6 +814,15 @@ mod tests {
         assert!(res_temp
             .unwrap_err()
             .contains("Access denied: protected location"));
+    }
+
+    #[test]
+    fn native_chatgpt_credentials_are_hidden_with_custom_auth_location() {
+        let auth = Path::new("/different/profile/auth.json");
+        let private = Path::new("/app/user-data/chatgpt-credentials.json");
+        let temporary = Path::new("/app/user-data/.chatgpt-credentials.json.1.0.tmp");
+        assert!(is_credential_or_temp_file(private, auth, auth));
+        assert!(is_credential_or_temp_file(temporary, auth, auth));
     }
 
     #[test]

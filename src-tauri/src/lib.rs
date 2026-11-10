@@ -1,3 +1,4 @@
+pub mod chatgpt;
 pub mod exec;
 pub mod fs_bridge;
 pub mod http_bridge;
@@ -115,6 +116,12 @@ pub fn run() {
                 fs_bridge::lh_quaderno_list_pdfs,
                 fs_bridge::lh_debug_write,
                 // Other bridges
+                chatgpt::lh_chatgpt_control,
+                chatgpt::lh_chatgpt_models,
+                chatgpt::lh_chatgpt_snapshot,
+                chatgpt::lh_chatgpt_stream_start,
+                chatgpt::lh_chatgpt_stream_prepare,
+                chatgpt::lh_chatgpt_stream_cancel,
                 http_bridge::lh_http_fetch,
                 http_bridge::lh_open_external,
                 oauth::lh_oauth_listen_start,
@@ -131,6 +138,9 @@ pub fn run() {
     builder = builder.setup(|app| {
         let db_state =
             storage::init_storage(app.handle()).map_err(Box::<dyn std::error::Error>::from)?;
+        let chatgpt = chatgpt::ChatGptOwner::new(db_state.user_data_dir.clone())
+            .map_err(std::io::Error::other)?;
+        app.manage(chatgpt);
         app.manage(db_state);
 
         #[cfg(not(target_os = "ios"))]

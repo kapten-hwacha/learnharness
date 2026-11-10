@@ -208,6 +208,16 @@ fn validate_auth_filename(filename: Option<&str>) -> Result<String, String> {
     Ok(name.to_string())
 }
 
+// Subscription credentials owned by the native ChatGPT service must not be
+// readable or replaceable via the generic webview-facing auth commands.
+fn validate_webview_auth_filename(filename: Option<&str>) -> Result<(), String> {
+    let name = validate_auth_filename(filename)?;
+    if name.eq_ignore_ascii_case("chatgpt-credentials.json") {
+        return Err("ChatGPT credentials are managed by the native subscription service".into());
+    }
+    Ok(())
+}
+
 pub fn auth_read(user_data_dir: &Path, filename: Option<&str>) -> Result<Option<String>, String> {
     let name = validate_auth_filename(filename)?;
     let path = user_data_dir.join(name);
@@ -437,6 +447,7 @@ pub async fn lh_auth_read(
     state: State<'_, DbState>,
     filename: Option<String>,
 ) -> Result<Option<String>, String> {
+    validate_webview_auth_filename(filename.as_deref())?;
     auth_read(&state.user_data_dir, filename.as_deref())
 }
 
@@ -446,6 +457,7 @@ pub async fn lh_auth_write(
     filename: Option<String>,
     content: String,
 ) -> Result<(), String> {
+    validate_webview_auth_filename(filename.as_deref())?;
     auth_write(&state.user_data_dir, filename.as_deref(), &content)
 }
 
@@ -455,6 +467,15 @@ mod tests {
     use crate::storage::schema::init_schema;
     use rusqlite::Connection;
     use serde_json::json;
+
+    #[test]
+    fn webview_cannot_access_native_chatgpt_credentials() {
+        assert!(validate_webview_auth_filename(Some("chatgpt-credentials.json")).is_err());
+        assert!(validate_webview_auth_filename(Some("CHATGPT-CREDENTIALS.JSON")).is_err());
+        assert!(validate_webview_auth_filename(None).is_ok());
+        assert!(validate_webview_auth_filename(Some("custom-credentials.json")).is_ok());
+        assert!(validate_webview_auth_filename(Some("../chatgpt-credentials.json")).is_err());
+    }
 
     fn test_db() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
