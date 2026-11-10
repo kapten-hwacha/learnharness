@@ -1,7 +1,7 @@
 # Desktop builds and releases
 
 > [!NOTE]
-> The desktop application has migrated from Electron to Tauri (Tauri 2). Packaging, signing, notarization, and automated release workflows are currently being retargeted to Tauri and are not yet fully ported.
+> Packaging, signing, notarization, and automated release workflows are currently being retargeted to Tauri 2 and are not yet fully ported.
 
 ## Platforms
 

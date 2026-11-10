@@ -37,11 +37,11 @@ Provider-specific setup and limitations: [Claude Code](claude-code.md), [custom 
 
 ### Subscription connections in web/dev
 
-`npm run dev` and `npm start` support ChatGPT, GitHub Copilot, and Grok sign-in. `desktop:dev` uses those same dev-server connections; packaged desktop has a separate main-process credential owner/private transport. Subscription routes do not fall back to API-key billing.
+`npm run dev` and `npm start` support ChatGPT, GitHub Copilot, and Grok sign-in. The Tauri desktop app supports ChatGPT sign-in through a native Rust owner; Copilot and Grok are not yet available there. Subscription routes do not fall back to API-key billing. Tauri keeps ChatGPT tokens in its native owner and streams authenticated responses to the worker without exposing tokens to the webview.
 
 Web/dev writes `chatgpt-credentials.json`, `github-copilot-credentials.json`, and `xai-credentials.json` **beside `LH_AUTH_FILE`**, in the repo by default—not under `data/` or a global Pi profile. Git/build exclusions cover these files and their write temporaries. Refresh serialization is process-local: use one server per credential directory.
 
-ChatGPT's callback listener is `127.0.0.1` on the **server's machine**; complete sign-in in a browser there. Copilot/Grok use device codes. Allow the initiating browser's sign-in tab if blocked; desktop dev opens provider pages in the system browser. Connected browsers share server credentials, background-use consent, keys, and learning data.
+ChatGPT's callback listener is `127.0.0.1` on the **server's machine**; complete sign-in in a browser there. Copilot/Grok use device codes. Allow the initiating browser's sign-in tab if blocked. Connected browsers share server credentials, background-use consent, keys, and learning data.
 
 This is **trusted local/shared development**, not multi-user hosting. Same-origin JSON/custom-header checks and short-lived, origin-bound, one-use browser-opening actions are not user authentication or DNS-rebinding protection. Do not expose the server to untrusted users/public Internet without an independent access/host gate. Per-user isolation, remote ChatGPT callback routing, and credential import are not implemented.
 
