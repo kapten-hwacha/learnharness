@@ -21,7 +21,7 @@ const chat = await import("../src/agent/chatgpt-bridge.ts");
 const native = await import("../src/agent/subscription-bridge.ts");
 const { piModels } = await import("../src/agent/models.ts");
 const { refreshConnectionCatalog } = await import("../src/server/model-catalog.ts");
-const model = piModels().getModels("openai").find((entry) => entry.api === "openai-responses")!;
+const model = piModels().getModels("openai").find((entry) => entry.api === "openai-responses" && entry.id === "gpt-6.1-terra")!;
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input) => {
 	assert.equal(String(input), "https://api.openai.com/v1/models", "unexpected network request forbidden");

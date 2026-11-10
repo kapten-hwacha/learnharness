@@ -37,8 +37,8 @@
 		"ios:prep:dev": "VITE_LH_IOS_DEV=1 npm run vite:build && cargo build --release --manifest-path src-tauri/Cargo.toml --target aarch64-apple-ios && mkdir -p src-tauri/gen/apple/Externals/arm64/debug && cp src-tauri/target/aarch64-apple-ios/release/liblearnharness_lib.a src-tauri/gen/apple/Externals/arm64/debug/libapp.a"
 	},
 	"dependencies": {
-		"@earendil-works/pi-agent-core": "1.4.0",
-		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-agent-core": "1.5.2",
+		"@earendil-works/pi-ai": "1.5.2",
 		"@fontsource-variable/jetbrains-mono": "^5.3.0",
 		"@fontsource-variable/source-sans-3": "^5.3.1",
 		"@modelcontextprotocol/sdk": "1.32.1",

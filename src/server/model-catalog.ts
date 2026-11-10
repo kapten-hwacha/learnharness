@@ -25,9 +25,11 @@ import { chatGPTConnected, chatGPTModel, chatGPTModels, refreshChatGPTModels } f
 import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
 import { nativeSubscriptionId, nativeSubscriptionConnected, nativeSubscriptionModel, nativeSubscriptionModels, refreshSubscriptionModels } from "../agent/subscription-bridge.ts";
 
+const CHATGPT_MODELS = new Set(["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"]);
+
 export async function refreshConnectionCatalog(provider?: string): Promise<void> {
 	await Promise.all([
-		!provider || provider === "chatgpt" ? refreshChatGPTModels(piModels().getModels("openai").filter((m): m is Model<"openai-responses"> => m.api === "openai-responses")) : Promise.resolve(),
+		!provider || provider === "chatgpt" ? refreshChatGPTModels(piModels().getModels("openai").filter((m): m is Model<"openai-responses"> => m.api === "openai-responses" && CHATGPT_MODELS.has(m.id))) : Promise.resolve(),
 		!provider || nativeSubscriptionId(provider) ? refreshSubscriptionModels() : Promise.resolve(),
 	]);
 }

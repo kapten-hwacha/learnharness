@@ -2,6 +2,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { piModels } from "../src/agent/models.ts";
 import { refreshChatGPTModels, chatGPTModels, chatGPTStatus, chatGPTScope, chatGPTScopeCurrent, chatGPTLease, chatGPTAbortController } from "../src/agent/chatgpt-bridge.ts";
+import { refreshConnectionCatalog } from "../src/server/model-catalog.ts";
 const send = Object.getOwnPropertyDescriptor(process, "send"), connected = Object.getOwnPropertyDescriptor(process, "connected");
 const desktopMarker = process.env.LH_DESKTOP_SERVER, desktopSecret = process.env.LH_DESKTOP_API_SECRET;
 const pending: any[] = [];
@@ -49,4 +50,12 @@ test("account/full and catalog authority changes reject outstanding old leases w
  const newScope = chatGPTScope(model.id); assert.equal(newScope.accountId, "B");
  ipc({ channel: "lh:chatgpt", kind: "state", stamp: { epoch: 2, authorityRevision: 3, revision: 8 }, status: status("B"), invalidate: "none" });
  assert.equal(chatGPTModels().length, 0); await assert.rejects(chatGPTLease(newScope, false));
+});
+test("subscription catalog exposes only the approved current Sol, Terra and Luna models", async () => {
+ const ids = ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra"];
+ const refresh = refreshConnectionCatalog("chatgpt");
+ reply(pending.at(-1), { ...value("unused", 9, "B", 3), models: ids.map((id) => ({ id, name: id })) });
+ await refresh;
+ assert.deepEqual(chatGPTModels().map((m) => m.id), ids.slice(0, 3));
+ assert.ok(piModels().getModel("openai", "gpt-6-astra"), "other provider catalogs remain intact");
 });
