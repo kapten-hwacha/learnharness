@@ -35,7 +35,9 @@ import * as settingsSection from "../../app/api/settings/[section]/route.ts";
 import * as settingsPromptsSegment from "../../app/api/settings/prompts/[...segment]/route.ts";
 import * as settingsPrompts from "../../app/api/settings/prompts/route.ts";
 import * as settings from "../../app/api/settings/route.ts";
-import * as sttToken from "../../app/api/stt/token/route.ts";
+import { mintDictationToken } from "../server/stt-token.ts";
+import { keyValue } from "../server/keys.ts";
+import { getHostBridge } from "./host-bridge.ts";
 import * as study from "../../app/api/study/route.ts";
 import * as subscriptionsBrowser from "../../app/api/subscriptions/browser/route.ts";
 import * as subscriptions from "../../app/api/subscriptions/route.ts";
@@ -178,7 +180,7 @@ const routes: RouteEntry[] = [
 	{ match: exact("/api/settings"), mod: settings },
 
 	// STT Token, Study, Subscriptions
-	{ match: exact("/api/stt/token"), mod: sttToken },
+	{ match: exact("/api/stt/token"), mod: { GET: () => mintDictationToken(keyValue("DEEPGRAM_API_KEY"), getHostBridge().nativeFetch) } },
 	{ match: exact("/api/study"), mod: study },
 	{ match: exact("/api/subscriptions/browser"), mod: subscriptionsBrowser },
 	{ match: exact("/api/subscriptions"), mod: subscriptions },

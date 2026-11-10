@@ -325,11 +325,11 @@ export function createTauriHostBridge(
 
 			let bodyBase64: string | undefined;
 			if (typeof init?.body === "string") {
-				bodyBase64 = Buffer.from(init.body).toString("base64");
+				bodyBase64 = bytesToBase64(new TextEncoder().encode(init.body));
 			} else if (init?.body instanceof Uint8Array) {
-				bodyBase64 = Buffer.from(init.body).toString("base64");
+				bodyBase64 = bytesToBase64(init.body);
 			} else if (init?.body instanceof ArrayBuffer) {
-				bodyBase64 = Buffer.from(new Uint8Array(init.body)).toString("base64");
+				bodyBase64 = bytesToBase64(new Uint8Array(init.body));
 			}
 
 			const res = await invoke<{
@@ -345,18 +345,24 @@ export function createTauriHostBridge(
 				},
 			});
 
-			const bodyBytes = Buffer.from(res.bodyBase64, "base64");
+			const bodyBytes = Uint8Array.from(atob(res.bodyBase64), (character) => character.charCodeAt(0));
 			const responseHeaders = new Headers();
 			for (const [k, v] of res.headers) {
 				responseHeaders.append(k, v);
 			}
 
-			return new Response(bodyBytes, {
+			return new Response(bodyBytes as Uint8Array<ArrayBuffer>, {
 				status: res.status,
 				headers: responseHeaders,
 			});
 		},
 	};
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
 }
 
 export function createBrowserDevHostBridge(): HostBridge {
